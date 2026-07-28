@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sqlite3
 import sys
 import xml.etree.ElementTree as ET
@@ -101,6 +102,13 @@ def validate_items(connection: sqlite3.Connection) -> list[str]:
 def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> list[str]:
     source = lua_file.read_text(encoding="utf-8")
     errors: list[str] = []
+    safe_functions = set(
+        re.findall(
+            r"function\s+(ASAI_Is[A-Za-z0-9_]+)\s*\([^)]*\)\s*"
+            r"return\s+RunStrategyCondition\(",
+            source,
+        )
+    )
     functions = connection.execute(
         """
         SELECT DISTINCT StringValue
@@ -114,6 +122,15 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
             errors.append(f"Lua function is missing: {name}")
         if f"GameEvents.{name}.Add({name})" not in source:
             errors.append(f"GameEvents registration is missing: {name}")
+        if name not in safe_functions:
+            errors.append(f"Lua strategy condition is not fail-closed: {name}")
+
+    if "pcall(evaluator, playerID, threshold)" not in source:
+        errors.append("Lua strategy condition guard does not use pcall")
+    if "GetNumOutgoingRoutes" in source:
+        errors.append("GetNumOutgoingRoutes is unavailable in gameplay-script context")
+    if "tonumber(player:GetProperty(" in source:
+        errors.append("player properties must be stored before numeric conversion")
     return errors
 
 

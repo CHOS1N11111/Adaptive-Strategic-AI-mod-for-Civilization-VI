@@ -3,6 +3,7 @@ print("Adaptive Strategic AI " .. tostring(GlobalParameters.ASAI_VERSION) .. " l
 local m_Snapshots = {};
 local m_StrengthSnapshots = {};
 local m_HumanReference = { Turn = -1, Value = nil };
+local m_ConditionErrors = {};
 
 local RELATIVE_CATCHUP = -1;
 local RELATIVE_MATCHED = 0;
@@ -27,6 +28,24 @@ local function GetNumberParameter(name, fallback)
         return fallback;
     end
     return value;
+end
+
+local function RunStrategyCondition(conditionName, evaluator, playerID, threshold)
+    local success, result = pcall(evaluator, playerID, threshold);
+    if success then
+        return result == true;
+    end
+
+    if m_ConditionErrors[conditionName] == nil then
+        print(string.format(
+            "ASAI_ERROR condition=%s player=%s fallback=false error=%s",
+            conditionName,
+            tostring(playerID),
+            tostring(result)
+        ));
+        m_ConditionErrors[conditionName] = true;
+    end
+    return false;
 end
 
 local function IsMajorAI(playerID)
@@ -101,7 +120,6 @@ local function GetSnapshot(playerID)
         Improvements = CountOwnedImprovements(playerID),
         Builders = builders,
         Traders = traders,
-        ActiveRoutes = trade:GetNumOutgoingRoutes(),
         RouteCapacity = trade:GetOutgoingRouteCapacity(),
         GoldBalance = treasury:GetGoldBalance(),
         NetGold = treasury:GetGoldYield() - treasury:GetTotalMaintenance(),
@@ -112,7 +130,7 @@ local function GetSnapshot(playerID)
     return snapshot;
 end
 
-function ASAI_IsInfrastructureRecovery(playerID, threshold)
+local function IsInfrastructureRecovery(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
@@ -126,9 +144,17 @@ function ASAI_IsInfrastructureRecovery(playerID, threshold)
     local covered = snapshot.Improvements + snapshot.Builders * 2;
     return covered < target;
 end
+function ASAI_IsInfrastructureRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsInfrastructureRecovery",
+        IsInfrastructureRecovery,
+        playerID,
+        threshold
+    );
+end
 GameEvents.ASAI_IsInfrastructureRecovery.Add(ASAI_IsInfrastructureRecovery);
 
-function ASAI_IsTradeRecovery(playerID, threshold)
+local function IsTradeRecovery(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
@@ -137,9 +163,17 @@ function ASAI_IsTradeRecovery(playerID, threshold)
     -- includes both assigned and idle traders and prevents queue overshoot.
     return snapshot.RouteCapacity > snapshot.Traders;
 end
+function ASAI_IsTradeRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsTradeRecovery",
+        IsTradeRecovery,
+        playerID,
+        threshold
+    );
+end
 GameEvents.ASAI_IsTradeRecovery.Add(ASAI_IsTradeRecovery);
 
-function ASAI_IsGoldRecovery(playerID, threshold)
+local function IsGoldRecovery(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
@@ -147,22 +181,46 @@ function ASAI_IsGoldRecovery(playerID, threshold)
     local reservePerCity = GetNumberParameter("ASAI_GOLD_RESERVE_PER_CITY", 15);
     return snapshot.NetGold < 0 and snapshot.GoldBalance < snapshot.Cities * reservePerCity;
 end
+function ASAI_IsGoldRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsGoldRecovery",
+        IsGoldRecovery,
+        playerID,
+        threshold
+    );
+end
 GameEvents.ASAI_IsGoldRecovery.Add(ASAI_IsGoldRecovery);
 
-function ASAI_IsWarMobilization(playerID, threshold)
+local function IsWarMobilization(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
     return GetSnapshot(playerID).Wars > 0;
 end
+function ASAI_IsWarMobilization(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsWarMobilization",
+        IsWarMobilization,
+        playerID,
+        threshold
+    );
+end
 GameEvents.ASAI_IsWarMobilization.Add(ASAI_IsWarMobilization);
 
-function ASAI_IsLateGame(playerID, threshold)
+local function IsLateGame(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
     local modern = GameInfo.Eras["ERA_MODERN"];
     return modern ~= nil and GetSnapshot(playerID).Era >= modern.Index;
+end
+function ASAI_IsLateGame(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsLateGame",
+        IsLateGame,
+        playerID,
+        threshold
+    );
 end
 GameEvents.ASAI_IsLateGame.Add(ASAI_IsLateGame);
 
@@ -280,7 +338,8 @@ local function GetRelativeScore(aiStrength, humanStrength)
 end
 
 local function GetStoredNumber(player, propertyName, fallback)
-    local value = tonumber(player:GetProperty(propertyName));
+    local rawValue = player:GetProperty(propertyName);
+    local value = tonumber(rawValue);
     if value == nil then
         return fallback;
     end
@@ -364,15 +423,31 @@ local function GetRelativeBand(playerID)
     return band, score;
 end
 
-function ASAI_IsRelativeCatchup(playerID, threshold)
+local function IsRelativeCatchup(playerID, threshold)
     local band = GetRelativeBand(playerID);
     return band == RELATIVE_CATCHUP;
 end
+function ASAI_IsRelativeCatchup(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsRelativeCatchup",
+        IsRelativeCatchup,
+        playerID,
+        threshold
+    );
+end
 GameEvents.ASAI_IsRelativeCatchup.Add(ASAI_IsRelativeCatchup);
 
-function ASAI_IsRelativeConsolidate(playerID, threshold)
+local function IsRelativeConsolidate(playerID, threshold)
     local band = GetRelativeBand(playerID);
     return band == RELATIVE_CONSOLIDATE;
+end
+function ASAI_IsRelativeConsolidate(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsRelativeConsolidate",
+        IsRelativeConsolidate,
+        playerID,
+        threshold
+    );
 end
 GameEvents.ASAI_IsRelativeConsolidate.Add(ASAI_IsRelativeConsolidate);
 
@@ -393,14 +468,14 @@ local function LogMetrics(playerID, firstTimeThisTurn)
     local strength = GetStrengthSnapshot(playerID);
     local relativeBand, relativeScore = GetRelativeBand(playerID);
     print(string.format(
-        "ASAI_METRIC turn=%d player=%d cities=%d pop=%d improved=%d builders=%d routes=%d/%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d era=%d relative=%.3f pacing=%s",
+        "ASAI_METRIC turn=%d player=%d cities=%d pop=%d improved=%d builders=%d traders=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d era=%d relative=%.3f pacing=%s",
         snapshot.Turn,
         playerID,
         snapshot.Cities,
         snapshot.Population,
         snapshot.Improvements,
         snapshot.Builders,
-        snapshot.ActiveRoutes,
+        snapshot.Traders,
         snapshot.RouteCapacity,
         snapshot.GoldBalance,
         snapshot.NetGold,
