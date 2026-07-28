@@ -5,7 +5,9 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_TRADE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_GOLD_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'KIND_VICTORY_STRATEGY'),
-    ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY');
+    ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'KIND_VICTORY_STRATEGY');
 
 INSERT OR IGNORE INTO Strategies
     (StrategyType, NumConditionsNeeded)
@@ -14,7 +16,9 @@ VALUES
     ('ASAI_STRATEGY_TRADE_RECOVERY', 1),
     ('ASAI_STRATEGY_GOLD_RECOVERY', 1),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 1),
-    ('ASAI_STRATEGY_LATE_GAME', 1);
+    ('ASAI_STRATEGY_LATE_GAME', 1),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 1),
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 1);
 
 INSERT OR IGNORE INTO StrategyConditions
     (StrategyType, ConditionFunction, StringValue, ThresholdValue, Disqualifier)
@@ -28,7 +32,11 @@ VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'Call Lua Function', 'ASAI_IsWarMobilization', 0, 0),
     ('ASAI_STRATEGY_LATE_GAME', 'Is Not Major', NULL, 0, 1),
-    ('ASAI_STRATEGY_LATE_GAME', 'Call Lua Function', 'ASAI_IsLateGame', 0, 0);
+    ('ASAI_STRATEGY_LATE_GAME', 'Call Lua Function', 'ASAI_IsLateGame', 0, 0),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Call Lua Function', 'ASAI_IsRelativeCatchup', 0, 0),
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'Call Lua Function', 'ASAI_IsRelativeConsolidate', 0, 0);
 
 INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_InfraPseudoYields'),
@@ -51,7 +59,15 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_LateDistricts'),
     ('ASAI_LateBuildings'),
     ('ASAI_LateUnitBuilds'),
-    ('ASAI_LateUnits');
+    ('ASAI_LateUnits'),
+    ('ASAI_RelativeCatchupPseudoYields'),
+    ('ASAI_RelativeCatchupUnits'),
+    ('ASAI_RelativeCatchupYields'),
+    ('ASAI_RelativeCatchupDistricts'),
+    ('ASAI_RelativeCatchupWonders'),
+    ('ASAI_RelativeLeadPseudoYields'),
+    ('ASAI_RelativeLeadYields'),
+    ('ASAI_RelativeLeadWonders');
 
 INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_InfraPseudoYields', 'PseudoYields'),
@@ -74,7 +90,15 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_LateDistricts', 'Districts'),
     ('ASAI_LateBuildings', 'Buildings'),
     ('ASAI_LateUnitBuilds', 'UnitPromotionClasses'),
-    ('ASAI_LateUnits', 'Units');
+    ('ASAI_LateUnits', 'Units'),
+    ('ASAI_RelativeCatchupPseudoYields', 'PseudoYields'),
+    ('ASAI_RelativeCatchupUnits', 'Units'),
+    ('ASAI_RelativeCatchupYields', 'Yields'),
+    ('ASAI_RelativeCatchupDistricts', 'Districts'),
+    ('ASAI_RelativeCatchupWonders', 'Buildings'),
+    ('ASAI_RelativeLeadPseudoYields', 'PseudoYields'),
+    ('ASAI_RelativeLeadYields', 'Yields'),
+    ('ASAI_RelativeLeadWonders', 'Buildings');
 
 INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'ASAI_InfraPseudoYields'),
@@ -97,7 +121,15 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateDistricts'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateBuildings'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateUnitBuilds'),
-    ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateUnits');
+    ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateUnits'),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupPseudoYields'),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupUnits'),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupYields'),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupDistricts'),
+    ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupWonders'),
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadPseudoYields'),
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadYields'),
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadWonders');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -132,7 +164,27 @@ VALUES
     ('ASAI_LateUnitBuilds', 'PROMOTION_CLASS_AIR_FIGHTER', 1, 50),
     ('ASAI_LateUnitBuilds', 'PROMOTION_CLASS_AIR_BOMBER', 1, 65),
     ('ASAI_LateUnits', 'UNIT_ANTIAIR_GUN', 1, 20),
-    ('ASAI_LateUnits', 'UNIT_MOBILE_SAM', 1, 25);
+    ('ASAI_LateUnits', 'UNIT_MOBILE_SAM', 1, 25),
+    ('ASAI_RelativeCatchupPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 20),
+    ('ASAI_RelativeCatchupPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 20),
+    ('ASAI_RelativeCatchupPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 8),
+    ('ASAI_RelativeCatchupUnits', 'UNIT_BUILDER', 1, 15),
+    ('ASAI_RelativeCatchupUnits', 'UNIT_TRADER', 1, 20),
+    ('ASAI_RelativeCatchupYields', 'YIELD_PRODUCTION', 1, 8),
+    ('ASAI_RelativeCatchupYields', 'YIELD_SCIENCE', 1, 10),
+    ('ASAI_RelativeCatchupYields', 'YIELD_CULTURE', 1, 8),
+    ('ASAI_RelativeCatchupYields', 'YIELD_GOLD', 1, 5),
+    ('ASAI_RelativeCatchupDistricts', 'DISTRICT_CAMPUS', 1, 10),
+    ('ASAI_RelativeCatchupDistricts', 'DISTRICT_THEATER', 1, 10),
+    ('ASAI_RelativeCatchupDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 8),
+    ('ASAI_RelativeCatchupDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 6),
+    ('ASAI_RelativeCatchupDistricts', 'DISTRICT_HARBOR', 1, 6),
+    ('ASAI_RelativeLeadPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -18),
+    ('ASAI_RelativeLeadPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, -5),
+    ('ASAI_RelativeLeadYields', 'YIELD_PRODUCTION', 1, -3),
+    ('ASAI_RelativeLeadYields', 'YIELD_SCIENCE', 1, -6),
+    ('ASAI_RelativeLeadYields', 'YIELD_CULTURE', 1, -5),
+    ('ASAI_RelativeLeadYields', 'YIELD_GOLD', 1, 3);
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -160,5 +212,17 @@ WHERE IsWonder = 1;
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
 SELECT 'ASAI_WarWonders', BuildingType, 1, -75
+FROM Buildings
+WHERE IsWonder = 1;
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_RelativeCatchupWonders', BuildingType, 1, -12
+FROM Buildings
+WHERE IsWonder = 1;
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_RelativeLeadWonders', BuildingType, 1, -8
 FROM Buildings
 WHERE IsWonder = 1;

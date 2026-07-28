@@ -181,6 +181,84 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
     return errors
 
 
+def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
+    errors: list[str] = []
+    parameter_names = (
+        "ASAI_RELATIVE_PACING_ENABLED",
+        "ASAI_RELATIVE_START_TURN",
+        "ASAI_RELATIVE_CHECK_INTERVAL",
+        "ASAI_RELATIVE_TRAILING_ENTER_X100",
+        "ASAI_RELATIVE_TRAILING_EXIT_X100",
+        "ASAI_RELATIVE_LEADING_EXIT_X100",
+        "ASAI_RELATIVE_LEADING_ENTER_X100",
+        "ASAI_RELATIVE_COMPONENT_MIN_X100",
+        "ASAI_RELATIVE_COMPONENT_MAX_X100",
+    )
+    parameters: dict[str, int] = {}
+    for name in parameter_names:
+        row = connection.execute(
+            "SELECT Value FROM GlobalParameters WHERE Name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            errors.append(f"missing relative pacing parameter: {name}")
+            continue
+        try:
+            parameters[name] = int(row[0])
+        except (TypeError, ValueError):
+            errors.append(f"relative pacing parameter is not an integer: {name}={row[0]}")
+
+    threshold_names = (
+        "ASAI_RELATIVE_TRAILING_ENTER_X100",
+        "ASAI_RELATIVE_TRAILING_EXIT_X100",
+        "ASAI_RELATIVE_LEADING_EXIT_X100",
+        "ASAI_RELATIVE_LEADING_ENTER_X100",
+    )
+    if all(name in parameters for name in threshold_names):
+        values = [parameters[name] for name in threshold_names]
+        if not values[0] < values[1] < 100 < values[2] < values[3]:
+            errors.append(f"relative pacing thresholds are not ordered safely: {values}")
+
+    bounds = (
+        parameters.get("ASAI_RELATIVE_COMPONENT_MIN_X100"),
+        parameters.get("ASAI_RELATIVE_COMPONENT_MAX_X100"),
+    )
+    if None not in bounds and not 0 < bounds[0] < 100 < bounds[1]:
+        errors.append(f"relative component bounds are invalid: {bounds}")
+
+    expected_strategies = {
+        "ASAI_STRATEGY_RELATIVE_CATCHUP",
+        "ASAI_STRATEGY_RELATIVE_CONSOLIDATE",
+    }
+    actual_strategies = {
+        row[0]
+        for row in connection.execute(
+            "SELECT StrategyType FROM Strategies WHERE StrategyType LIKE 'ASAI_STRATEGY_RELATIVE_%'"
+        )
+    }
+    if actual_strategies != expected_strategies:
+        errors.append(
+            "relative strategies differ: "
+            f"expected {sorted(expected_strategies)}, found {sorted(actual_strategies)}"
+        )
+
+    oversized = list(
+        connection.execute(
+            """
+            SELECT ListType, Item, Value
+            FROM AiFavoredItems
+            WHERE ListType LIKE 'ASAI_Relative%'
+              AND ABS(Value) > 25
+            ORDER BY ListType, Item
+            """
+        )
+    )
+    errors.extend(
+        f"relative adjustment is too large: {list_type}/{item}={value}"
+        for list_type, item, value in oversized
+    )
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Adaptive Strategic AI without modifying the game cache.")
     parser.add_argument("--db", type=Path, default=default_database())
@@ -221,11 +299,12 @@ def main() -> int:
                 errors.extend(validate_items(target))
                 errors.extend(validate_lua_functions(target, lua_file))
                 errors.extend(validate_invariants(target))
+                errors.extend(validate_relative_pacing(target))
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 5:
-                    errors.append(f"expected 5 adaptive strategies, found {strategy_count}")
+                if strategy_count != 7:
+                    errors.append(f"expected 7 adaptive strategies, found {strategy_count}")
 
     if errors:
         print("VALIDATION FAILED")
@@ -236,7 +315,7 @@ def main() -> int:
     print("VALIDATION PASSED")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 5")
+    print("- adaptive strategies: 7 (including 2 player-relative pacing bands)")
     print("- game cache was not modified")
     return 0
 
