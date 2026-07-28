@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="6f0de0e4-37d7-48ad-a6d4-4a958d76e7f1" version="1">
+  <Properties>
+    <Name>Adaptive Strategic AI</Name>
+    <Description>Fairer Deity openings, adaptive economic recovery, sharper victory priorities, and stronger late-game military planning.</Description>
+    <Teaser>Fair early game. Dangerous late game.</Teaser>
+    <Authors>30474</Authors>
+    <AffectsSavedGames>1</AffectsSavedGames>
+    <SupportsMultiplayer>1</SupportsMultiplayer>
+    <CompatibleVersions>2.0</CompatibleVersions>
+  </Properties>
+  <Dependencies>
+    <Mod id="4873eb62-8ccc-4574-b784-dda455e74e68" title="Gathering Storm" />
+  </Dependencies>
+  <ActionCriteria>
+    <Criteria id="GatheringStorm">
+      <GameCoreInUse>Expansion2</GameCoreInUse>
+    </Criteria>
+  </ActionCriteria>
+  <InGameActions>
+    <UpdateDatabase id="ASAI_Database" criteria="GatheringStorm">
+      <Properties>
+        <LoadOrder>900</LoadOrder>
+      </Properties>
+      <File>Core/01_Difficulty.sql</File>
+      <File>AI/10_CoreEconomy.sql</File>
+      <File>AI/20_AdaptiveStrategies.sql</File>
+      <File>AI/30_VictoryFocus.sql</File>
+      <File>AI/40_Military.sql</File>
+    </UpdateDatabase>
+    <AddGameplayScripts id="ASAI_Gameplay" criteria="GatheringStorm">
+      <Properties>
+        <LoadOrder>910</LoadOrder>
+      </Properties>
+      <File>Lua/AdaptiveStrategicAI.lua</File>
+    </AddGameplayScripts>
+  </InGameActions>
+  <Files>
+    <File>Core/01_Difficulty.sql</File>
+    <File>AI/10_CoreEconomy.sql</File>
+    <File>AI/20_AdaptiveStrategies.sql</File>
+    <File>AI/30_VictoryFocus.sql</File>
+    <File>AI/40_Military.sql</File>
+    <File>Lua/AdaptiveStrategicAI.lua</File>
+  </Files>
+</Mod>

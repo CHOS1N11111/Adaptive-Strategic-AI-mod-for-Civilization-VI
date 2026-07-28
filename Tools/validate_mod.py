@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import argparse
+import os
+import sqlite3
+import sys
+import xml.etree.ElementTree as ET
+import zlib
+from pathlib import Path
+
+
+ITEM_TABLES = {
+    "PseudoYields": ("PseudoYields", "PseudoYieldType"),
+    "Yields": ("Yields", "YieldType"),
+    "Units": ("Units", "UnitType"),
+    "Districts": ("Districts", "DistrictType"),
+    "Buildings": ("Buildings", "BuildingType"),
+    "Projects": ("Projects", "ProjectType"),
+    "Technologies": ("Technologies", "TechnologyType"),
+    "Civics": ("Civics", "CivicType"),
+    "UnitPromotionClasses": ("UnitPromotionClasses", "PromotionClassType"),
+    "AiOperationTypes": ("AiOperationTypes", "OperationType"),
+    "DiplomaticActions": ("DiplomaticActions", "DiplomaticActionType"),
+}
+
+EXPANSION_ONLY_ITEMS = {
+    "PSEUDOYIELD_RELIGIOUS_CONVERT_EMPIRE",
+    "PSEUDOYIELD_DIPLOMATIC_FAVOR",
+    "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
+}
+
+
+def default_database() -> Path:
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
+    return (
+        local_app_data
+        / "Firaxis Games"
+        / "Sid Meier's Civilization VI"
+        / "Cache"
+        / "DebugGameplay.sqlite"
+    )
+
+
+def database_files(modinfo: Path) -> list[Path]:
+    root = ET.parse(modinfo).getroot()
+    files: list[Path] = []
+    for action in root.findall("./InGameActions/UpdateDatabase"):
+        files.extend(modinfo.parent / node.text for node in action.findall("File") if node.text)
+    return files
+
+
+def declared_files(modinfo: Path) -> list[Path]:
+    root = ET.parse(modinfo).getroot()
+    result: list[Path] = []
+    for node in root.findall("./Files/File"):
+        if node.text:
+            result.append(modinfo.parent / node.text)
+    for node in root.findall("./InGameActions/AddGameplayScripts/File"):
+        if node.text:
+            result.append(modinfo.parent / node.text)
+    return result
+
+
+def foreign_key_errors(connection: sqlite3.Connection) -> set[tuple[object, ...]]:
+    return {tuple(row) for row in connection.execute("PRAGMA foreign_key_check")}
+
+
+def register_game_sql_functions(connection: sqlite3.Connection) -> None:
+    def make_hash(value: object) -> int:
+        raw = str(value).encode("utf-8")
+        unsigned = zlib.crc32(raw)
+        return unsigned if unsigned < 2**31 else unsigned - 2**32
+
+    connection.create_function("Make_Hash", 1, make_hash)
+
+
+def validate_items(connection: sqlite3.Connection) -> list[str]:
+    errors: list[str] = []
+    rows = connection.execute(
+        """
+        SELECT l.ListType, l.System, f.Item
+        FROM AiLists AS l
+        JOIN AiFavoredItems AS f ON f.ListType = l.ListType
+        WHERE l.ListType LIKE 'ASAI_%'
+        ORDER BY l.ListType, f.Item
+        """
+    )
+    for list_type, system, item in rows:
+        mapping = ITEM_TABLES.get(system)
+        if mapping is None or item in EXPANSION_ONLY_ITEMS:
+            continue
+        table, column = mapping
+        found = connection.execute(
+            f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1", (item,)
+        ).fetchone()
+        if found is None:
+            errors.append(f"{list_type}: {item} is not valid for {system}")
+    return errors
+
+
+def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> list[str]:
+    source = lua_file.read_text(encoding="utf-8")
+    errors: list[str] = []
+    functions = connection.execute(
+        """
+        SELECT DISTINCT StringValue
+        FROM StrategyConditions
+        WHERE StrategyType LIKE 'ASAI_%'
+          AND ConditionFunction = 'Call Lua Function'
+        """
+    )
+    for (name,) in functions:
+        if f"function {name}(" not in source:
+            errors.append(f"Lua function is missing: {name}")
+        if f"GameEvents.{name}.Add({name})" not in source:
+            errors.append(f"GameEvents registration is missing: {name}")
+    return errors
+
+
+def validate_invariants(connection: sqlite3.Connection) -> list[str]:
+    errors: list[str] = []
+    ai_settlers = connection.execute(
+        """
+        SELECT COUNT(*) FROM MajorStartingUnits
+        WHERE Era = 'ERA_ANCIENT' AND AiOnly = 1 AND Unit = 'UNIT_SETTLER'
+        """
+    ).fetchone()[0]
+    if ai_settlers != 0:
+        errors.append(f"expected no free Ancient AI settlers, found {ai_settlers}")
+
+    expected_arguments = {
+        ("ASAI_DEITY_OPENING_SCIENCE", "Amount"): "-22",
+        ("ASAI_DEITY_OPENING_PRODUCTION", "Amount"): "-60",
+        ("ASAI_DEITY_INFORMATION_SCIENCE", "Amount"): "8",
+        ("ASAI_DEITY_INFORMATION_PRODUCTION", "Amount"): "15",
+        ("ASAI_DEITY_OPENING_COMBAT", "Amount"): "-3",
+        ("ASAI_DEITY_MODERN_COMBAT", "Amount"): "1",
+    }
+    for key, expected in expected_arguments.items():
+        row = connection.execute(
+            "SELECT Value FROM ModifierArguments WHERE ModifierId = ? AND Name = ?", key
+        ).fetchone()
+        actual = None if row is None else str(row[0])
+        if actual != expected:
+            errors.append(f"modifier argument {key} expected {expected}, found {actual}")
+
+    unattached = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM Modifiers AS m
+        LEFT JOIN TraitModifiers AS t
+          ON t.ModifierId = m.ModifierId
+         AND t.TraitType = 'TRAIT_LEADER_MAJOR_CIV'
+        WHERE m.ModifierId LIKE 'ASAI_DEITY_%'
+          AND t.ModifierId IS NULL
+        """
+    ).fetchone()[0]
+    if unattached:
+        errors.append(f"found {unattached} unattached Deity modifiers")
+
+    for pseudo_yield in (
+        "PSEUDOYIELD_IMPROVEMENT",
+        "PSEUDOYIELD_UNIT_TRADE",
+        "PSEUDOYIELD_UNIT_AIR_COMBAT",
+    ):
+        value = connection.execute(
+            "SELECT DefaultValue FROM PseudoYields WHERE PseudoYieldType = ?",
+            (pseudo_yield,),
+        ).fetchone()[0]
+        if value < 4.0:
+            errors.append(f"{pseudo_yield} expected at least 4.0, found {value}")
+
+    walled = connection.execute(
+        """
+        SELECT MustHaveUnits, MaxTargetDistInArea
+        FROM AiOperationDefs WHERE OperationName = 'Attack Walled City'
+        """
+    ).fetchone()
+    if walled != (7, 10):
+        errors.append(f"walled-city operation expected (7, 10), found {walled}")
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate Adaptive Strategic AI without modifying the game cache.")
+    parser.add_argument("--db", type=Path, default=default_database())
+    args = parser.parse_args()
+
+    mod_root = Path(__file__).resolve().parents[1]
+    modinfo = mod_root / "AdaptiveStrategicAI.modinfo"
+    lua_file = mod_root / "Lua" / "AdaptiveStrategicAI.lua"
+    errors: list[str] = []
+
+    try:
+        ET.parse(modinfo)
+    except (OSError, ET.ParseError) as error:
+        print(f"modinfo error: {error}")
+        return 1
+
+    for path in declared_files(modinfo):
+        if not path.is_file():
+            errors.append(f"declared file is missing: {path.relative_to(mod_root)}")
+
+    if not args.db.is_file():
+        errors.append(f"reference database is missing: {args.db}")
+    else:
+        with sqlite3.connect(args.db) as source, sqlite3.connect(":memory:") as target:
+            source.backup(target)
+            register_game_sql_functions(target)
+            baseline_fk = foreign_key_errors(target)
+            target.execute("PRAGMA foreign_keys = ON")
+            for sql_file in database_files(modinfo):
+                try:
+                    target.executescript(sql_file.read_text(encoding="utf-8"))
+                except (OSError, sqlite3.Error) as error:
+                    errors.append(f"{sql_file.name}: {error}")
+                    break
+            else:
+                new_fk = foreign_key_errors(target) - baseline_fk
+                errors.extend(f"new foreign-key error: {row}" for row in sorted(new_fk))
+                errors.extend(validate_items(target))
+                errors.extend(validate_lua_functions(target, lua_file))
+                errors.extend(validate_invariants(target))
+                strategy_count = target.execute(
+                    "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
+                ).fetchone()[0]
+                if strategy_count != 5:
+                    errors.append(f"expected 5 adaptive strategies, found {strategy_count}")
+
+    if errors:
+        print("VALIDATION FAILED")
+        for error in errors:
+            print(f"- {error}")
+        return 1
+
+    print("VALIDATION PASSED")
+    print(f"- modinfo: {modinfo.name}")
+    print(f"- database scripts: {len(database_files(modinfo))}")
+    print("- adaptive strategies: 5")
+    print("- game cache was not modified")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
