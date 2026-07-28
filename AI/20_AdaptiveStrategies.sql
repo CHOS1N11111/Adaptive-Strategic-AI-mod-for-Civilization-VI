@@ -172,7 +172,7 @@ VALUES
     ('ASAI_RelativeCatchupUnits', 'UNIT_TRADER', 1, 20),
     ('ASAI_RelativeCatchupYields', 'YIELD_PRODUCTION', 1, 8),
     ('ASAI_RelativeCatchupYields', 'YIELD_SCIENCE', 1, 10),
-    ('ASAI_RelativeCatchupYields', 'YIELD_CULTURE', 1, 8),
+    ('ASAI_RelativeCatchupYields', 'YIELD_CULTURE', 1, 9),
     ('ASAI_RelativeCatchupYields', 'YIELD_GOLD', 1, 5),
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_CAMPUS', 1, 10),
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_THEATER', 1, 10),

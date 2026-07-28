@@ -12,13 +12,13 @@ local RELATIVE_SCORE_PROPERTY = "ASAI_RELATIVE_SCORE_X1000";
 local RELATIVE_TURN_PROPERTY = "ASAI_RELATIVE_LAST_EVAL_TURN";
 
 local RELATIVE_COMPONENTS = {
-    { Key = "Techs", Weight = 22 },
-    { Key = "Civics", Weight = 18 },
-    { Key = "Science", Weight = 12 },
-    { Key = "Culture", Weight = 8 },
-    { Key = "Cities", Weight = 10 },
-    { Key = "Population", Weight = 15 },
-    { Key = "Military", Weight = 15 }
+    { Key = "Techs", Parameter = "ASAI_RELATIVE_WEIGHT_TECHS", Weight = 20 },
+    { Key = "Civics", Parameter = "ASAI_RELATIVE_WEIGHT_CIVICS", Weight = 18 },
+    { Key = "Science", Parameter = "ASAI_RELATIVE_WEIGHT_SCIENCE", Weight = 12 },
+    { Key = "Culture", Parameter = "ASAI_RELATIVE_WEIGHT_CULTURE", Weight = 12 },
+    { Key = "Cities", Parameter = "ASAI_RELATIVE_WEIGHT_CITIES", Weight = 10 },
+    { Key = "Population", Parameter = "ASAI_RELATIVE_WEIGHT_POPULATION", Weight = 15 },
+    { Key = "Military", Parameter = "ASAI_RELATIVE_WEIGHT_MILITARY", Weight = 13 }
 };
 
 local function GetNumberParameter(name, fallback)
@@ -266,11 +266,15 @@ local function GetRelativeScore(aiStrength, humanStrength)
     for _, component in ipairs(RELATIVE_COMPONENTS) do
         local humanValue = humanStrength[component.Key];
         local ratio = 1;
+        local weight = math.max(0, GetNumberParameter(component.Parameter, component.Weight));
         if humanValue > 0 then
             ratio = aiStrength[component.Key] / humanValue;
         end
-        weightedScore = weightedScore + Clamp(ratio, minimum, maximum) * component.Weight;
-        totalWeight = totalWeight + component.Weight;
+        weightedScore = weightedScore + Clamp(ratio, minimum, maximum) * weight;
+        totalWeight = totalWeight + weight;
+    end
+    if totalWeight <= 0 then
+        return 1;
     end
     return weightedScore / totalWeight;
 end

@@ -193,6 +193,13 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_LEADING_ENTER_X100",
         "ASAI_RELATIVE_COMPONENT_MIN_X100",
         "ASAI_RELATIVE_COMPONENT_MAX_X100",
+        "ASAI_RELATIVE_WEIGHT_TECHS",
+        "ASAI_RELATIVE_WEIGHT_CIVICS",
+        "ASAI_RELATIVE_WEIGHT_SCIENCE",
+        "ASAI_RELATIVE_WEIGHT_CULTURE",
+        "ASAI_RELATIVE_WEIGHT_CITIES",
+        "ASAI_RELATIVE_WEIGHT_POPULATION",
+        "ASAI_RELATIVE_WEIGHT_MILITARY",
     )
     parameters: dict[str, int] = {}
     for name in parameter_names:
@@ -224,6 +231,14 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     )
     if None not in bounds and not 0 < bounds[0] < 100 < bounds[1]:
         errors.append(f"relative component bounds are invalid: {bounds}")
+
+    weight_names = tuple(name for name in parameter_names if "_WEIGHT_" in name)
+    if all(name in parameters for name in weight_names):
+        weights = [parameters[name] for name in weight_names]
+        if any(weight < 0 for weight in weights):
+            errors.append(f"relative component weights cannot be negative: {weights}")
+        if sum(weights) != 100:
+            errors.append(f"relative component weights must total 100, found {sum(weights)}")
 
     expected_strategies = {
         "ASAI_STRATEGY_RELATIVE_CATCHUP",
