@@ -127,6 +127,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
 
     if "pcall(evaluator, playerID, threshold)" not in source:
         errors.append("Lua strategy condition guard does not use pcall")
+    if "pcall(WriteMetrics, playerID, firstTimeThisTurn)" not in source:
+        errors.append("Lua metrics logger is not fail-closed")
     if "GetNumOutgoingRoutes" in source:
         errors.append("GetNumOutgoingRoutes is unavailable in gameplay-script context")
     if "GetMilitaryStrengthWithoutTreasury" in source or ":GetMilitaryStrength()" in source:
@@ -135,6 +137,21 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("player properties must be stored before numeric conversion")
     if "local function EstimateMilitaryStrength(player)" not in source:
         errors.append("gameplay-safe military strength estimator is missing")
+    if "PlayerManager.GetAliveIDs()" not in source:
+        errors.append("war detection must include alive major and minor players")
+    if "for _, otherID in ipairs(PlayerManager.GetAliveMajorIDs()) do" in source:
+        errors.append("war detection still ignores wars against city-states")
+    if "not otherPlayer:IsBarbarian()" not in source:
+        errors.append("war detection must exclude barbarians")
+    infrastructure_fragments = (
+        'ASAI_INFRA_IMPROVEMENTS_PER_CITY_X100", 200',
+        'ASAI_INFRA_IMPROVEMENTS_PER_POP_X100", 65',
+        'ASAI_INFRA_OWNED_PLOTS_CAP_X100", 30',
+        "math.max(cityFloor, math.min(populationTarget, landCap))",
+    )
+    for fragment in infrastructure_fragments:
+        if fragment not in source:
+            errors.append(f"infrastructure target fragment is missing: {fragment}")
     return errors
 
 
@@ -212,8 +229,16 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_TRAILING_EXIT_X100",
         "ASAI_RELATIVE_LEADING_EXIT_X100",
         "ASAI_RELATIVE_LEADING_ENTER_X100",
+        "ASAI_RELATIVE_LEADING_PILLAR_MIN_X100",
         "ASAI_RELATIVE_COMPONENT_MIN_X100",
         "ASAI_RELATIVE_COMPONENT_MAX_X100",
+        "ASAI_RELATIVE_MILITARY_MAX_X100",
+        "ASAI_RELATIVE_SCIENCE_ENTER_X100",
+        "ASAI_RELATIVE_SCIENCE_EXIT_X100",
+        "ASAI_RELATIVE_CULTURE_ENTER_X100",
+        "ASAI_RELATIVE_CULTURE_EXIT_X100",
+        "ASAI_RELATIVE_EMPIRE_ENTER_X100",
+        "ASAI_RELATIVE_EMPIRE_EXIT_X100",
         "ASAI_RELATIVE_WEIGHT_TECHS",
         "ASAI_RELATIVE_WEIGHT_CIVICS",
         "ASAI_RELATIVE_WEIGHT_SCIENCE",
@@ -253,6 +278,29 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     if None not in bounds and not 0 < bounds[0] < 100 < bounds[1]:
         errors.append(f"relative component bounds are invalid: {bounds}")
 
+    military_maximum = parameters.get("ASAI_RELATIVE_MILITARY_MAX_X100")
+    if None not in bounds and military_maximum is not None:
+        if not 100 <= military_maximum <= bounds[1]:
+            errors.append(
+                "relative military cap must be between 100 and the component maximum: "
+                f"{military_maximum}"
+            )
+
+    leading_pillar_minimum = parameters.get("ASAI_RELATIVE_LEADING_PILLAR_MIN_X100")
+    if leading_pillar_minimum is not None and not 0 < leading_pillar_minimum <= 100:
+        errors.append(
+            f"relative leading pillar minimum is invalid: {leading_pillar_minimum}"
+        )
+
+    for pillar in ("SCIENCE", "CULTURE", "EMPIRE"):
+        enter = parameters.get(f"ASAI_RELATIVE_{pillar}_ENTER_X100")
+        exit_ = parameters.get(f"ASAI_RELATIVE_{pillar}_EXIT_X100")
+        if enter is not None and exit_ is not None and not 0 < enter < exit_ < 100:
+            errors.append(
+                f"relative {pillar.lower()} recovery thresholds are invalid: "
+                f"{(enter, exit_)}"
+            )
+
     weight_names = tuple(name for name in parameter_names if "_WEIGHT_" in name)
     if all(name in parameters for name in weight_names):
         weights = [parameters[name] for name in weight_names]
@@ -277,12 +325,35 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             f"expected {sorted(expected_strategies)}, found {sorted(actual_strategies)}"
         )
 
+    expected_recovery_strategies = {
+        "ASAI_STRATEGY_SCIENCE_RECOVERY",
+        "ASAI_STRATEGY_CULTURE_RECOVERY",
+        "ASAI_STRATEGY_EMPIRE_RECOVERY",
+    }
+    actual_recovery_strategies = {
+        row[0]
+        for row in connection.execute(
+            "SELECT StrategyType FROM Strategies "
+            "WHERE StrategyType IN (?, ?, ?)",
+            tuple(sorted(expected_recovery_strategies)),
+        )
+    }
+    if actual_recovery_strategies != expected_recovery_strategies:
+        errors.append(
+            "pillar recovery strategies differ: "
+            f"expected {sorted(expected_recovery_strategies)}, "
+            f"found {sorted(actual_recovery_strategies)}"
+        )
+
     oversized = list(
         connection.execute(
             """
             SELECT ListType, Item, Value
             FROM AiFavoredItems
-            WHERE ListType LIKE 'ASAI_Relative%'
+            WHERE (ListType LIKE 'ASAI_Relative%'
+                   OR ListType LIKE 'ASAI_ScienceRecovery%'
+                   OR ListType LIKE 'ASAI_CultureRecovery%'
+                   OR ListType LIKE 'ASAI_EmpireRecovery%')
               AND ABS(Value) > 25
             ORDER BY ListType, Item
             """
@@ -339,8 +410,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 7:
-                    errors.append(f"expected 7 adaptive strategies, found {strategy_count}")
+                if strategy_count != 10:
+                    errors.append(f"expected 10 adaptive strategies, found {strategy_count}")
 
     if errors:
         print("VALIDATION FAILED")
@@ -351,7 +422,7 @@ def main() -> int:
     print("VALIDATION PASSED")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 7 (including 2 player-relative pacing bands)")
+    print("- adaptive strategies: 10 (including 3 pillar recovery strategies)")
     print("- game cache was not modified")
     return 0
 

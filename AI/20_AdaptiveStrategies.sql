@@ -7,7 +7,10 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
-    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'KIND_VICTORY_STRATEGY');
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 'KIND_VICTORY_STRATEGY');
 
 INSERT OR IGNORE INTO Strategies
     (StrategyType, NumConditionsNeeded)
@@ -18,7 +21,10 @@ VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 1),
     ('ASAI_STRATEGY_LATE_GAME', 1),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 1),
-    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 1);
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 1),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 1),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 1),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 1);
 
 INSERT OR IGNORE INTO StrategyConditions
     (StrategyType, ConditionFunction, StringValue, ThresholdValue, Disqualifier)
@@ -36,7 +42,13 @@ VALUES
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Call Lua Function', 'ASAI_IsRelativeCatchup', 0, 0),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'Is Not Major', NULL, 0, 1),
-    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'Call Lua Function', 'ASAI_IsRelativeConsolidate', 0, 0);
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'Call Lua Function', 'ASAI_IsRelativeConsolidate', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'Call Lua Function', 'ASAI_IsScienceRecovery', 0, 0),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'Call Lua Function', 'ASAI_IsCultureRecovery', 0, 0),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 'Call Lua Function', 'ASAI_IsEmpireRecovery', 0, 0);
 
 INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_InfraPseudoYields'),
@@ -67,7 +79,20 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_RelativeCatchupWonders'),
     ('ASAI_RelativeLeadPseudoYields'),
     ('ASAI_RelativeLeadYields'),
-    ('ASAI_RelativeLeadWonders');
+    ('ASAI_RelativeLeadWonders'),
+    ('ASAI_ScienceRecoveryDistricts'),
+    ('ASAI_ScienceRecoveryBuildings'),
+    ('ASAI_ScienceRecoveryYields'),
+    ('ASAI_ScienceRecoveryWonders'),
+    ('ASAI_CultureRecoveryPseudoYields'),
+    ('ASAI_CultureRecoveryDistricts'),
+    ('ASAI_CultureRecoveryBuildings'),
+    ('ASAI_CultureRecoveryYields'),
+    ('ASAI_CultureRecoveryWonders'),
+    ('ASAI_EmpireRecoveryPseudoYields'),
+    ('ASAI_EmpireRecoveryUnits'),
+    ('ASAI_EmpireRecoveryYields'),
+    ('ASAI_EmpireRecoveryWonders');
 
 INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_InfraPseudoYields', 'PseudoYields'),
@@ -98,7 +123,20 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_RelativeCatchupWonders', 'Buildings'),
     ('ASAI_RelativeLeadPseudoYields', 'PseudoYields'),
     ('ASAI_RelativeLeadYields', 'Yields'),
-    ('ASAI_RelativeLeadWonders', 'Buildings');
+    ('ASAI_RelativeLeadWonders', 'Buildings'),
+    ('ASAI_ScienceRecoveryDistricts', 'Districts'),
+    ('ASAI_ScienceRecoveryBuildings', 'Buildings'),
+    ('ASAI_ScienceRecoveryYields', 'Yields'),
+    ('ASAI_ScienceRecoveryWonders', 'Buildings'),
+    ('ASAI_CultureRecoveryPseudoYields', 'PseudoYields'),
+    ('ASAI_CultureRecoveryDistricts', 'Districts'),
+    ('ASAI_CultureRecoveryBuildings', 'Buildings'),
+    ('ASAI_CultureRecoveryYields', 'Yields'),
+    ('ASAI_CultureRecoveryWonders', 'Buildings'),
+    ('ASAI_EmpireRecoveryPseudoYields', 'PseudoYields'),
+    ('ASAI_EmpireRecoveryUnits', 'Units'),
+    ('ASAI_EmpireRecoveryYields', 'Yields'),
+    ('ASAI_EmpireRecoveryWonders', 'Buildings');
 
 INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'ASAI_InfraPseudoYields'),
@@ -129,7 +167,20 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupWonders'),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadPseudoYields'),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadYields'),
-    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadWonders');
+    ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadWonders'),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'ASAI_ScienceRecoveryDistricts'),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'ASAI_ScienceRecoveryBuildings'),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'ASAI_ScienceRecoveryYields'),
+    ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'ASAI_ScienceRecoveryWonders'),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'ASAI_CultureRecoveryPseudoYields'),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'ASAI_CultureRecoveryDistricts'),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'ASAI_CultureRecoveryBuildings'),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'ASAI_CultureRecoveryYields'),
+    ('ASAI_STRATEGY_CULTURE_RECOVERY', 'ASAI_CultureRecoveryWonders'),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 'ASAI_EmpireRecoveryPseudoYields'),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 'ASAI_EmpireRecoveryUnits'),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 'ASAI_EmpireRecoveryYields'),
+    ('ASAI_STRATEGY_EMPIRE_RECOVERY', 'ASAI_EmpireRecoveryWonders');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -145,13 +196,13 @@ VALUES
     ('ASAI_GoldDistricts', 'DISTRICT_HARBOR', 1, 30),
     ('ASAI_GoldYields', 'YIELD_GOLD', 1, 60),
     ('ASAI_GoldYields', 'YIELD_PRODUCTION', 1, 10),
-    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 35),
+    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 45),
     ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_AIR_COMBAT', 1, 25),
-    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 30),
+    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 40),
     ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -35),
     ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_MELEE', 1, 10),
-    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_RANGED', 1, 15),
-    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_SIEGE', 1, 35),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_RANGED', 1, 25),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_SIEGE', 1, 50),
     ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_AIR_FIGHTER', 1, 20),
     ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_AIR_BOMBER', 1, 30),
     ('ASAI_WarYields', 'YIELD_PRODUCTION', 1, 25),
@@ -184,7 +235,22 @@ VALUES
     ('ASAI_RelativeLeadYields', 'YIELD_PRODUCTION', 1, -3),
     ('ASAI_RelativeLeadYields', 'YIELD_SCIENCE', 1, -6),
     ('ASAI_RelativeLeadYields', 'YIELD_CULTURE', 1, -5),
-    ('ASAI_RelativeLeadYields', 'YIELD_GOLD', 1, 3);
+    ('ASAI_RelativeLeadYields', 'YIELD_GOLD', 1, 3),
+    ('ASAI_ScienceRecoveryDistricts', 'DISTRICT_CAMPUS', 1, 16),
+    ('ASAI_ScienceRecoveryYields', 'YIELD_SCIENCE', 1, 12),
+    ('ASAI_ScienceRecoveryYields', 'YIELD_PRODUCTION', 1, 4),
+    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_WRITER', 1, 8),
+    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_ARTIST', 1, 8),
+    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_MUSICIAN', 1, 8),
+    ('ASAI_CultureRecoveryDistricts', 'DISTRICT_THEATER', 1, 20),
+    ('ASAI_CultureRecoveryYields', 'YIELD_CULTURE', 1, 15),
+    ('ASAI_CultureRecoveryYields', 'YIELD_PRODUCTION', 1, 4),
+    ('ASAI_EmpireRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 20),
+    ('ASAI_EmpireRecoveryPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 10),
+    ('ASAI_EmpireRecoveryUnits', 'UNIT_SETTLER', 1, 20),
+    ('ASAI_EmpireRecoveryUnits', 'UNIT_BUILDER', 1, 10),
+    ('ASAI_EmpireRecoveryYields', 'YIELD_FOOD', 1, 12),
+    ('ASAI_EmpireRecoveryYields', 'YIELD_PRODUCTION', 1, 6);
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -202,6 +268,21 @@ WHERE BuildingType IN
     ('BUILDING_FACTORY', 'BUILDING_COAL_POWER_PLANT',
      'BUILDING_FOSSIL_FUEL_POWER_PLANT', 'BUILDING_POWER_PLANT',
      'BUILDING_HANGAR', 'BUILDING_AIRPORT');
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScienceRecoveryBuildings', BuildingType, 1, 18
+FROM Buildings
+WHERE BuildingType IN
+    ('BUILDING_LIBRARY', 'BUILDING_UNIVERSITY', 'BUILDING_RESEARCH_LAB');
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_CultureRecoveryBuildings', BuildingType, 1, 20
+FROM Buildings
+WHERE BuildingType IN
+    ('BUILDING_AMPHITHEATER', 'BUILDING_ART_MUSEUM',
+     'BUILDING_ARCHAEOLOGICAL_MUSEUM', 'BUILDING_BROADCAST_CENTER');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -224,5 +305,23 @@ WHERE IsWonder = 1;
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
 SELECT 'ASAI_RelativeLeadWonders', BuildingType, 1, -8
+FROM Buildings
+WHERE IsWonder = 1;
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScienceRecoveryWonders', BuildingType, 1, -8
+FROM Buildings
+WHERE IsWonder = 1;
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_CultureRecoveryWonders', BuildingType, 1, -8
+FROM Buildings
+WHERE IsWonder = 1;
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_EmpireRecoveryWonders', BuildingType, 1, -10
 FROM Buildings
 WHERE IsWonder = 1;
