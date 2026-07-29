@@ -29,6 +29,7 @@ docs/
 ### quality
 
 - [`TESTING.md`](quality/TESTING.md)：固定种子测试矩阵、指标、日志要求和发布门槛。
+- [`reports/`](quality/reports/README.md)：按对局保存的实测分析、问题证据和优化结论。
 
 ### process
 
