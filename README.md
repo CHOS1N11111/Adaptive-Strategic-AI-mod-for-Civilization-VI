@@ -1,4 +1,4 @@
-# Adaptive Strategic AI 0.2.2
+# Adaptive Strategic AI 0.2.3
 
 这不是“给 AI 偷资源”的作弊包，而是一个可审计、可测量的 AI 工程基线。当前只支持 Gathering Storm，主要针对远古时代开局、标准速度和神级难度调校；建议新开游戏测试。0.2 系列加入了以玩家为参照的小幅节奏调整，目的是减少 AI 过早滚雪球或中后期完全掉队。
 
@@ -50,6 +50,6 @@
 python .\Tools\validate_mod.py
 ```
 
-`AI/10_CoreEconomy.sql` 中的 `ASAI_ENABLE_METRICS` 默认是 `0`。改成 `1` 后，新游戏会每 25 回合向 `Lua.log` 输出 `ASAI_METRIC` 行，用于比较固定地图种子下的城市、人口、改良、商路、科技、市政、军力、相对实力和当前节奏档位。每次档位改变也会输出一条 `ASAI_PACING`。
+`AI/10_CoreEconomy.sql` 中的 `ASAI_ENABLE_METRICS` 在当前测试版默认为 `1`，每 5 回合向 `Lua.log` 输出 `ASAI_METRIC` 行，用于比较固定地图种子下的城市、人口、改良、商路、科技、市政、军力、相对实力和当前节奏档位。每次档位改变也会输出一条 `ASAI_PACING`；验证稳定后可将开关改回 `0`。
 
 “比现有 Mod 更好”必须通过多局对照证明。0.2 除原有目标外，还应检查：大部分时间相对实力保持在 85%-115% 附近；档位不会频繁振荡；不同胜利路线和领袖特征仍然可辨识。

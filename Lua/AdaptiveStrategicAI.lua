@@ -242,6 +242,22 @@ local function CountResearched(player)
     return techs, civics;
 end
 
+local function EstimateMilitaryStrength(player)
+    local strength = 0;
+    for _, unit in player:GetUnits():Members() do
+        local unitInfo = GameInfo.Units[unit:GetType()];
+        if unitInfo ~= nil then
+            strength = strength + math.max(
+                tonumber(unitInfo.Combat) or 0,
+                tonumber(unitInfo.RangedCombat) or 0,
+                tonumber(unitInfo.Bombard) or 0,
+                tonumber(unitInfo.AntiAirCombat) or 0
+            );
+        end
+    end
+    return strength;
+end
+
 local function GetStrengthSnapshot(playerID)
     local turn = Game.GetCurrentGameTurn();
     local cached = m_StrengthSnapshots[playerID];
@@ -266,7 +282,7 @@ local function GetStrengthSnapshot(playerID)
         Culture = math.max(0, player:GetCulture():GetCultureYield()),
         Cities = cities,
         Population = population,
-        Military = math.max(0, player:GetStats():GetMilitaryStrengthWithoutTreasury())
+        Military = EstimateMilitaryStrength(player)
     };
     m_StrengthSnapshots[playerID] = snapshot;
     return snapshot;

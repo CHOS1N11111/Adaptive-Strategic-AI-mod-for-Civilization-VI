@@ -34,9 +34,9 @@ WHERE ListType = 'DefaultYieldBias' AND Item = 'YIELD_GOLD';
 
 -- Defaults used by the gameplay script and the optional metrics logger.
 INSERT OR REPLACE INTO GlobalParameters (Name, Value) VALUES
-    ('ASAI_VERSION', '0.2.2'),
-    ('ASAI_ENABLE_METRICS', 0),
-    ('ASAI_METRICS_INTERVAL', 25),
+    ('ASAI_VERSION', '0.2.3'),
+    ('ASAI_ENABLE_METRICS', 1),
+    ('ASAI_METRICS_INTERVAL', 5),
     ('ASAI_INFRA_START_TURN', 20),
     ('ASAI_INFRA_IMPROVEMENTS_PER_POP_X100', 80),
     ('ASAI_GOLD_RESERVE_PER_CITY', 15),

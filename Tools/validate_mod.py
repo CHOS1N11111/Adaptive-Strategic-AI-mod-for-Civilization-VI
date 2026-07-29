@@ -129,8 +129,12 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("Lua strategy condition guard does not use pcall")
     if "GetNumOutgoingRoutes" in source:
         errors.append("GetNumOutgoingRoutes is unavailable in gameplay-script context")
+    if "GetMilitaryStrengthWithoutTreasury" in source or ":GetMilitaryStrength()" in source:
+        errors.append("player military-strength methods are unavailable in gameplay-script context")
     if "tonumber(player:GetProperty(" in source:
         errors.append("player properties must be stored before numeric conversion")
+    if "local function EstimateMilitaryStrength(player)" not in source:
+        errors.append("gameplay-safe military strength estimator is missing")
     return errors
 
 
