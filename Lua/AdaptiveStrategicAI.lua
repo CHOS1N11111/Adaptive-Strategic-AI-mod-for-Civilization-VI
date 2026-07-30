@@ -5,6 +5,7 @@ local m_StrengthSnapshots = {};
 local m_HumanReference = { Turn = -1, Value = nil };
 local m_RelativeRuntime = {};
 local m_ConditionErrors = {};
+local LAST_MAJOR_COMBAT_TURN_PROPERTY = "ASAI_LAST_MAJOR_COMBAT_TURN";
 
 local RELATIVE_CATCHUP = -1;
 local RELATIVE_MATCHED = 0;
@@ -207,6 +208,7 @@ end
 local function CountWarsByOpponentType(playerID, player)
     local majorWars = 0;
     local minorWars = 0;
+    local majorOpponents = {};
     local diplomacy = player:GetDiplomacy();
     for _, otherID in ipairs(PlayerManager.GetAliveIDs()) do
         local otherPlayer = Players[otherID];
@@ -216,12 +218,54 @@ local function CountWarsByOpponentType(playerID, player)
             and diplomacy:IsAtWarWith(otherID) then
             if otherPlayer:IsMajor() then
                 majorWars = majorWars + 1;
+                table.insert(majorOpponents, otherID);
             else
                 minorWars = minorWars + 1;
             end
         end
     end
-    return majorWars, minorWars;
+    return majorWars, minorWars, majorOpponents;
+end
+
+local function HasNearbyEnemyCity(player, opponent, maximumDistance)
+    for _, city in player:GetCities():Members() do
+        for _, enemyCity in opponent:GetCities():Members() do
+            local distance = Map.GetPlotDistance(
+                city:GetX(),
+                city:GetY(),
+                enemyCity:GetX(),
+                enemyCity:GetY()
+            );
+            if distance <= maximumDistance then
+                return true;
+            end
+        end
+    end
+    return false;
+end
+
+local function CountActiveMajorWars(player, majorOpponents, turn)
+    local activeWars = 0;
+    local frontDistance = math.max(
+        1,
+        GetNumberParameter("ASAI_WAR_FRONT_CITY_DISTANCE", 12)
+    );
+    for _, opponentID in ipairs(majorOpponents) do
+        local opponent = Players[opponentID];
+        if opponent ~= nil and HasNearbyEnemyCity(player, opponent, frontDistance) then
+            activeWars = activeWars + 1;
+        end
+    end
+
+    local rawLastCombatTurn = player:GetProperty(LAST_MAJOR_COMBAT_TURN_PROPERTY);
+    local lastCombatTurn = tonumber(rawLastCombatTurn) or -100000;
+    local recentWindow = ScaleStandardTurns(
+        GetNumberParameter("ASAI_WAR_RECENT_COMBAT_STANDARD", 8)
+    );
+    if activeWars == 0 and turn - lastCombatTurn <= recentWindow then
+        activeWars = 1;
+    end
+    return activeWars, lastCombatTurn;
 end
 
 local function GetSnapshot(playerID)
@@ -260,7 +304,15 @@ local function GetSnapshot(playerID)
         m_ConditionErrors.ASAI_CountInFlightUnits = true;
     end
     local ownedPlots, improvements = CountOwnedPlots(playerID);
-    local majorWars, minorWars = CountWarsByOpponentType(playerID, player);
+    local majorWars, minorWars, majorOpponents = CountWarsByOpponentType(
+        playerID,
+        player
+    );
+    local activeMajorWars, lastMajorCombatTurn = CountActiveMajorWars(
+        player,
+        majorOpponents,
+        turn
+    );
     local trade = player:GetTrade();
     local treasury = player:GetTreasury();
     local snapshot = {
@@ -280,6 +332,8 @@ local function GetSnapshot(playerID)
         NetGold = treasury:GetGoldYield() - treasury:GetTotalMaintenance(),
         Wars = majorWars + minorWars,
         MajorWars = majorWars,
+        ActiveMajorWars = activeMajorWars,
+        LastMajorCombatTurn = lastMajorCombatTurn,
         MinorWars = minorWars,
         Era = player:GetEra()
     };
@@ -364,7 +418,7 @@ local function IsWarMobilization(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
-    return GetSnapshot(playerID).MajorWars > 0;
+    return GetSnapshot(playerID).ActiveMajorWars > 0;
 end
 function ASAI_IsWarMobilization(playerID, threshold)
     return RunStrategyCondition(
@@ -1358,7 +1412,7 @@ local function IsExpansionRecovery(playerID, threshold)
         return false;
     end
     local snapshot = GetSnapshot(playerID);
-    if snapshot.Cities <= 0 then
+    if snapshot.Cities <= 0 or snapshot.ActiveMajorWars > 0 then
         return false;
     end
     local citiesPerSettler = math.max(
@@ -1377,6 +1431,87 @@ function ASAI_IsExpansionRecovery(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsExpansionRecovery.Add(ASAI_IsExpansionRecovery);
+
+local function IsCombatUnitNear(player, x, y, maximumDistance)
+    for _, unit in player:GetUnits():Members() do
+        local unitInfo = GameInfo.Units[unit:GetType()];
+        if unitInfo ~= nil then
+            local combat = math.max(
+                tonumber(unitInfo.Combat) or 0,
+                tonumber(unitInfo.RangedCombat) or 0,
+                tonumber(unitInfo.Bombard) or 0,
+                tonumber(unitInfo.AntiAirCombat) or 0
+            );
+            if combat > 0
+                and Map.GetPlotDistance(x, y, unit:GetX(), unit:GetY())
+                    <= maximumDistance then
+                return true;
+            end
+        end
+    end
+    for _, city in player:GetCities():Members() do
+        if Map.GetPlotDistance(x, y, city:GetX(), city:GetY()) <= maximumDistance then
+            return true;
+        end
+    end
+    return false;
+end
+
+local function MarkRecentMajorCombat(playerID)
+    if not IsMajorAI(playerID) then
+        return;
+    end
+    Players[playerID]:SetProperty(
+        LAST_MAJOR_COMBAT_TURN_PROPERTY,
+        Game.GetCurrentGameTurn()
+    );
+    m_Snapshots[playerID] = nil;
+end
+
+local function RecordUnitDamage(playerID, unitID, damage)
+    local targetPlayer = Players[playerID];
+    local targetUnit = UnitManager.GetUnit(playerID, unitID);
+    if targetPlayer == nil or targetUnit == nil or not targetPlayer:IsMajor() then
+        return;
+    end
+
+    local diplomacy = targetPlayer:GetDiplomacy();
+    local attributionDistance = math.max(
+        1,
+        GetNumberParameter("ASAI_WAR_COMBAT_ATTRIBUTION_DISTANCE", 4)
+    );
+    for _, opponentID in ipairs(PlayerManager.GetAliveMajorIDs()) do
+        if opponentID ~= playerID and diplomacy:IsAtWarWith(opponentID) then
+            local opponent = Players[opponentID];
+            if opponent ~= nil and IsCombatUnitNear(
+                opponent,
+                targetUnit:GetX(),
+                targetUnit:GetY(),
+                attributionDistance
+            ) then
+                MarkRecentMajorCombat(playerID);
+                MarkRecentMajorCombat(opponentID);
+            end
+        end
+    end
+end
+
+local function OnUnitDamageChanged(playerID, unitID, damage)
+    local success, combatError = pcall(
+        RecordUnitDamage,
+        playerID,
+        unitID,
+        damage
+    );
+    if not success and m_ConditionErrors.ASAI_RecordUnitDamage == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_RecordUnitDamage player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(combatError)
+        ));
+        m_ConditionErrors.ASAI_RecordUnitDamage = true;
+    end
+end
 
 local function WriteMetrics(playerID, firstTimeThisTurn)
     if not firstTimeThisTurn or not IsMajorAI(playerID) then
@@ -1397,8 +1532,11 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local focusAge = relativeState.FocusStartedTurn >= 0
         and GetStandardEquivalentTurn(snapshot.Turn - relativeState.FocusStartedTurn)
         or 0;
+    local combatAge = snapshot.LastMajorCombatTurn > -100000
+        and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
+        or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -1425,6 +1563,8 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         strength.Military,
         snapshot.Wars,
         snapshot.MajorWars,
+        snapshot.ActiveMajorWars,
+        combatAge,
         snapshot.MinorWars,
         snapshot.Era,
         relativeState.RawScores.Overall,
@@ -1492,3 +1632,4 @@ local function LogMetrics(playerID, firstTimeThisTurn)
     end
 end
 Events.PlayerTurnActivated.Add(LogMetrics);
+Events.UnitDamageChanged.Add(OnUnitDamageChanged);

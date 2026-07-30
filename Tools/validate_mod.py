@@ -146,7 +146,14 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "if otherPlayer:IsMajor() then",
         "MajorWars = majorWars",
         "MinorWars = minorWars",
-        "return GetSnapshot(playerID).MajorWars > 0",
+        "local function CountActiveMajorWars(player, majorOpponents, turn)",
+        "ASAI_WAR_FRONT_CITY_DISTANCE",
+        "ASAI_WAR_RECENT_COMBAT_STANDARD",
+        "ASAI_LAST_MAJOR_COMBAT_TURN",
+        "pcall(\n        RecordUnitDamage",
+        "return GetSnapshot(playerID).ActiveMajorWars > 0",
+        "Events.UnitDamageChanged.Add(OnUnitDamageChanged)",
+        "active_major_wars=%d",
     )
     for fragment in war_fragments:
         if fragment not in source:
@@ -305,6 +312,9 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     parameter_names = (
         "ASAI_RELATIVE_PACING_ENABLED",
         "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
+        "ASAI_WAR_FRONT_CITY_DISTANCE",
+        "ASAI_WAR_RECENT_COMBAT_STANDARD",
+        "ASAI_WAR_COMBAT_ATTRIBUTION_DISTANCE",
         "ASAI_RELATIVE_START_TURN_STANDARD",
         "ASAI_RELATIVE_CHECK_INTERVAL_STANDARD",
         "ASAI_RELATIVE_MIN_DWELL_STANDARD",
@@ -423,6 +433,14 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(
             f"expansion cities per in-flight settler must be positive: {expansion_cities}"
         )
+    for name in (
+        "ASAI_WAR_FRONT_CITY_DISTANCE",
+        "ASAI_WAR_RECENT_COMBAT_STANDARD",
+        "ASAI_WAR_COMBAT_ATTRIBUTION_DISTANCE",
+    ):
+        value = parameters.get(name)
+        if value is not None and value <= 0:
+            errors.append(f"active-war parameter must be positive: {name}={value}")
     ema_alpha = parameters.get("ASAI_RELATIVE_EMA_ALPHA_X100")
     if ema_alpha is not None and not 0 < ema_alpha <= 100:
         errors.append(f"relative EMA alpha is invalid: {ema_alpha}")
