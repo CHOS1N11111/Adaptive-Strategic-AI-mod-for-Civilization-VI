@@ -190,11 +190,26 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         'ASAI_INFRA_IMPROVEMENTS_PER_CITY_X100", 200',
         'ASAI_INFRA_IMPROVEMENTS_PER_POP_X100", 65',
         'ASAI_INFRA_OWNED_PLOTS_CAP_X100", 30',
+        "local function CountInFlightUnits(player)",
+        "buildQueue:GetSize()",
+        "buildQueue:GetAt(queueIndex)",
+        "snapshot.InFlightBuilders",
+        "snapshot.InFlightTraders",
         "math.max(cityFloor, math.min(populationTarget, landCap))",
     )
     for fragment in infrastructure_fragments:
         if fragment not in source:
             errors.append(f"infrastructure target fragment is missing: {fragment}")
+    expansion_fragments = (
+        "local function IsExpansionRecovery(playerID, threshold)",
+        "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
+        "snapshot.Settlers + snapshot.InFlightSettlers < maximumInFlight",
+        "function ASAI_IsExpansionRecovery(playerID, threshold)",
+        "settlers_inflight=%d",
+    )
+    for fragment in expansion_fragments:
+        if fragment not in source:
+            errors.append(f"expansion budget fragment is missing: {fragment}")
     return errors
 
 
@@ -289,6 +304,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
 
     parameter_names = (
         "ASAI_RELATIVE_PACING_ENABLED",
+        "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
         "ASAI_RELATIVE_START_TURN_STANDARD",
         "ASAI_RELATIVE_CHECK_INTERVAL_STANDARD",
         "ASAI_RELATIVE_MIN_DWELL_STANDARD",
@@ -402,6 +418,11 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(f"relative cooldown cannot be negative: {cooldown}")
     if confirm_samples is not None and confirm_samples < 2:
         errors.append(f"relative confirmation requires at least two samples: {confirm_samples}")
+    expansion_cities = parameters.get("ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER")
+    if expansion_cities is not None and expansion_cities <= 0:
+        errors.append(
+            f"expansion cities per in-flight settler must be positive: {expansion_cities}"
+        )
     ema_alpha = parameters.get("ASAI_RELATIVE_EMA_ALPHA_X100")
     if ema_alpha is not None and not 0 < ema_alpha <= 100:
         errors.append(f"relative EMA alpha is invalid: {ema_alpha}")
@@ -475,12 +496,14 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_STRATEGY_SCIENCE_RECOVERY",
         "ASAI_STRATEGY_CULTURE_RECOVERY",
         "ASAI_STRATEGY_EMPIRE_RECOVERY",
+        "ASAI_STRATEGY_EXPANSION_RECOVERY",
     }
+    recovery_placeholders = ", ".join("?" for _ in expected_recovery_strategies)
     actual_recovery_strategies = {
         row[0]
         for row in connection.execute(
             "SELECT StrategyType FROM Strategies "
-            "WHERE StrategyType IN (?, ?, ?)",
+            f"WHERE StrategyType IN ({recovery_placeholders})",
             tuple(sorted(expected_recovery_strategies)),
         )
     }
@@ -499,7 +522,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             WHERE (ListType LIKE 'ASAI_Relative%'
                    OR ListType LIKE 'ASAI_ScienceRecovery%'
                    OR ListType LIKE 'ASAI_CultureRecovery%'
-                   OR ListType LIKE 'ASAI_EmpireRecovery%')
+                   OR ListType LIKE 'ASAI_EmpireRecovery%'
+                   OR ListType LIKE 'ASAI_ExpansionRecovery%')
               AND ABS(Value) > 25
             ORDER BY ListType, Item
             """
@@ -637,8 +661,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 11:
-                    errors.append(f"expected 11 adaptive strategies, found {strategy_count}")
+                if strategy_count != 12:
+                    errors.append(f"expected 12 adaptive strategies, found {strategy_count}")
 
     if errors:
         print("VALIDATION FAILED")
@@ -649,7 +673,7 @@ def main() -> int:
     print("VALIDATION PASSED")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 11 (including severe support and 3 pillar recoveries)")
+    print("- adaptive strategies: 12 (including severe support and gated expansion)")
     print("- game cache was not modified")
     return 0
 
