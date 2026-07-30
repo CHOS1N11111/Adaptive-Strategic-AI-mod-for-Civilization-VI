@@ -25,6 +25,7 @@ docs/
 ### design
 
 - [`ARCHITECTURE.md`](design/ARCHITECTURE.md)：当前实现审计、目标架构与分阶段路线图。
+- [`PVP_EXPERIENCE.md`](design/PVP_EXPERIENCE.md)：PvP 式体验、竞争护栏、长期计划与后续实现合同。
 
 ### quality
 

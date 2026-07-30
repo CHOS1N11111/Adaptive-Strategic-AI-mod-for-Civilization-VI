@@ -3,13 +3,19 @@ print("Adaptive Strategic AI " .. tostring(GlobalParameters.ASAI_VERSION) .. " l
 local m_Snapshots = {};
 local m_StrengthSnapshots = {};
 local m_HumanReference = { Turn = -1, Value = nil };
+local m_RelativeRuntime = {};
 local m_ConditionErrors = {};
 
 local RELATIVE_CATCHUP = -1;
 local RELATIVE_MATCHED = 0;
 local RELATIVE_CONSOLIDATE = 1;
 local RELATIVE_BAND_PROPERTY = "ASAI_RELATIVE_BAND";
-local RELATIVE_TURN_PROPERTY = "ASAI_RELATIVE_LAST_EVAL_TURN";
+local RELATIVE_SAMPLE_TURN_PROPERTY = "ASAI_RELATIVE_LAST_SAMPLE_TURN";
+local RELATIVE_EVALUATION_TURN_PROPERTY = "ASAI_RELATIVE_LAST_EVAL_TURN";
+local RELATIVE_BAND_CANDIDATE_PROPERTY = "ASAI_RELATIVE_BAND_CANDIDATE";
+local RELATIVE_BAND_STREAK_PROPERTY = "ASAI_RELATIVE_BAND_STREAK";
+local RELATIVE_BAND_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_BAND_CHANGED_TURN";
+local RELATIVE_BAND_COOLDOWN_PROPERTY = "ASAI_RELATIVE_BAND_COOLDOWN_UNTIL";
 local RELATIVE_SCORE_PROPERTIES = {
     Overall = "ASAI_RELATIVE_SCORE_X1000",
     Science = "ASAI_RELATIVE_SCIENCE_X1000",
@@ -17,11 +23,27 @@ local RELATIVE_SCORE_PROPERTIES = {
     Empire = "ASAI_RELATIVE_EMPIRE_X1000",
     Military = "ASAI_RELATIVE_MILITARY_X1000"
 };
+local RELATIVE_RAW_SCORE_PROPERTIES = {
+    Overall = "ASAI_RELATIVE_RAW_SCORE_X1000",
+    Science = "ASAI_RELATIVE_RAW_SCIENCE_X1000",
+    Culture = "ASAI_RELATIVE_RAW_CULTURE_X1000",
+    Empire = "ASAI_RELATIVE_RAW_EMPIRE_X1000",
+    Military = "ASAI_RELATIVE_RAW_MILITARY_X1000"
+};
 local RELATIVE_RECOVERY_PROPERTIES = {
     Science = "ASAI_RELATIVE_SCIENCE_RECOVERY",
     Culture = "ASAI_RELATIVE_CULTURE_RECOVERY",
     Empire = "ASAI_RELATIVE_EMPIRE_RECOVERY"
 };
+local RELATIVE_FOCUS_NONE = 0;
+local RELATIVE_FOCUS_SCIENCE = 1;
+local RELATIVE_FOCUS_CULTURE = 2;
+local RELATIVE_FOCUS_EMPIRE = 3;
+local RELATIVE_FOCUS_PROPERTY = "ASAI_RELATIVE_FOCUS";
+local RELATIVE_FOCUS_CANDIDATE_PROPERTY = "ASAI_RELATIVE_FOCUS_CANDIDATE";
+local RELATIVE_FOCUS_STREAK_PROPERTY = "ASAI_RELATIVE_FOCUS_STREAK";
+local RELATIVE_FOCUS_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_FOCUS_CHANGED_TURN";
+local RELATIVE_FOCUS_COOLDOWN_PROPERTY = "ASAI_RELATIVE_FOCUS_COOLDOWN_UNTIL";
 
 local RELATIVE_COMPONENTS = {
     { Key = "Techs", Parameter = "ASAI_RELATIVE_WEIGHT_TECHS", Weight = 20 },
@@ -46,6 +68,28 @@ local function GetNumberParameter(name, fallback)
         return fallback;
     end
     return value;
+end
+
+local function GetGameSpeedMultiplier()
+    if GameConfiguration == nil or GameConfiguration.GetGameSpeedType == nil then
+        return 100;
+    end
+    local speedType = GameConfiguration.GetGameSpeedType();
+    local speedInfo = speedType ~= nil and GameInfo.GameSpeeds[speedType] or nil;
+    local multiplier = speedInfo ~= nil and tonumber(speedInfo.CostMultiplier) or nil;
+    if multiplier == nil or multiplier <= 0 then
+        return 100;
+    end
+    return multiplier;
+end
+
+local function ScaleStandardTurns(standardTurns)
+    local scaled = standardTurns * GetGameSpeedMultiplier() / 100;
+    return math.max(1, math.floor(scaled + 0.5));
+end
+
+local function GetStandardEquivalentTurn(turn)
+    return turn * 100 / GetGameSpeedMultiplier();
 end
 
 local function RunStrategyCondition(conditionName, evaluator, playerID, threshold)
@@ -106,8 +150,9 @@ local function CountUnits(player)
     return builders, traders;
 end
 
-local function CountWars(playerID, player)
-    local wars = 0;
+local function CountWarsByOpponentType(playerID, player)
+    local majorWars = 0;
+    local minorWars = 0;
     local diplomacy = player:GetDiplomacy();
     for _, otherID in ipairs(PlayerManager.GetAliveIDs()) do
         local otherPlayer = Players[otherID];
@@ -115,10 +160,14 @@ local function CountWars(playerID, player)
             and otherPlayer ~= nil
             and not otherPlayer:IsBarbarian()
             and diplomacy:IsAtWarWith(otherID) then
-            wars = wars + 1;
+            if otherPlayer:IsMajor() then
+                majorWars = majorWars + 1;
+            else
+                minorWars = minorWars + 1;
+            end
         end
     end
-    return wars;
+    return majorWars, minorWars;
 end
 
 local function GetSnapshot(playerID)
@@ -138,6 +187,7 @@ local function GetSnapshot(playerID)
 
     local builders, traders = CountUnits(player);
     local ownedPlots, improvements = CountOwnedPlots(playerID);
+    local majorWars, minorWars = CountWarsByOpponentType(playerID, player);
     local trade = player:GetTrade();
     local treasury = player:GetTreasury();
     local snapshot = {
@@ -151,7 +201,9 @@ local function GetSnapshot(playerID)
         RouteCapacity = trade:GetOutgoingRouteCapacity(),
         GoldBalance = treasury:GetGoldBalance(),
         NetGold = treasury:GetGoldYield() - treasury:GetTotalMaintenance(),
-        Wars = CountWars(playerID, player),
+        Wars = majorWars + minorWars,
+        MajorWars = majorWars,
+        MinorWars = minorWars,
         Era = player:GetEra()
     };
     m_Snapshots[playerID] = snapshot;
@@ -173,7 +225,9 @@ local function IsInfrastructureRecovery(playerID, threshold)
         return false;
     end
     local snapshot = GetSnapshot(playerID);
-    local startTurn = GetNumberParameter("ASAI_INFRA_START_TURN", 20);
+    local startTurn = ScaleStandardTurns(
+        GetNumberParameter("ASAI_INFRA_START_TURN_STANDARD", 20)
+    );
     if snapshot.Turn < startTurn or snapshot.Population <= 0 then
         return false;
     end
@@ -233,7 +287,7 @@ local function IsWarMobilization(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
-    return GetSnapshot(playerID).Wars > 0;
+    return GetSnapshot(playerID).MajorWars > 0;
 end
 function ASAI_IsWarMobilization(playerID, threshold)
     return RunStrategyCondition(
@@ -339,7 +393,8 @@ local function GetHumanReference()
         Culture = 0,
         Cities = 0,
         Population = 0,
-        Military = 0
+        Military = 0,
+        Era = 0
     };
     local humans = 0;
     for _, playerID in ipairs(PlayerManager.GetAliveMajorIDs()) do
@@ -347,6 +402,7 @@ local function GetHumanReference()
         if player ~= nil and player:IsHuman() then
             local strength = GetStrengthSnapshot(playerID);
             humans = humans + 1;
+            total.Era = total.Era + player:GetEra();
             for _, component in ipairs(RELATIVE_COMPONENTS) do
                 total[component.Key] = total[component.Key] + strength[component.Key];
             end
@@ -361,6 +417,7 @@ local function GetHumanReference()
     for _, component in ipairs(RELATIVE_COMPONENTS) do
         total[component.Key] = total[component.Key] / humans;
     end
+    total.Era = total.Era / humans;
     m_HumanReference = { Turn = turn, Value = total };
     return total;
 end
@@ -383,12 +440,13 @@ local function GetWeightedScore(ratios, weights, componentKeys)
     return weightedScore / totalWeight;
 end
 
-local function GetRelativeScores(aiStrength, humanStrength)
+local function GetRelativeMeasurements(aiStrength, humanStrength)
     local minimum = GetNumberParameter("ASAI_RELATIVE_COMPONENT_MIN_X100", 55) / 100;
     local maximum = GetNumberParameter("ASAI_RELATIVE_COMPONENT_MAX_X100", 145) / 100;
     local militaryMaximum = GetNumberParameter("ASAI_RELATIVE_MILITARY_MAX_X100", 120) / 100;
     militaryMaximum = Clamp(militaryMaximum, minimum, maximum);
-    local ratios = {};
+    local rawRatios = {};
+    local controlledRatios = {};
     local weights = {};
     local allKeys = {};
 
@@ -403,17 +461,29 @@ local function GetRelativeScores(aiStrength, humanStrength)
         if component.Key == "Military" then
             componentMaximum = militaryMaximum;
         end
-        ratios[component.Key] = Clamp(ratio, minimum, componentMaximum);
+        rawRatios[component.Key] = ratio;
+        controlledRatios[component.Key] = Clamp(ratio, minimum, componentMaximum);
         weights[component.Key] = weight;
         table.insert(allKeys, component.Key);
     end
 
     return {
-        Overall = GetWeightedScore(ratios, weights, allKeys),
-        Science = GetWeightedScore(ratios, weights, RELATIVE_PILLARS.Science),
-        Culture = GetWeightedScore(ratios, weights, RELATIVE_PILLARS.Culture),
-        Empire = GetWeightedScore(ratios, weights, RELATIVE_PILLARS.Empire),
-        Military = GetWeightedScore(ratios, weights, RELATIVE_PILLARS.Military)
+        Raw = {
+            Overall = GetWeightedScore(rawRatios, weights, allKeys),
+            Science = GetWeightedScore(rawRatios, weights, RELATIVE_PILLARS.Science),
+            Culture = GetWeightedScore(rawRatios, weights, RELATIVE_PILLARS.Culture),
+            Empire = GetWeightedScore(rawRatios, weights, RELATIVE_PILLARS.Empire),
+            Military = GetWeightedScore(rawRatios, weights, RELATIVE_PILLARS.Military)
+        },
+        Controlled = {
+            Overall = GetWeightedScore(controlledRatios, weights, allKeys),
+            Science = GetWeightedScore(controlledRatios, weights, RELATIVE_PILLARS.Science),
+            Culture = GetWeightedScore(controlledRatios, weights, RELATIVE_PILLARS.Culture),
+            Empire = GetWeightedScore(controlledRatios, weights, RELATIVE_PILLARS.Empire),
+            Military = GetWeightedScore(controlledRatios, weights, RELATIVE_PILLARS.Military)
+        },
+        RawRatios = rawRatios,
+        ControlledRatios = controlledRatios
     };
 end
 
@@ -436,11 +506,46 @@ local function GetBandName(band)
     return "matched";
 end
 
+local function GetFocusName(focus)
+    if focus == RELATIVE_FOCUS_SCIENCE then
+        return "science";
+    end
+    if focus == RELATIVE_FOCUS_CULTURE then
+        return "culture";
+    end
+    if focus == RELATIVE_FOCUS_EMPIRE then
+        return "empire";
+    end
+    return "none";
+end
+
+local function SyncRecoveryFlags(state)
+    state.Recovery.Science = state.Focus == RELATIVE_FOCUS_SCIENCE;
+    state.Recovery.Culture = state.Focus == RELATIVE_FOCUS_CULTURE;
+    state.Recovery.Empire = state.Focus == RELATIVE_FOCUS_EMPIRE;
+end
+
 local function GetNeutralRelativeState()
     return {
         Band = RELATIVE_MATCHED,
         Scores = { Overall = 1, Science = 1, Culture = 1, Empire = 1, Military = 1 },
-        Recovery = { Science = false, Culture = false, Empire = false }
+        RawScores = { Overall = 1, Science = 1, Culture = 1, Empire = 1, Military = 1 },
+        RawRatios = {},
+        ControlledRatios = {},
+        Focus = RELATIVE_FOCUS_NONE,
+        Recovery = { Science = false, Culture = false, Empire = false },
+        BandCandidate = RELATIVE_MATCHED,
+        BandStreak = 0,
+        BandChangedTurn = -100000,
+        BandCooldownUntil = -1,
+        FocusCandidate = RELATIVE_FOCUS_NONE,
+        FocusStreak = 0,
+        FocusChangedTurn = -100000,
+        FocusCooldownUntil = -1,
+        LastSampleTurn = -1,
+        LastEvaluationTurn = -1,
+        EvaluatedThisTurn = false,
+        Stage = "early"
     };
 end
 
@@ -453,135 +558,402 @@ local function ReadRelativeState(player)
     for pillar, propertyName in pairs(RELATIVE_SCORE_PROPERTIES) do
         state.Scores[pillar] = GetStoredNumber(player, propertyName, 1000) / 1000;
     end
-    for pillar, propertyName in pairs(RELATIVE_RECOVERY_PROPERTIES) do
-        state.Recovery[pillar] = GetStoredNumber(player, propertyName, 0) == 1;
+    for pillar, propertyName in pairs(RELATIVE_RAW_SCORE_PROPERTIES) do
+        state.RawScores[pillar] = GetStoredNumber(
+            player,
+            propertyName,
+            math.floor(state.Scores[pillar] * 1000 + 0.5)
+        ) / 1000;
     end
+    state.Focus = GetStoredNumber(player, RELATIVE_FOCUS_PROPERTY, RELATIVE_FOCUS_NONE);
+    if state.Focus < RELATIVE_FOCUS_NONE or state.Focus > RELATIVE_FOCUS_EMPIRE then
+        state.Focus = RELATIVE_FOCUS_NONE;
+    end
+    state.BandCandidate = GetStoredNumber(
+        player,
+        RELATIVE_BAND_CANDIDATE_PROPERTY,
+        state.Band
+    );
+    state.BandStreak = GetStoredNumber(player, RELATIVE_BAND_STREAK_PROPERTY, 0);
+    state.BandChangedTurn = GetStoredNumber(
+        player,
+        RELATIVE_BAND_CHANGED_TURN_PROPERTY,
+        -100000
+    );
+    state.BandCooldownUntil = GetStoredNumber(
+        player,
+        RELATIVE_BAND_COOLDOWN_PROPERTY,
+        -1
+    );
+    state.FocusCandidate = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_CANDIDATE_PROPERTY,
+        state.Focus
+    );
+    state.FocusStreak = GetStoredNumber(player, RELATIVE_FOCUS_STREAK_PROPERTY, 0);
+    state.FocusChangedTurn = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_CHANGED_TURN_PROPERTY,
+        -100000
+    );
+    state.FocusCooldownUntil = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_COOLDOWN_PROPERTY,
+        -1
+    );
+    state.LastSampleTurn = GetStoredNumber(player, RELATIVE_SAMPLE_TURN_PROPERTY, -1);
+    state.LastEvaluationTurn = GetStoredNumber(
+        player,
+        RELATIVE_EVALUATION_TURN_PROPERTY,
+        -1
+    );
+    SyncRecoveryFlags(state);
     return state;
 end
 
-local function UpdateRecoveryState(active, score, enterThreshold, exitThreshold)
-    if active then
-        return score < exitThreshold;
-    end
-    return score <= enterThreshold;
-end
-
-local function StoreRelativeState(player, turn, state)
+local function StoreRelativeState(player, state)
     player:SetProperty(RELATIVE_BAND_PROPERTY, state.Band);
     for pillar, propertyName in pairs(RELATIVE_SCORE_PROPERTIES) do
         player:SetProperty(propertyName, math.floor(state.Scores[pillar] * 1000 + 0.5));
     end
+    for pillar, propertyName in pairs(RELATIVE_RAW_SCORE_PROPERTIES) do
+        player:SetProperty(propertyName, math.floor(state.RawScores[pillar] * 1000 + 0.5));
+    end
     for pillar, propertyName in pairs(RELATIVE_RECOVERY_PROPERTIES) do
         player:SetProperty(propertyName, state.Recovery[pillar] and 1 or 0);
     end
-    player:SetProperty(RELATIVE_TURN_PROPERTY, turn);
+    player:SetProperty(RELATIVE_FOCUS_PROPERTY, state.Focus);
+    player:SetProperty(RELATIVE_BAND_CANDIDATE_PROPERTY, state.BandCandidate);
+    player:SetProperty(RELATIVE_BAND_STREAK_PROPERTY, state.BandStreak);
+    player:SetProperty(RELATIVE_BAND_CHANGED_TURN_PROPERTY, state.BandChangedTurn);
+    player:SetProperty(RELATIVE_BAND_COOLDOWN_PROPERTY, state.BandCooldownUntil);
+    player:SetProperty(RELATIVE_FOCUS_CANDIDATE_PROPERTY, state.FocusCandidate);
+    player:SetProperty(RELATIVE_FOCUS_STREAK_PROPERTY, state.FocusStreak);
+    player:SetProperty(RELATIVE_FOCUS_CHANGED_TURN_PROPERTY, state.FocusChangedTurn);
+    player:SetProperty(RELATIVE_FOCUS_COOLDOWN_PROPERTY, state.FocusCooldownUntil);
+    player:SetProperty(RELATIVE_SAMPLE_TURN_PROPERTY, state.LastSampleTurn);
+    player:SetProperty(RELATIVE_EVALUATION_TURN_PROPERTY, state.LastEvaluationTurn);
 end
 
-local function GetRelativeState(playerID)
-    if not IsMajorAI(playerID) or GetNumberParameter("ASAI_RELATIVE_PACING_ENABLED", 1) ~= 1 then
-        return GetNeutralRelativeState();
+local function GetCompetitionThresholds(era)
+    local classical = GameInfo.Eras["ERA_CLASSICAL"];
+    local renaissance = GameInfo.Eras["ERA_RENAISSANCE"];
+    local stage = "late";
+    local prefix = "ASAI_RELATIVE_LATE_";
+    local defaults = { 90, 96, 108, 115, 90 };
+    if classical ~= nil and era <= classical.Index then
+        stage = "early";
+        prefix = "ASAI_RELATIVE_EARLY_";
+        defaults = { 80, 88, 118, 125, 80 };
+    elseif renaissance ~= nil and era <= renaissance.Index then
+        stage = "mid";
+        prefix = "ASAI_RELATIVE_MID_";
+        defaults = { 85, 92, 113, 120, 85 };
     end
-
-    local turn = Game.GetCurrentGameTurn();
-    local player = Players[playerID];
-    local state = ReadRelativeState(player);
-    local startTurn = GetNumberParameter("ASAI_RELATIVE_START_TURN", 35);
-    if turn < startTurn then
-        return GetNeutralRelativeState();
-    end
-
-    local interval = math.max(1, GetNumberParameter("ASAI_RELATIVE_CHECK_INTERVAL", 5));
-    local lastTurn = GetStoredNumber(player, RELATIVE_TURN_PROPERTY, -interval);
-    if turn - lastTurn < interval then
-        return state;
-    end
-
-    local humanStrength = GetHumanReference();
-    if humanStrength == nil then
-        return GetNeutralRelativeState();
-    end
-
-    local previousBand = state.Band;
-    local previousRecovery = {
-        Science = state.Recovery.Science,
-        Culture = state.Recovery.Culture,
-        Empire = state.Recovery.Empire
+    return {
+        Stage = stage,
+        TrailingEnter = GetNumberParameter(prefix .. "TRAILING_ENTER_X100", defaults[1]) / 100,
+        TrailingExit = GetNumberParameter(prefix .. "TRAILING_EXIT_X100", defaults[2]) / 100,
+        LeadingExit = GetNumberParameter(prefix .. "LEADING_EXIT_X100", defaults[3]) / 100,
+        LeadingEnter = GetNumberParameter(prefix .. "LEADING_ENTER_X100", defaults[4]) / 100,
+        LeadingPillarMinimum = GetNumberParameter(
+            prefix .. "LEADING_PILLAR_MIN_X100",
+            defaults[5]
+        ) / 100
     };
-    state.Scores = GetRelativeScores(GetStrengthSnapshot(playerID), humanStrength);
+end
 
-    local trailingEnter = GetNumberParameter("ASAI_RELATIVE_TRAILING_ENTER_X100", 90) / 100;
-    local trailingExit = GetNumberParameter("ASAI_RELATIVE_TRAILING_EXIT_X100", 96) / 100;
-    local leadingExit = GetNumberParameter("ASAI_RELATIVE_LEADING_EXIT_X100", 108) / 100;
-    local leadingEnter = GetNumberParameter("ASAI_RELATIVE_LEADING_ENTER_X100", 115) / 100;
-    local leadingPillarMinimum = GetNumberParameter("ASAI_RELATIVE_LEADING_PILLAR_MIN_X100", 90) / 100;
+local function GetRecoveryThresholds()
+    return {
+        [RELATIVE_FOCUS_SCIENCE] = {
+            Key = "Science",
+            Enter = GetNumberParameter("ASAI_RELATIVE_SCIENCE_ENTER_X100", 80) / 100,
+            Exit = GetNumberParameter("ASAI_RELATIVE_SCIENCE_EXIT_X100", 92) / 100
+        },
+        [RELATIVE_FOCUS_CULTURE] = {
+            Key = "Culture",
+            Enter = GetNumberParameter("ASAI_RELATIVE_CULTURE_ENTER_X100", 75) / 100,
+            Exit = GetNumberParameter("ASAI_RELATIVE_CULTURE_EXIT_X100", 88) / 100
+        },
+        [RELATIVE_FOCUS_EMPIRE] = {
+            Key = "Empire",
+            Enter = GetNumberParameter("ASAI_RELATIVE_EMPIRE_ENTER_X100", 80) / 100,
+            Exit = GetNumberParameter("ASAI_RELATIVE_EMPIRE_EXIT_X100", 92) / 100
+        }
+    };
+end
+
+local function GetSmoothingAlpha()
+    local baseAlpha = Clamp(
+        GetNumberParameter("ASAI_RELATIVE_EMA_ALPHA_X100", 35) / 100,
+        0.01,
+        1
+    );
+    local standardTurnsPerRawTurn = 100 / GetGameSpeedMultiplier();
+    return 1 - ((1 - baseAlpha) ^ standardTurnsPerRawTurn);
+end
+
+local function SmoothScores(previous, current, alpha, initialized)
+    local smoothed = {};
+    for _, key in ipairs({ "Overall", "Science", "Culture", "Empire", "Military" }) do
+        if initialized then
+            smoothed[key] = previous[key] + alpha * (current[key] - previous[key]);
+        else
+            smoothed[key] = current[key];
+        end
+    end
+    return smoothed;
+end
+
+local function GetDesiredBand(state, thresholds)
     local weakestCorePillar = math.min(
         state.Scores.Science,
         state.Scores.Culture,
         state.Scores.Empire
     );
-
     if state.Band == RELATIVE_CATCHUP then
-        if state.Scores.Overall >= trailingExit then
-            state.Band = RELATIVE_MATCHED;
+        if state.Scores.Overall >= thresholds.TrailingExit then
+            return RELATIVE_MATCHED;
         end
-    elseif state.Band == RELATIVE_CONSOLIDATE then
-        if state.Scores.Overall <= leadingExit or weakestCorePillar < leadingPillarMinimum then
-            state.Band = RELATIVE_MATCHED;
+        return RELATIVE_CATCHUP;
+    end
+    if state.Band == RELATIVE_CONSOLIDATE then
+        if state.Scores.Overall <= thresholds.LeadingExit
+            or weakestCorePillar < thresholds.LeadingPillarMinimum then
+            return RELATIVE_MATCHED;
         end
-    elseif state.Scores.Overall <= trailingEnter then
-        state.Band = RELATIVE_CATCHUP;
-    elseif state.Scores.Overall >= leadingEnter and weakestCorePillar >= leadingPillarMinimum then
-        state.Band = RELATIVE_CONSOLIDATE;
+        return RELATIVE_CONSOLIDATE;
+    end
+    if state.Scores.Overall <= thresholds.TrailingEnter then
+        return RELATIVE_CATCHUP;
+    end
+    if state.Scores.Overall >= thresholds.LeadingEnter
+        and weakestCorePillar >= thresholds.LeadingPillarMinimum then
+        return RELATIVE_CONSOLIDATE;
+    end
+    return RELATIVE_MATCHED;
+end
+
+local function GetWorstEligibleFocus(state, recoveryThresholds)
+    local selected = RELATIVE_FOCUS_NONE;
+    local selectedScore = math.huge;
+    for _, focus in ipairs({
+        RELATIVE_FOCUS_SCIENCE,
+        RELATIVE_FOCUS_CULTURE,
+        RELATIVE_FOCUS_EMPIRE
+    }) do
+        local definition = recoveryThresholds[focus];
+        local score = state.Scores[definition.Key];
+        if score <= definition.Enter and score < selectedScore then
+            selected = focus;
+            selectedScore = score;
+        end
+    end
+    return selected, selectedScore;
+end
+
+local function GetDesiredFocus(state, recoveryThresholds)
+    local worstFocus, worstScore = GetWorstEligibleFocus(state, recoveryThresholds);
+    if state.Focus == RELATIVE_FOCUS_NONE then
+        return worstFocus;
     end
 
-    state.Recovery.Science = UpdateRecoveryState(
-        state.Recovery.Science,
-        state.Scores.Science,
-        GetNumberParameter("ASAI_RELATIVE_SCIENCE_ENTER_X100", 80) / 100,
-        GetNumberParameter("ASAI_RELATIVE_SCIENCE_EXIT_X100", 92) / 100
-    );
-    state.Recovery.Culture = UpdateRecoveryState(
-        state.Recovery.Culture,
-        state.Scores.Culture,
-        GetNumberParameter("ASAI_RELATIVE_CULTURE_ENTER_X100", 75) / 100,
-        GetNumberParameter("ASAI_RELATIVE_CULTURE_EXIT_X100", 88) / 100
-    );
-    state.Recovery.Empire = UpdateRecoveryState(
-        state.Recovery.Empire,
-        state.Scores.Empire,
-        GetNumberParameter("ASAI_RELATIVE_EMPIRE_ENTER_X100", 80) / 100,
-        GetNumberParameter("ASAI_RELATIVE_EMPIRE_EXIT_X100", 92) / 100
-    );
-
-    StoreRelativeState(player, turn, state);
-
-    if state.Band ~= previousBand then
-        print(string.format(
-            "ASAI_PACING turn=%d player=%d overall=%.3f science=%.3f culture=%.3f empire=%.3f military=%.3f from=%s to=%s",
-            turn,
-            playerID,
-            state.Scores.Overall,
-            state.Scores.Science,
-            state.Scores.Culture,
-            state.Scores.Empire,
-            state.Scores.Military,
-            GetBandName(previousBand),
-            GetBandName(state.Band)
-        ));
+    local currentDefinition = recoveryThresholds[state.Focus];
+    local currentScore = state.Scores[currentDefinition.Key];
+    if currentScore >= currentDefinition.Exit then
+        return worstFocus;
     end
-    for _, pillar in ipairs({ "Science", "Culture", "Empire" }) do
-        if state.Recovery[pillar] ~= previousRecovery[pillar] then
+
+    local switchMargin = GetNumberParameter(
+        "ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100",
+        12
+    ) / 100;
+    if worstFocus ~= RELATIVE_FOCUS_NONE
+        and worstFocus ~= state.Focus
+        and worstScore + switchMargin < currentScore then
+        return worstFocus;
+    end
+    return state.Focus;
+end
+
+local function AdvanceConfirmedState(current, candidate, streak, desired, canChange)
+    if desired == current then
+        return current, current, 0, false;
+    end
+    if candidate == desired then
+        streak = streak + 1;
+    else
+        candidate = desired;
+        streak = 1;
+    end
+    local confirmSamples = math.max(
+        1,
+        GetNumberParameter("ASAI_RELATIVE_CONFIRM_SAMPLES", 2)
+    );
+    if canChange and streak >= confirmSamples then
+        return desired, desired, 0, true;
+    end
+    return current, candidate, streak, false;
+end
+
+local function EvaluateRelativeState(playerID)
+    if not IsMajorAI(playerID) or GetNumberParameter("ASAI_RELATIVE_PACING_ENABLED", 1) ~= 1 then
+        return GetNeutralRelativeState();
+    end
+
+    local turn = Game.GetCurrentGameTurn();
+    local runtime = m_RelativeRuntime[playerID];
+    if runtime ~= nil and runtime.RuntimeTurn == turn then
+        return runtime;
+    end
+
+    local startTurn = ScaleStandardTurns(
+        GetNumberParameter("ASAI_RELATIVE_START_TURN_STANDARD", 35)
+    );
+    if turn < startTurn then
+        local neutral = GetNeutralRelativeState();
+        neutral.RuntimeTurn = turn;
+        m_RelativeRuntime[playerID] = neutral;
+        return neutral;
+    end
+
+    local player = Players[playerID];
+    local state = ReadRelativeState(player);
+    state.RuntimeTurn = turn;
+    state.EvaluatedThisTurn = false;
+    if state.LastSampleTurn == turn then
+        m_RelativeRuntime[playerID] = state;
+        return state;
+    end
+    local humanStrength = GetHumanReference();
+    if humanStrength == nil then
+        m_RelativeRuntime[playerID] = state;
+        return state;
+    end
+
+    local measurements = GetRelativeMeasurements(
+        GetStrengthSnapshot(playerID),
+        humanStrength
+    );
+    local initialized = state.LastSampleTurn >= 0;
+    state.RawScores = measurements.Raw;
+    state.RawRatios = measurements.RawRatios;
+    state.ControlledRatios = measurements.ControlledRatios;
+    state.Scores = SmoothScores(
+        state.Scores,
+        measurements.Controlled,
+        GetSmoothingAlpha(),
+        initialized
+    );
+    state.LastSampleTurn = turn;
+
+    local thresholds = GetCompetitionThresholds(math.floor(humanStrength.Era + 0.5));
+    state.Stage = thresholds.Stage;
+    local evaluationInterval = ScaleStandardTurns(
+        GetNumberParameter("ASAI_RELATIVE_CHECK_INTERVAL_STANDARD", 4)
+    );
+    local evaluationDue = state.LastEvaluationTurn < 0
+        or turn - state.LastEvaluationTurn >= evaluationInterval;
+
+    if evaluationDue then
+        local previousBand = state.Band;
+        local previousFocus = state.Focus;
+        local minimumDwell = ScaleStandardTurns(
+            GetNumberParameter("ASAI_RELATIVE_MIN_DWELL_STANDARD", 12)
+        );
+        local cooldown = ScaleStandardTurns(
+            GetNumberParameter("ASAI_RELATIVE_COOLDOWN_STANDARD", 8)
+        );
+
+        local desiredBand = GetDesiredBand(state, thresholds);
+        local canChangeBand = turn - state.BandChangedTurn >= minimumDwell;
+        if state.Band == RELATIVE_MATCHED and turn < state.BandCooldownUntil then
+            canChangeBand = false;
+        end
+        local bandChanged = false;
+        state.Band,
+        state.BandCandidate,
+        state.BandStreak,
+        bandChanged = AdvanceConfirmedState(
+            state.Band,
+            state.BandCandidate,
+            state.BandStreak,
+            desiredBand,
+            canChangeBand
+        );
+        if bandChanged then
+            state.BandChangedTurn = turn;
+            if state.Band == RELATIVE_MATCHED then
+                state.BandCooldownUntil = turn + cooldown;
+            end
+        end
+
+        local recoveryThresholds = GetRecoveryThresholds();
+        local desiredFocus = GetDesiredFocus(state, recoveryThresholds);
+        local canChangeFocus = turn - state.FocusChangedTurn >= minimumDwell;
+        if state.Focus == RELATIVE_FOCUS_NONE and turn < state.FocusCooldownUntil then
+            canChangeFocus = false;
+        end
+        local focusChanged = false;
+        state.Focus,
+        state.FocusCandidate,
+        state.FocusStreak,
+        focusChanged = AdvanceConfirmedState(
+            state.Focus,
+            state.FocusCandidate,
+            state.FocusStreak,
+            desiredFocus,
+            canChangeFocus
+        );
+        if focusChanged then
+            state.FocusChangedTurn = turn;
+            if state.Focus == RELATIVE_FOCUS_NONE then
+                state.FocusCooldownUntil = turn + cooldown;
+            end
+        end
+
+        SyncRecoveryFlags(state);
+        state.LastEvaluationTurn = turn;
+        state.EvaluatedThisTurn = true;
+
+        if bandChanged then
             print(string.format(
-                "ASAI_RECOVERY turn=%d player=%d pillar=%s score=%.3f active=%s",
+                "ASAI_PACING turn=%d standard_turn=%.1f player=%d stage=%s raw=%.3f controlled=%.3f from=%s to=%s",
                 turn,
+                GetStandardEquivalentTurn(turn),
                 playerID,
-                string.lower(pillar),
-                state.Scores[pillar],
-                tostring(state.Recovery[pillar])
+                state.Stage,
+                state.RawScores.Overall,
+                state.Scores.Overall,
+                GetBandName(previousBand),
+                GetBandName(state.Band)
+            ));
+        end
+        if focusChanged then
+            print(string.format(
+                "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s",
+                turn,
+                GetStandardEquivalentTurn(turn),
+                playerID,
+                state.RawScores.Science,
+                state.RawScores.Culture,
+                state.RawScores.Empire,
+                state.Scores.Science,
+                state.Scores.Culture,
+                state.Scores.Empire,
+                GetFocusName(previousFocus),
+                GetFocusName(state.Focus)
             ));
         end
     end
+
+    StoreRelativeState(player, state);
+    m_RelativeRuntime[playerID] = state;
     return state;
+end
+
+local function GetRelativeState(playerID)
+    return EvaluateRelativeState(playerID);
 end
 
 local function IsRelativeCatchup(playerID, threshold)
@@ -657,19 +1029,21 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         return;
     end
 
-    local interval = math.max(1, GetNumberParameter("ASAI_METRICS_INTERVAL", 25));
-    local snapshot = GetSnapshot(playerID);
-    if snapshot.Turn % interval ~= 0 then
+    local relativeState = GetRelativeState(playerID);
+    if not relativeState.EvaluatedThisTurn then
         return;
     end
 
+    local snapshot = GetSnapshot(playerID);
     local strength = GetStrengthSnapshot(playerID);
-    local relativeState = GetRelativeState(playerID);
     local infrastructureTarget = GetInfrastructureTarget(snapshot);
     print(string.format(
-        "ASAI_METRIC turn=%d player=%d cities=%d pop=%d owned=%d improved=%d infratarget=%d builders=%d traders=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d era=%d relative=%.3f science_ratio=%.3f culture_ratio=%.3f empire_ratio=%.3f military_ratio=%.3f pacing=%s recover_science=%s recover_culture=%s recover_empire=%s",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builders=%d traders=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s focus=%s",
         snapshot.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(snapshot.Turn),
         playerID,
+        relativeState.Stage,
         snapshot.Cities,
         snapshot.Population,
         snapshot.OwnedPlots,
@@ -686,20 +1060,58 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         strength.Civics,
         strength.Military,
         snapshot.Wars,
+        snapshot.MajorWars,
+        snapshot.MinorWars,
         snapshot.Era,
+        relativeState.RawScores.Overall,
         relativeState.Scores.Overall,
+        relativeState.RawScores.Science,
         relativeState.Scores.Science,
+        relativeState.RawScores.Culture,
         relativeState.Scores.Culture,
+        relativeState.RawScores.Empire,
         relativeState.Scores.Empire,
+        relativeState.RawScores.Military,
         relativeState.Scores.Military,
         GetBandName(relativeState.Band),
-        tostring(relativeState.Recovery.Science),
-        tostring(relativeState.Recovery.Culture),
-        tostring(relativeState.Recovery.Empire)
+        GetFocusName(relativeState.Focus)
+    ));
+    print(string.format(
+        "ASAI_COMPONENTS turn=%d player=%d tech_raw=%.3f tech_controlled=%.3f civics_raw=%.3f civics_controlled=%.3f science_raw=%.3f science_controlled=%.3f culture_raw=%.3f culture_controlled=%.3f cities_raw=%.3f cities_controlled=%.3f pop_raw=%.3f pop_controlled=%.3f military_raw=%.3f military_controlled=%.3f",
+        snapshot.Turn,
+        playerID,
+        relativeState.RawRatios.Techs,
+        relativeState.ControlledRatios.Techs,
+        relativeState.RawRatios.Civics,
+        relativeState.ControlledRatios.Civics,
+        relativeState.RawRatios.Science,
+        relativeState.ControlledRatios.Science,
+        relativeState.RawRatios.Culture,
+        relativeState.ControlledRatios.Culture,
+        relativeState.RawRatios.Cities,
+        relativeState.ControlledRatios.Cities,
+        relativeState.RawRatios.Population,
+        relativeState.ControlledRatios.Population,
+        relativeState.RawRatios.Military,
+        relativeState.ControlledRatios.Military
     ));
 end
 
 local function LogMetrics(playerID, firstTimeThisTurn)
+    if firstTimeThisTurn and IsMajorAI(playerID) then
+        local evaluationSuccess, evaluationError = pcall(EvaluateRelativeState, playerID);
+        if not evaluationSuccess then
+            if m_ConditionErrors.ASAI_EvaluateRelativeState == nil then
+                print(string.format(
+                    "ASAI_ERROR condition=ASAI_EvaluateRelativeState player=%s fallback=stored error=%s",
+                    tostring(playerID),
+                    tostring(evaluationError)
+                ));
+                m_ConditionErrors.ASAI_EvaluateRelativeState = true;
+            end
+            return;
+        end
+    end
     local success, metricError = pcall(WriteMetrics, playerID, firstTimeThisTurn);
     if not success and m_ConditionErrors.ASAI_LogMetrics == nil then
         print(string.format(

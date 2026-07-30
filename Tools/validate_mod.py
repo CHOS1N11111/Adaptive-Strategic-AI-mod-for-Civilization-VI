@@ -129,6 +129,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("Lua strategy condition guard does not use pcall")
     if "pcall(WriteMetrics, playerID, firstTimeThisTurn)" not in source:
         errors.append("Lua metrics logger is not fail-closed")
+    if "pcall(EvaluateRelativeState, playerID)" not in source:
+        errors.append("Lua per-turn relative evaluator is not fail-closed")
     if "GetNumOutgoingRoutes" in source:
         errors.append("GetNumOutgoingRoutes is unavailable in gameplay-script context")
     if "GetMilitaryStrengthWithoutTreasury" in source or ":GetMilitaryStrength()" in source:
@@ -137,13 +139,40 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("player properties must be stored before numeric conversion")
     if "local function EstimateMilitaryStrength(player)" not in source:
         errors.append("gameplay-safe military strength estimator is missing")
-    if "PlayerManager.GetAliveIDs()" not in source:
-        errors.append("war detection must include alive major and minor players")
-    if "for _, otherID in ipairs(PlayerManager.GetAliveMajorIDs()) do" in source:
-        errors.append("war detection still ignores wars against city-states")
-    if "not otherPlayer:IsBarbarian()" not in source:
-        errors.append("war detection must exclude barbarians")
+    war_fragments = (
+        "local function CountWarsByOpponentType(playerID, player)",
+        "PlayerManager.GetAliveIDs()",
+        "not otherPlayer:IsBarbarian()",
+        "if otherPlayer:IsMajor() then",
+        "MajorWars = majorWars",
+        "MinorWars = minorWars",
+        "return GetSnapshot(playerID).MajorWars > 0",
+    )
+    for fragment in war_fragments:
+        if fragment not in source:
+            errors.append(f"major/minor war classification fragment is missing: {fragment}")
+    timing_fragments = (
+        "local function GetGameSpeedMultiplier()",
+        "local function ScaleStandardTurns(standardTurns)",
+        'ASAI_RELATIVE_START_TURN_STANDARD", 35',
+        'ASAI_RELATIVE_CHECK_INTERVAL_STANDARD", 4',
+        "relativeState.EvaluatedThisTurn",
+        "evaluated_turn=%d",
+        "ASAI_COMPONENTS",
+    )
+    for fragment in timing_fragments:
+        if fragment not in source:
+            errors.append(f"relative timing/telemetry fragment is missing: {fragment}")
+    focus_fragments = (
+        "local function GetDesiredFocus(state, recoveryThresholds)",
+        "ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100",
+        "SyncRecoveryFlags(state)",
+    )
+    for fragment in focus_fragments:
+        if fragment not in source:
+            errors.append(f"single-focus recovery fragment is missing: {fragment}")
     infrastructure_fragments = (
+        'ASAI_INFRA_START_TURN_STANDARD", 20',
         'ASAI_INFRA_IMPROVEMENTS_PER_CITY_X100", 200',
         'ASAI_INFRA_IMPROVEMENTS_PER_POP_X100", 65',
         'ASAI_INFRA_OWNED_PLOTS_CAP_X100", 30',
@@ -221,8 +250,9 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
 
 def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     errors: list[str] = []
-    parameter_names = (
-        "ASAI_RELATIVE_PACING_ENABLED",
+    obsolete_parameters = (
+        "ASAI_METRICS_INTERVAL",
+        "ASAI_INFRA_START_TURN",
         "ASAI_RELATIVE_START_TURN",
         "ASAI_RELATIVE_CHECK_INTERVAL",
         "ASAI_RELATIVE_TRAILING_ENTER_X100",
@@ -230,6 +260,43 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_LEADING_EXIT_X100",
         "ASAI_RELATIVE_LEADING_ENTER_X100",
         "ASAI_RELATIVE_LEADING_PILLAR_MIN_X100",
+    )
+    obsolete_placeholders = ", ".join("?" for _ in obsolete_parameters)
+    obsolete_found = [
+        row[0]
+        for row in connection.execute(
+            f"SELECT Name FROM GlobalParameters "
+            f"WHERE Name IN ({obsolete_placeholders}) ORDER BY Name",
+            obsolete_parameters,
+        )
+    ]
+    if obsolete_found:
+        errors.append(f"obsolete pacing parameters remain: {obsolete_found}")
+
+    parameter_names = (
+        "ASAI_RELATIVE_PACING_ENABLED",
+        "ASAI_RELATIVE_START_TURN_STANDARD",
+        "ASAI_RELATIVE_CHECK_INTERVAL_STANDARD",
+        "ASAI_RELATIVE_MIN_DWELL_STANDARD",
+        "ASAI_RELATIVE_COOLDOWN_STANDARD",
+        "ASAI_RELATIVE_CONFIRM_SAMPLES",
+        "ASAI_RELATIVE_EMA_ALPHA_X100",
+        "ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100",
+        "ASAI_RELATIVE_EARLY_TRAILING_ENTER_X100",
+        "ASAI_RELATIVE_EARLY_TRAILING_EXIT_X100",
+        "ASAI_RELATIVE_EARLY_LEADING_EXIT_X100",
+        "ASAI_RELATIVE_EARLY_LEADING_ENTER_X100",
+        "ASAI_RELATIVE_EARLY_LEADING_PILLAR_MIN_X100",
+        "ASAI_RELATIVE_MID_TRAILING_ENTER_X100",
+        "ASAI_RELATIVE_MID_TRAILING_EXIT_X100",
+        "ASAI_RELATIVE_MID_LEADING_EXIT_X100",
+        "ASAI_RELATIVE_MID_LEADING_ENTER_X100",
+        "ASAI_RELATIVE_MID_LEADING_PILLAR_MIN_X100",
+        "ASAI_RELATIVE_LATE_TRAILING_ENTER_X100",
+        "ASAI_RELATIVE_LATE_TRAILING_EXIT_X100",
+        "ASAI_RELATIVE_LATE_LEADING_EXIT_X100",
+        "ASAI_RELATIVE_LATE_LEADING_ENTER_X100",
+        "ASAI_RELATIVE_LATE_LEADING_PILLAR_MIN_X100",
         "ASAI_RELATIVE_COMPONENT_MIN_X100",
         "ASAI_RELATIVE_COMPONENT_MAX_X100",
         "ASAI_RELATIVE_MILITARY_MAX_X100",
@@ -260,16 +327,29 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         except (TypeError, ValueError):
             errors.append(f"relative pacing parameter is not an integer: {name}={row[0]}")
 
-    threshold_names = (
-        "ASAI_RELATIVE_TRAILING_ENTER_X100",
-        "ASAI_RELATIVE_TRAILING_EXIT_X100",
-        "ASAI_RELATIVE_LEADING_EXIT_X100",
-        "ASAI_RELATIVE_LEADING_ENTER_X100",
-    )
-    if all(name in parameters for name in threshold_names):
-        values = [parameters[name] for name in threshold_names]
-        if not values[0] < values[1] < 100 < values[2] < values[3]:
-            errors.append(f"relative pacing thresholds are not ordered safely: {values}")
+    for stage in ("EARLY", "MID", "LATE"):
+        threshold_names = tuple(
+            f"ASAI_RELATIVE_{stage}_{suffix}"
+            for suffix in (
+                "TRAILING_ENTER_X100",
+                "TRAILING_EXIT_X100",
+                "LEADING_EXIT_X100",
+                "LEADING_ENTER_X100",
+            )
+        )
+        if all(name in parameters for name in threshold_names):
+            values = [parameters[name] for name in threshold_names]
+            if not values[0] < values[1] < 100 < values[2] < values[3]:
+                errors.append(
+                    f"relative {stage.lower()} thresholds are not ordered safely: {values}"
+                )
+        pillar_name = f"ASAI_RELATIVE_{stage}_LEADING_PILLAR_MIN_X100"
+        pillar_minimum = parameters.get(pillar_name)
+        if pillar_minimum is not None and not 0 < pillar_minimum <= 100:
+            errors.append(
+                f"relative {stage.lower()} leading pillar minimum is invalid: "
+                f"{pillar_minimum}"
+            )
 
     bounds = (
         parameters.get("ASAI_RELATIVE_COMPONENT_MIN_X100"),
@@ -286,11 +366,28 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 f"{military_maximum}"
             )
 
-    leading_pillar_minimum = parameters.get("ASAI_RELATIVE_LEADING_PILLAR_MIN_X100")
-    if leading_pillar_minimum is not None and not 0 < leading_pillar_minimum <= 100:
-        errors.append(
-            f"relative leading pillar minimum is invalid: {leading_pillar_minimum}"
-        )
+    interval = parameters.get("ASAI_RELATIVE_CHECK_INTERVAL_STANDARD")
+    minimum_dwell = parameters.get("ASAI_RELATIVE_MIN_DWELL_STANDARD")
+    cooldown = parameters.get("ASAI_RELATIVE_COOLDOWN_STANDARD")
+    confirm_samples = parameters.get("ASAI_RELATIVE_CONFIRM_SAMPLES")
+    if interval is not None and interval <= 0:
+        errors.append(f"relative evaluation interval must be positive: {interval}")
+    if interval is not None and minimum_dwell is not None:
+        if minimum_dwell < interval * 2:
+            errors.append(
+                "relative minimum dwell must cover at least two evaluation intervals: "
+                f"{minimum_dwell} < {interval * 2}"
+            )
+    if cooldown is not None and cooldown < 0:
+        errors.append(f"relative cooldown cannot be negative: {cooldown}")
+    if confirm_samples is not None and confirm_samples < 2:
+        errors.append(f"relative confirmation requires at least two samples: {confirm_samples}")
+    ema_alpha = parameters.get("ASAI_RELATIVE_EMA_ALPHA_X100")
+    if ema_alpha is not None and not 0 < ema_alpha <= 100:
+        errors.append(f"relative EMA alpha is invalid: {ema_alpha}")
+    focus_margin = parameters.get("ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100")
+    if focus_margin is not None and not 0 <= focus_margin <= 100:
+        errors.append(f"relative focus switch margin is invalid: {focus_margin}")
 
     for pillar in ("SCIENCE", "CULTURE", "EMPIRE"):
         enter = parameters.get(f"ASAI_RELATIVE_{pillar}_ENTER_X100")
@@ -363,6 +460,87 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         f"relative adjustment is too large: {list_type}/{item}={value}"
         for list_type, item, value in oversized
     )
+
+    broad_guardrail_oversized = list(
+        connection.execute(
+            """
+            SELECT ListType, Item, Value
+            FROM AiFavoredItems
+            WHERE ListType LIKE 'ASAI_RelativeCatchup%'
+              AND ABS(Value) > 12
+            ORDER BY ListType, Item
+            """
+        )
+    )
+    errors.extend(
+        f"broad catch-up guardrail exceeds 12: {list_type}/{item}={value}"
+        for list_type, item, value in broad_guardrail_oversized
+    )
+    lead_penalties = list(
+        connection.execute(
+            """
+            SELECT ListType, Item, Value
+            FROM AiFavoredItems
+            WHERE ListType LIKE 'ASAI_RelativeLead%'
+              AND Value < 0
+            ORDER BY ListType, Item
+            """
+        )
+    )
+    errors.extend(
+        f"leading AI still receives a self-sabotaging penalty: "
+        f"{list_type}/{item}={value}"
+        for list_type, item, value in lead_penalties
+    )
+
+    expected_culture_buildings = {
+        "BUILDING_AMPHITHEATER",
+        "BUILDING_MUSEUM_ART",
+        "BUILDING_MUSEUM_ARTIFACT",
+        "BUILDING_BROADCAST_CENTER",
+    }
+    actual_culture_buildings = {
+        row[0]
+        for row in connection.execute(
+            "SELECT Item FROM AiFavoredItems "
+            "WHERE ListType = 'ASAI_CultureRecoveryBuildings'"
+        )
+    }
+    if actual_culture_buildings != expected_culture_buildings:
+        errors.append(
+            "culture recovery buildings differ: "
+            f"expected {sorted(expected_culture_buildings)}, "
+            f"found {sorted(actual_culture_buildings)}"
+        )
+
+    forbidden_wonder_lists = (
+        "ASAI_GoldWonders",
+        "ASAI_RelativeCatchupWonders",
+        "ASAI_RelativeLeadWonders",
+        "ASAI_ScienceRecoveryWonders",
+        "ASAI_CultureRecoveryWonders",
+        "ASAI_EmpireRecoveryWonders",
+    )
+    wonder_placeholders = ", ".join("?" for _ in forbidden_wonder_lists)
+    forbidden_wonders = connection.execute(
+        f"SELECT COUNT(*) FROM AiFavoredItems WHERE ListType IN ({wonder_placeholders})",
+        forbidden_wonder_lists,
+    ).fetchone()[0]
+    if forbidden_wonders:
+        errors.append(
+            f"found {forbidden_wonders} stackable non-war wonder penalties"
+        )
+    war_wonder_values = {
+        row[0]
+        for row in connection.execute(
+            "SELECT DISTINCT Value FROM AiFavoredItems "
+            "WHERE ListType = 'ASAI_WarWonders'"
+        )
+    }
+    if war_wonder_values != {-35}:
+        errors.append(
+            f"major-war wonder penalty expected only -35, found {sorted(war_wonder_values)}"
+        )
     return errors
 
 
