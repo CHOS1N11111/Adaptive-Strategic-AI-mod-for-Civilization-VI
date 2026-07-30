@@ -164,13 +164,27 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         if fragment not in source:
             errors.append(f"relative timing/telemetry fragment is missing: {fragment}")
     focus_fragments = (
-        "local function GetDesiredFocus(state, recoveryThresholds)",
+        "local function GetDesiredFocus(state, recoveryThresholds, turn)",
         "ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100",
+        "local function ReviewActiveFocus(state, turn)",
+        "ASAI_RELATIVE_FOCUS_REVIEW_STANDARD",
+        "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD",
+        "state.FocusCooldownUntil[focus]",
         "SyncRecoveryFlags(state)",
     )
     for fragment in focus_fragments:
         if fragment not in source:
             errors.append(f"single-focus recovery fragment is missing: {fragment}")
+    support_fragments = (
+        "local function GetDesiredSevereCatchup(state)",
+        "ASAI_RELATIVE_SEVERE_ENTER_X100",
+        "ASAI_RELATIVE_SEVERE_EXIT_X100",
+        "function ASAI_IsRelativeSevereCatchup(playerID, threshold)",
+        "support=%s",
+    )
+    for fragment in support_fragments:
+        if fragment not in source:
+            errors.append(f"bounded support fragment is missing: {fragment}")
     infrastructure_fragments = (
         'ASAI_INFRA_START_TURN_STANDARD", 20',
         'ASAI_INFRA_IMPROVEMENTS_PER_CITY_X100", 200',
@@ -282,6 +296,12 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_CONFIRM_SAMPLES",
         "ASAI_RELATIVE_EMA_ALPHA_X100",
         "ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100",
+        "ASAI_RELATIVE_FOCUS_REVIEW_STANDARD",
+        "ASAI_RELATIVE_FOCUS_MIN_GAIN_X100",
+        "ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100",
+        "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD",
+        "ASAI_RELATIVE_SEVERE_ENTER_X100",
+        "ASAI_RELATIVE_SEVERE_EXIT_X100",
         "ASAI_RELATIVE_EARLY_TRAILING_ENTER_X100",
         "ASAI_RELATIVE_EARLY_TRAILING_EXIT_X100",
         "ASAI_RELATIVE_EARLY_LEADING_EXIT_X100",
@@ -388,6 +408,34 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     focus_margin = parameters.get("ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100")
     if focus_margin is not None and not 0 <= focus_margin <= 100:
         errors.append(f"relative focus switch margin is invalid: {focus_margin}")
+    focus_review = parameters.get("ASAI_RELATIVE_FOCUS_REVIEW_STANDARD")
+    focus_minimum_gain = parameters.get("ASAI_RELATIVE_FOCUS_MIN_GAIN_X100")
+    focus_raw_minimum_gain = parameters.get("ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100")
+    focus_stall_cooldown = parameters.get(
+        "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD"
+    )
+    if focus_review is not None and focus_review < 8:
+        errors.append(f"relative focus review window is too short: {focus_review}")
+    for name, value in (
+        ("smoothed", focus_minimum_gain),
+        ("raw", focus_raw_minimum_gain),
+    ):
+        if value is not None and not 0 <= value <= 25:
+            errors.append(f"relative focus {name} minimum gain is invalid: {value}")
+    if focus_stall_cooldown is not None and focus_stall_cooldown < 0:
+        errors.append(
+            f"relative focus stall cooldown cannot be negative: {focus_stall_cooldown}"
+        )
+    severe_enter = parameters.get("ASAI_RELATIVE_SEVERE_ENTER_X100")
+    severe_exit = parameters.get("ASAI_RELATIVE_SEVERE_EXIT_X100")
+    if (
+        severe_enter is not None
+        and severe_exit is not None
+        and not 0 < severe_enter < severe_exit < 100
+    ):
+        errors.append(
+            f"relative severe-support thresholds are invalid: {(severe_enter, severe_exit)}"
+        )
 
     for pillar in ("SCIENCE", "CULTURE", "EMPIRE"):
         enter = parameters.get(f"ASAI_RELATIVE_{pillar}_ENTER_X100")
@@ -408,6 +456,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
 
     expected_strategies = {
         "ASAI_STRATEGY_RELATIVE_CATCHUP",
+        "ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP",
         "ASAI_STRATEGY_RELATIVE_CONSOLIDATE",
     }
     actual_strategies = {
@@ -588,8 +637,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 10:
-                    errors.append(f"expected 10 adaptive strategies, found {strategy_count}")
+                if strategy_count != 11:
+                    errors.append(f"expected 11 adaptive strategies, found {strategy_count}")
 
     if errors:
         print("VALIDATION FAILED")
@@ -600,7 +649,7 @@ def main() -> int:
     print("VALIDATION PASSED")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 10 (including 3 pillar recovery strategies)")
+    print("- adaptive strategies: 11 (including severe support and 3 pillar recoveries)")
     print("- game cache was not modified")
     return 0
 

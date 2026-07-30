@@ -44,6 +44,25 @@ local RELATIVE_FOCUS_CANDIDATE_PROPERTY = "ASAI_RELATIVE_FOCUS_CANDIDATE";
 local RELATIVE_FOCUS_STREAK_PROPERTY = "ASAI_RELATIVE_FOCUS_STREAK";
 local RELATIVE_FOCUS_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_FOCUS_CHANGED_TURN";
 local RELATIVE_FOCUS_COOLDOWN_PROPERTY = "ASAI_RELATIVE_FOCUS_COOLDOWN_UNTIL";
+local RELATIVE_FOCUS_STARTED_TURN_PROPERTY = "ASAI_RELATIVE_FOCUS_STARTED_TURN";
+local RELATIVE_FOCUS_REVIEW_TURN_PROPERTY = "ASAI_RELATIVE_FOCUS_REVIEW_TURN";
+local RELATIVE_FOCUS_BASELINE_PROPERTY = "ASAI_RELATIVE_FOCUS_BASELINE_X1000";
+local RELATIVE_FOCUS_RAW_BASELINE_PROPERTY = "ASAI_RELATIVE_FOCUS_RAW_BASELINE_X1000";
+local RELATIVE_FOCUS_GAIN_PROPERTY = "ASAI_RELATIVE_FOCUS_GAIN_X1000";
+local RELATIVE_FOCUS_RAW_GAIN_PROPERTY = "ASAI_RELATIVE_FOCUS_RAW_GAIN_X1000";
+local RELATIVE_FOCUS_RESULT_PROPERTY = "ASAI_RELATIVE_FOCUS_RESULT";
+local RELATIVE_FOCUS_RESULT_NONE = 0;
+local RELATIVE_FOCUS_RESULT_IMPROVING = 1;
+local RELATIVE_FOCUS_RESULT_STALLED = 2;
+local RELATIVE_FOCUS_COOLDOWN_PROPERTIES = {
+    [RELATIVE_FOCUS_SCIENCE] = "ASAI_RELATIVE_SCIENCE_COOLDOWN_UNTIL",
+    [RELATIVE_FOCUS_CULTURE] = "ASAI_RELATIVE_CULTURE_COOLDOWN_UNTIL",
+    [RELATIVE_FOCUS_EMPIRE] = "ASAI_RELATIVE_EMPIRE_COOLDOWN_UNTIL"
+};
+local RELATIVE_SEVERE_PROPERTY = "ASAI_RELATIVE_SEVERE_CATCHUP";
+local RELATIVE_SEVERE_CANDIDATE_PROPERTY = "ASAI_RELATIVE_SEVERE_CANDIDATE";
+local RELATIVE_SEVERE_STREAK_PROPERTY = "ASAI_RELATIVE_SEVERE_STREAK";
+local RELATIVE_SEVERE_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_SEVERE_CHANGED_TURN";
 
 local RELATIVE_COMPONENTS = {
     { Key = "Techs", Parameter = "ASAI_RELATIVE_WEIGHT_TECHS", Weight = 20 },
@@ -519,6 +538,26 @@ local function GetFocusName(focus)
     return "none";
 end
 
+local function GetFocusResultName(result)
+    if result == RELATIVE_FOCUS_RESULT_IMPROVING then
+        return "improving";
+    end
+    if result == RELATIVE_FOCUS_RESULT_STALLED then
+        return "stalled";
+    end
+    return "none";
+end
+
+local function GetSupportName(state)
+    if state.SevereCatchup == 1 then
+        return "strong";
+    end
+    if state.Band == RELATIVE_CATCHUP then
+        return "mild";
+    end
+    return "none";
+end
+
 local function SyncRecoveryFlags(state)
     state.Recovery.Science = state.Focus == RELATIVE_FOCUS_SCIENCE;
     state.Recovery.Culture = state.Focus == RELATIVE_FOCUS_CULTURE;
@@ -541,7 +580,22 @@ local function GetNeutralRelativeState()
         FocusCandidate = RELATIVE_FOCUS_NONE,
         FocusStreak = 0,
         FocusChangedTurn = -100000,
-        FocusCooldownUntil = -1,
+        FocusCooldownUntil = {
+            [RELATIVE_FOCUS_SCIENCE] = -1,
+            [RELATIVE_FOCUS_CULTURE] = -1,
+            [RELATIVE_FOCUS_EMPIRE] = -1
+        },
+        FocusStartedTurn = -1,
+        FocusReviewTurn = -1,
+        FocusBaseline = 1,
+        FocusRawBaseline = 1,
+        FocusGain = 0,
+        FocusRawGain = 0,
+        FocusResult = RELATIVE_FOCUS_RESULT_NONE,
+        SevereCatchup = 0,
+        SevereCandidate = 0,
+        SevereStreak = 0,
+        SevereChangedTurn = -100000,
         LastSampleTurn = -1,
         LastEvaluationTurn = -1,
         EvaluatedThisTurn = false,
@@ -596,10 +650,63 @@ local function ReadRelativeState(player)
         RELATIVE_FOCUS_CHANGED_TURN_PROPERTY,
         -100000
     );
-    state.FocusCooldownUntil = GetStoredNumber(
+    local legacyFocusCooldown = GetStoredNumber(
         player,
         RELATIVE_FOCUS_COOLDOWN_PROPERTY,
         -1
+    );
+    for focus, propertyName in pairs(RELATIVE_FOCUS_COOLDOWN_PROPERTIES) do
+        state.FocusCooldownUntil[focus] = math.max(
+            legacyFocusCooldown,
+            GetStoredNumber(player, propertyName, -1)
+        );
+    end
+    state.FocusStartedTurn = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_STARTED_TURN_PROPERTY,
+        -1
+    );
+    state.FocusReviewTurn = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_REVIEW_TURN_PROPERTY,
+        state.FocusStartedTurn
+    );
+    state.FocusBaseline = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_BASELINE_PROPERTY,
+        1000
+    ) / 1000;
+    state.FocusRawBaseline = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_RAW_BASELINE_PROPERTY,
+        1000
+    ) / 1000;
+    state.FocusGain = GetStoredNumber(player, RELATIVE_FOCUS_GAIN_PROPERTY, 0) / 1000;
+    state.FocusRawGain = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_RAW_GAIN_PROPERTY,
+        0
+    ) / 1000;
+    state.FocusResult = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_RESULT_PROPERTY,
+        RELATIVE_FOCUS_RESULT_NONE
+    );
+    if state.FocusResult < RELATIVE_FOCUS_RESULT_NONE
+        or state.FocusResult > RELATIVE_FOCUS_RESULT_STALLED then
+        state.FocusResult = RELATIVE_FOCUS_RESULT_NONE;
+    end
+    state.SevereCatchup = GetStoredNumber(player, RELATIVE_SEVERE_PROPERTY, 0) == 1 and 1 or 0;
+    state.SevereCandidate = GetStoredNumber(
+        player,
+        RELATIVE_SEVERE_CANDIDATE_PROPERTY,
+        state.SevereCatchup
+    ) == 1 and 1 or 0;
+    state.SevereStreak = GetStoredNumber(player, RELATIVE_SEVERE_STREAK_PROPERTY, 0);
+    state.SevereChangedTurn = GetStoredNumber(
+        player,
+        RELATIVE_SEVERE_CHANGED_TURN_PROPERTY,
+        -100000
     );
     state.LastSampleTurn = GetStoredNumber(player, RELATIVE_SAMPLE_TURN_PROPERTY, -1);
     state.LastEvaluationTurn = GetStoredNumber(
@@ -630,7 +737,34 @@ local function StoreRelativeState(player, state)
     player:SetProperty(RELATIVE_FOCUS_CANDIDATE_PROPERTY, state.FocusCandidate);
     player:SetProperty(RELATIVE_FOCUS_STREAK_PROPERTY, state.FocusStreak);
     player:SetProperty(RELATIVE_FOCUS_CHANGED_TURN_PROPERTY, state.FocusChangedTurn);
-    player:SetProperty(RELATIVE_FOCUS_COOLDOWN_PROPERTY, state.FocusCooldownUntil);
+    -- Clear the pre-0.5 global cooldown after migrating it into pillar cooldowns.
+    player:SetProperty(RELATIVE_FOCUS_COOLDOWN_PROPERTY, -1);
+    for focus, propertyName in pairs(RELATIVE_FOCUS_COOLDOWN_PROPERTIES) do
+        player:SetProperty(propertyName, state.FocusCooldownUntil[focus]);
+    end
+    player:SetProperty(RELATIVE_FOCUS_STARTED_TURN_PROPERTY, state.FocusStartedTurn);
+    player:SetProperty(RELATIVE_FOCUS_REVIEW_TURN_PROPERTY, state.FocusReviewTurn);
+    player:SetProperty(
+        RELATIVE_FOCUS_BASELINE_PROPERTY,
+        math.floor(state.FocusBaseline * 1000 + 0.5)
+    );
+    player:SetProperty(
+        RELATIVE_FOCUS_RAW_BASELINE_PROPERTY,
+        math.floor(state.FocusRawBaseline * 1000 + 0.5)
+    );
+    player:SetProperty(
+        RELATIVE_FOCUS_GAIN_PROPERTY,
+        math.floor(state.FocusGain * 1000 + 0.5)
+    );
+    player:SetProperty(
+        RELATIVE_FOCUS_RAW_GAIN_PROPERTY,
+        math.floor(state.FocusRawGain * 1000 + 0.5)
+    );
+    player:SetProperty(RELATIVE_FOCUS_RESULT_PROPERTY, state.FocusResult);
+    player:SetProperty(RELATIVE_SEVERE_PROPERTY, state.SevereCatchup);
+    player:SetProperty(RELATIVE_SEVERE_CANDIDATE_PROPERTY, state.SevereCandidate);
+    player:SetProperty(RELATIVE_SEVERE_STREAK_PROPERTY, state.SevereStreak);
+    player:SetProperty(RELATIVE_SEVERE_CHANGED_TURN_PROPERTY, state.SevereChangedTurn);
     player:SetProperty(RELATIVE_SAMPLE_TURN_PROPERTY, state.LastSampleTurn);
     player:SetProperty(RELATIVE_EVALUATION_TURN_PROPERTY, state.LastEvaluationTurn);
 end
@@ -734,7 +868,16 @@ local function GetDesiredBand(state, thresholds)
     return RELATIVE_MATCHED;
 end
 
-local function GetWorstEligibleFocus(state, recoveryThresholds)
+local function GetDesiredSevereCatchup(state)
+    local enter = GetNumberParameter("ASAI_RELATIVE_SEVERE_ENTER_X100", 75) / 100;
+    local exit = GetNumberParameter("ASAI_RELATIVE_SEVERE_EXIT_X100", 82) / 100;
+    if state.SevereCatchup == 1 then
+        return state.Scores.Overall < exit and 1 or 0;
+    end
+    return state.Scores.Overall <= enter and 1 or 0;
+end
+
+local function GetWorstEligibleFocus(state, recoveryThresholds, turn)
     local selected = RELATIVE_FOCUS_NONE;
     local selectedScore = math.huge;
     for _, focus in ipairs({
@@ -744,7 +887,10 @@ local function GetWorstEligibleFocus(state, recoveryThresholds)
     }) do
         local definition = recoveryThresholds[focus];
         local score = state.Scores[definition.Key];
-        if score <= definition.Enter and score < selectedScore then
+        local cooldownUntil = state.FocusCooldownUntil[focus] or -1;
+        if turn >= cooldownUntil
+            and score <= definition.Enter
+            and score < selectedScore then
             selected = focus;
             selectedScore = score;
         end
@@ -752,8 +898,12 @@ local function GetWorstEligibleFocus(state, recoveryThresholds)
     return selected, selectedScore;
 end
 
-local function GetDesiredFocus(state, recoveryThresholds)
-    local worstFocus, worstScore = GetWorstEligibleFocus(state, recoveryThresholds);
+local function GetDesiredFocus(state, recoveryThresholds, turn)
+    local worstFocus, worstScore = GetWorstEligibleFocus(
+        state,
+        recoveryThresholds,
+        turn
+    );
     if state.Focus == RELATIVE_FOCUS_NONE then
         return worstFocus;
     end
@@ -774,6 +924,64 @@ local function GetDesiredFocus(state, recoveryThresholds)
         return worstFocus;
     end
     return state.Focus;
+end
+
+local function GetFocusScore(state, focus, raw)
+    local definition = GetRecoveryThresholds()[focus];
+    if definition == nil then
+        return 1;
+    end
+    local scores = raw and state.RawScores or state.Scores;
+    return scores[definition.Key];
+end
+
+local function StartFocusReview(state, focus, turn)
+    state.FocusStartedTurn = turn;
+    state.FocusReviewTurn = turn;
+    state.FocusBaseline = GetFocusScore(state, focus, false);
+    state.FocusRawBaseline = GetFocusScore(state, focus, true);
+    state.FocusGain = 0;
+    state.FocusRawGain = 0;
+    state.FocusResult = RELATIVE_FOCUS_RESULT_NONE;
+end
+
+local function ReviewActiveFocus(state, turn)
+    if state.Focus == RELATIVE_FOCUS_NONE then
+        return false;
+    end
+    if state.FocusReviewTurn < 0 then
+        StartFocusReview(state, state.Focus, turn);
+        return false;
+    end
+
+    local reviewWindow = ScaleStandardTurns(
+        GetNumberParameter("ASAI_RELATIVE_FOCUS_REVIEW_STANDARD", 20)
+    );
+    if turn - state.FocusReviewTurn < reviewWindow then
+        return false;
+    end
+
+    state.FocusGain = GetFocusScore(state, state.Focus, false) - state.FocusBaseline;
+    state.FocusRawGain = GetFocusScore(state, state.Focus, true)
+        - state.FocusRawBaseline;
+    local minimumGain = GetNumberParameter(
+        "ASAI_RELATIVE_FOCUS_MIN_GAIN_X100",
+        3
+    ) / 100;
+    local minimumRawGain = GetNumberParameter(
+        "ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100",
+        1
+    ) / 100;
+    if state.FocusGain < minimumGain and state.FocusRawGain < minimumRawGain then
+        state.FocusResult = RELATIVE_FOCUS_RESULT_STALLED;
+        return true;
+    end
+
+    state.FocusResult = RELATIVE_FOCUS_RESULT_IMPROVING;
+    state.FocusReviewTurn = turn;
+    state.FocusBaseline = GetFocusScore(state, state.Focus, false);
+    state.FocusRawBaseline = GetFocusScore(state, state.Focus, true);
+    return false;
 end
 
 local function AdvanceConfirmedState(current, candidate, streak, desired, canChange)
@@ -858,6 +1066,9 @@ local function EvaluateRelativeState(playerID)
     if evaluationDue then
         local previousBand = state.Band;
         local previousFocus = state.Focus;
+        local previousSevere = state.SevereCatchup;
+        local previousSupport = previousSevere == 1 and "strong"
+            or (previousBand == RELATIVE_CATCHUP and "mild" or "none");
         local minimumDwell = ScaleStandardTurns(
             GetNumberParameter("ASAI_RELATIVE_MIN_DWELL_STANDARD", 12)
         );
@@ -888,27 +1099,63 @@ local function EvaluateRelativeState(playerID)
             end
         end
 
-        local recoveryThresholds = GetRecoveryThresholds();
-        local desiredFocus = GetDesiredFocus(state, recoveryThresholds);
-        local canChangeFocus = turn - state.FocusChangedTurn >= minimumDwell;
-        if state.Focus == RELATIVE_FOCUS_NONE and turn < state.FocusCooldownUntil then
-            canChangeFocus = false;
+        local desiredSevere = GetDesiredSevereCatchup(state);
+        local canChangeSevere = turn - state.SevereChangedTurn >= minimumDwell;
+        local severeChanged = false;
+        state.SevereCatchup,
+        state.SevereCandidate,
+        state.SevereStreak,
+        severeChanged = AdvanceConfirmedState(
+            state.SevereCatchup,
+            state.SevereCandidate,
+            state.SevereStreak,
+            desiredSevere,
+            canChangeSevere
+        );
+        if severeChanged then
+            state.SevereChangedTurn = turn;
         end
+
+        local recoveryThresholds = GetRecoveryThresholds();
         local focusChanged = false;
-        state.Focus,
-        state.FocusCandidate,
-        state.FocusStreak,
-        focusChanged = AdvanceConfirmedState(
+        local focusRetired = ReviewActiveFocus(state, turn);
+        if focusRetired then
+            local stalledCooldown = ScaleStandardTurns(
+                GetNumberParameter("ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD", 16)
+            );
+            state.FocusCooldownUntil[state.Focus] = math.max(
+                state.FocusCooldownUntil[state.Focus] or -1,
+                turn + stalledCooldown
+            );
+            state.Focus = RELATIVE_FOCUS_NONE;
+            state.FocusCandidate = RELATIVE_FOCUS_NONE;
+            state.FocusStreak = 0;
+            state.FocusChangedTurn = turn;
+            focusChanged = true;
+        else
+            local desiredFocus = GetDesiredFocus(state, recoveryThresholds, turn);
+            local canChangeFocus = turn - state.FocusChangedTurn >= minimumDwell;
             state.Focus,
             state.FocusCandidate,
             state.FocusStreak,
-            desiredFocus,
-            canChangeFocus
-        );
+            focusChanged = AdvanceConfirmedState(
+                state.Focus,
+                state.FocusCandidate,
+                state.FocusStreak,
+                desiredFocus,
+                canChangeFocus
+            );
+        end
         if focusChanged then
             state.FocusChangedTurn = turn;
-            if state.Focus == RELATIVE_FOCUS_NONE then
-                state.FocusCooldownUntil = turn + cooldown;
+            if previousFocus ~= RELATIVE_FOCUS_NONE and not focusRetired then
+                state.FocusCooldownUntil[previousFocus] = math.max(
+                    state.FocusCooldownUntil[previousFocus] or -1,
+                    turn + cooldown
+                );
+            end
+            if state.Focus ~= RELATIVE_FOCUS_NONE then
+                StartFocusReview(state, state.Focus, turn);
             end
         end
 
@@ -929,9 +1176,20 @@ local function EvaluateRelativeState(playerID)
                 GetBandName(state.Band)
             ));
         end
+        if severeChanged then
+            print(string.format(
+                "ASAI_SUPPORT turn=%d standard_turn=%.1f player=%d relative=%.3f from=%s to=%s",
+                turn,
+                GetStandardEquivalentTurn(turn),
+                playerID,
+                state.Scores.Overall,
+                previousSupport,
+                GetSupportName(state)
+            ));
+        end
         if focusChanged then
             print(string.format(
-                "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s",
+                "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s result=%s gain=%.3f raw_gain=%.3f",
                 turn,
                 GetStandardEquivalentTurn(turn),
                 playerID,
@@ -942,7 +1200,10 @@ local function EvaluateRelativeState(playerID)
                 state.Scores.Culture,
                 state.Scores.Empire,
                 GetFocusName(previousFocus),
-                GetFocusName(state.Focus)
+                GetFocusName(state.Focus),
+                GetFocusResultName(state.FocusResult),
+                state.FocusGain,
+                state.FocusRawGain
             ));
         end
     end
@@ -968,6 +1229,19 @@ function ASAI_IsRelativeCatchup(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsRelativeCatchup.Add(ASAI_IsRelativeCatchup);
+
+local function IsRelativeSevereCatchup(playerID, threshold)
+    return GetRelativeState(playerID).SevereCatchup == 1;
+end
+function ASAI_IsRelativeSevereCatchup(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsRelativeSevereCatchup",
+        IsRelativeSevereCatchup,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsRelativeSevereCatchup.Add(ASAI_IsRelativeSevereCatchup);
 
 local function IsRelativeConsolidate(playerID, threshold)
     return GetRelativeState(playerID).Band == RELATIVE_CONSOLIDATE;
@@ -1037,8 +1311,11 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local snapshot = GetSnapshot(playerID);
     local strength = GetStrengthSnapshot(playerID);
     local infrastructureTarget = GetInfrastructureTarget(snapshot);
+    local focusAge = relativeState.FocusStartedTurn >= 0
+        and GetStandardEquivalentTurn(snapshot.Turn - relativeState.FocusStartedTurn)
+        or 0;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builders=%d traders=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s focus=%s",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builders=%d traders=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -1074,7 +1351,12 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.RawScores.Military,
         relativeState.Scores.Military,
         GetBandName(relativeState.Band),
-        GetFocusName(relativeState.Focus)
+        GetSupportName(relativeState),
+        GetFocusName(relativeState.Focus),
+        GetFocusResultName(relativeState.FocusResult),
+        relativeState.FocusGain,
+        relativeState.FocusRawGain,
+        focusAge
     ));
     print(string.format(
         "ASAI_COMPONENTS turn=%d player=%d tech_raw=%.3f tech_controlled=%.3f civics_raw=%.3f civics_controlled=%.3f science_raw=%.3f science_controlled=%.3f culture_raw=%.3f culture_controlled=%.3f cities_raw=%.3f cities_controlled=%.3f pop_raw=%.3f pop_controlled=%.3f military_raw=%.3f military_controlled=%.3f",

@@ -18,6 +18,7 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_CULTURE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
@@ -32,6 +33,7 @@ VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 1),
     ('ASAI_STRATEGY_LATE_GAME', 1),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 1),
+    ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 1),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 1),
     ('ASAI_STRATEGY_SCIENCE_RECOVERY', 1),
     ('ASAI_STRATEGY_CULTURE_RECOVERY', 1),
@@ -52,6 +54,8 @@ VALUES
     ('ASAI_STRATEGY_LATE_GAME', 'Call Lua Function', 'ASAI_IsLateGame', 0, 0),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Call Lua Function', 'ASAI_IsRelativeCatchup', 0, 0),
+    ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'Call Lua Function', 'ASAI_IsRelativeSevereCatchup', 0, 0),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'Call Lua Function', 'ASAI_IsRelativeConsolidate', 0, 0),
     ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'Is Not Major', NULL, 0, 1),
@@ -86,6 +90,9 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_RelativeCatchupUnits'),
     ('ASAI_RelativeCatchupYields'),
     ('ASAI_RelativeCatchupDistricts'),
+    ('ASAI_RelativeSeverePseudoYields'),
+    ('ASAI_RelativeSevereYields'),
+    ('ASAI_RelativeSevereDistricts'),
     ('ASAI_RelativeLeadPseudoYields'),
     ('ASAI_RelativeLeadYields'),
     ('ASAI_ScienceRecoveryDistricts'),
@@ -124,6 +131,9 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_RelativeCatchupUnits', 'Units'),
     ('ASAI_RelativeCatchupYields', 'Yields'),
     ('ASAI_RelativeCatchupDistricts', 'Districts'),
+    ('ASAI_RelativeSeverePseudoYields', 'PseudoYields'),
+    ('ASAI_RelativeSevereYields', 'Yields'),
+    ('ASAI_RelativeSevereDistricts', 'Districts'),
     ('ASAI_RelativeLeadPseudoYields', 'PseudoYields'),
     ('ASAI_RelativeLeadYields', 'Yields'),
     ('ASAI_ScienceRecoveryDistricts', 'Districts'),
@@ -162,6 +172,9 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupUnits'),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupYields'),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'ASAI_RelativeCatchupDistricts'),
+    ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'ASAI_RelativeSeverePseudoYields'),
+    ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'ASAI_RelativeSevereYields'),
+    ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'ASAI_RelativeSevereDistricts'),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadPseudoYields'),
     ('ASAI_STRATEGY_RELATIVE_CONSOLIDATE', 'ASAI_RelativeLeadYields'),
     ('ASAI_STRATEGY_SCIENCE_RECOVERY', 'ASAI_ScienceRecoveryDistricts'),
@@ -223,17 +236,28 @@ VALUES
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 5),
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 4),
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_HARBOR', 1, 4),
+    ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 8),
+    ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 6),
+    ('ASAI_RelativeSevereYields', 'YIELD_PRODUCTION', 1, 12),
+    ('ASAI_RelativeSevereYields', 'YIELD_SCIENCE', 1, 8),
+    ('ASAI_RelativeSevereYields', 'YIELD_CULTURE', 1, 8),
+    ('ASAI_RelativeSevereYields', 'YIELD_GOLD', 1, 6),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_CAMPUS', 1, 10),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_THEATER', 1, 10),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 12),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 6),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_HARBOR', 1, 6),
     ('ASAI_RelativeLeadPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 4),
     ('ASAI_RelativeLeadYields', 'YIELD_GOLD', 1, 3),
-    ('ASAI_ScienceRecoveryDistricts', 'DISTRICT_CAMPUS', 1, 16),
-    ('ASAI_ScienceRecoveryYields', 'YIELD_SCIENCE', 1, 12),
-    ('ASAI_ScienceRecoveryYields', 'YIELD_PRODUCTION', 1, 4),
-    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_WRITER', 1, 8),
-    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_ARTIST', 1, 8),
-    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_MUSICIAN', 1, 8),
-    ('ASAI_CultureRecoveryDistricts', 'DISTRICT_THEATER', 1, 20),
-    ('ASAI_CultureRecoveryYields', 'YIELD_CULTURE', 1, 15),
-    ('ASAI_CultureRecoveryYields', 'YIELD_PRODUCTION', 1, 4),
+    ('ASAI_ScienceRecoveryDistricts', 'DISTRICT_CAMPUS', 1, 24),
+    ('ASAI_ScienceRecoveryYields', 'YIELD_SCIENCE', 1, 20),
+    ('ASAI_ScienceRecoveryYields', 'YIELD_PRODUCTION', 1, 8),
+    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_WRITER', 1, 12),
+    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_ARTIST', 1, 12),
+    ('ASAI_CultureRecoveryPseudoYields', 'PSEUDOYIELD_GPP_MUSICIAN', 1, 12),
+    ('ASAI_CultureRecoveryDistricts', 'DISTRICT_THEATER', 1, 25),
+    ('ASAI_CultureRecoveryYields', 'YIELD_CULTURE', 1, 22),
+    ('ASAI_CultureRecoveryYields', 'YIELD_PRODUCTION', 1, 8),
     ('ASAI_EmpireRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 20),
     ('ASAI_EmpireRecoveryPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 10),
     ('ASAI_EmpireRecoveryUnits', 'UNIT_SETTLER', 1, 20),
@@ -260,14 +284,14 @@ WHERE BuildingType IN
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_ScienceRecoveryBuildings', BuildingType, 1, 18
+SELECT 'ASAI_ScienceRecoveryBuildings', BuildingType, 1, 24
 FROM Buildings
 WHERE BuildingType IN
     ('BUILDING_LIBRARY', 'BUILDING_UNIVERSITY', 'BUILDING_RESEARCH_LAB');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_CultureRecoveryBuildings', BuildingType, 1, 20
+SELECT 'ASAI_CultureRecoveryBuildings', BuildingType, 1, 25
 FROM Buildings
 WHERE BuildingType IN
     ('BUILDING_AMPHITHEATER', 'BUILDING_MUSEUM_ART',
