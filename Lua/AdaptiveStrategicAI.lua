@@ -3,6 +3,8 @@ print("Adaptive Strategic AI " .. tostring(GlobalParameters.ASAI_VERSION) .. " l
 local m_Snapshots = {};
 local m_StrengthSnapshots = {};
 local m_HumanReference = { Turn = -1, Value = nil };
+local m_EconomicSnapshots = {};
+local m_HumanEconomicReference = { Turn = -1, Value = nil };
 local m_RelativeRuntime = {};
 local m_ConditionErrors = {};
 local m_ProductionApiLogged = false;
@@ -132,6 +134,24 @@ local function RunStrategyCondition(conditionName, evaluator, playerID, threshol
     return false;
 end
 
+local function TryDiagnosticSensor(sensorName, collector)
+    local success, result = pcall(collector);
+    if success and result ~= nil then
+        return result, 1;
+    end
+
+    local errorKey = "ASAI_Diagnostic_" .. sensorName;
+    if m_ConditionErrors[errorKey] == nil then
+        print(string.format(
+            "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing error=%s",
+            sensorName,
+            tostring(result)
+        ));
+        m_ConditionErrors[errorKey] = true;
+    end
+    return nil, 0;
+end
+
 local function IsMajorAI(playerID)
     if not PlayerManager.IsAlive(playerID) then
         return false;
@@ -208,6 +228,169 @@ local function CountInFlightUnits(player)
         end
     end
     return builders, traders, settlers;
+end
+
+local function CollectProductionDiagnostics(player)
+    local productionYield = GameInfo.Yields["YIELD_PRODUCTION"];
+    if productionYield == nil then
+        error("YIELD_PRODUCTION is unavailable");
+    end
+
+    local production = 0;
+    for _, city in player:GetCities():Members() do
+        local cityProduction = tonumber(city:GetYield(productionYield.Index));
+        if cityProduction == nil then
+            error("City:GetYield(PRODUCTION) returned no value");
+        end
+        production = production + cityProduction;
+    end
+    return { Production = production };
+end
+
+local function CollectQueueDiagnostics(player)
+    local result = {
+        Units = 0,
+        Districts = 0,
+        Buildings = 0,
+        Projects = 0,
+        Idle = 0,
+        Unknown = 0
+    };
+    for _, city in player:GetCities():Members() do
+        local buildQueue = city:GetBuildQueue();
+        local productionHash = buildQueue ~= nil
+            and buildQueue:GetCurrentProductionTypeHash()
+            or 0;
+        if productionHash == nil or productionHash == 0 then
+            result.Idle = result.Idle + 1;
+        elseif GameInfo.Units[productionHash] ~= nil then
+            result.Units = result.Units + 1;
+        elseif GameInfo.Districts[productionHash] ~= nil then
+            result.Districts = result.Districts + 1;
+        elseif GameInfo.Buildings[productionHash] ~= nil then
+            result.Buildings = result.Buildings + 1;
+        elseif GameInfo.Projects[productionHash] ~= nil then
+            result.Projects = result.Projects + 1;
+        else
+            result.Unknown = result.Unknown + 1;
+        end
+    end
+    return result;
+end
+
+local function CollectDistrictDiagnostics(player)
+    local used = 0;
+    local slots = 0;
+    local openCities = 0;
+    for _, city in player:GetCities():Members() do
+        local districts = city:GetDistricts();
+        if districts == nil then
+            error("City:GetDistricts() is unavailable");
+        end
+        local cityUsed = tonumber(
+            districts:GetNumZonedDistrictsRequiringPopulation()
+        );
+        local citySlots = tonumber(
+            districts:GetNumAllowedDistrictsRequiringPopulation()
+        );
+        if cityUsed == nil or citySlots == nil then
+            error("population district-slot methods returned no value");
+        end
+        used = used + cityUsed;
+        slots = slots + citySlots;
+        if cityUsed < citySlots then
+            openCities = openCities + 1;
+        end
+    end
+    return { Used = used, Slots = slots, OpenCities = openCities };
+end
+
+local function CollectStrategicResourceDiagnostics(player)
+    local resources = player:GetResources();
+    if resources == nil then
+        error("Player:GetResources() is unavailable");
+    end
+
+    local stockpile = 0;
+    local capacity = 0;
+    local net = 0;
+    local types = 0;
+    local fullTypes = 0;
+    for resource in GameInfo.Resources() do
+        if resource.ResourceClassType == "RESOURCECLASS_STRATEGIC" then
+            local amount = tonumber(resources:GetResourceAmount(resource.ResourceType)) or 0;
+            local resourceCapacity = tonumber(
+                resources:GetResourceStockpileCap(resource.ResourceType)
+            ) or 0;
+            local accumulation = tonumber(
+                resources:GetResourceAccumulationPerTurn(resource.ResourceType)
+            ) or 0;
+            local imports = tonumber(
+                resources:GetResourceImportPerTurn(resource.ResourceType)
+            ) or 0;
+            local bonuses = tonumber(
+                resources:GetBonusResourcePerTurn(resource.ResourceType)
+            ) or 0;
+            local unitDemand = tonumber(
+                resources:GetUnitResourceDemandPerTurn(resource.ResourceType)
+            ) or 0;
+            local powerDemand = tonumber(
+                resources:GetPowerResourceDemandPerTurn(resource.ResourceType)
+            ) or 0;
+            local resourceNet = accumulation + imports + bonuses
+                - unitDemand - powerDemand;
+            if amount > 0 or resourceNet ~= 0 then
+                stockpile = stockpile + amount;
+                capacity = capacity + math.max(0, resourceCapacity);
+                net = net + resourceNet;
+                types = types + 1;
+                if resourceCapacity > 0 and amount >= resourceCapacity * 0.9 then
+                    fullTypes = fullTypes + 1;
+                end
+            end
+        end
+    end
+    return {
+        Stockpile = stockpile,
+        Capacity = capacity,
+        Net = net,
+        Types = types,
+        FullTypes = fullTypes
+    };
+end
+
+local function CollectUpgradeDiagnostics(player)
+    if UnitCommandTypes == nil or UnitCommandTypes.UPGRADE == nil then
+        error("UnitCommandTypes.UPGRADE is unavailable");
+    end
+
+    local upgradeable = 0;
+    local ready = 0;
+    local cost = 0;
+    for _, unit in player:GetUnits():Members() do
+        local canUpgrade = UnitManager.CanStartCommand(
+            unit,
+            UnitCommandTypes.UPGRADE,
+            true
+        );
+        if canUpgrade then
+            local unitCost = tonumber(unit:GetUpgradeCost());
+            if unitCost ~= nil and unitCost > 0 then
+                upgradeable = upgradeable + 1;
+                cost = cost + unitCost;
+                local canUpgradeNow = UnitManager.CanStartCommand(
+                    unit,
+                    UnitCommandTypes.UPGRADE,
+                    false,
+                    true
+                );
+                if canUpgradeNow then
+                    ready = ready + 1;
+                end
+            end
+        end
+    end
+    return { Upgradeable = upgradeable, Ready = ready, Cost = cost };
 end
 
 local function CountWarsByOpponentType(playerID, player)
@@ -362,6 +545,142 @@ local function GetBuilderCoverage(snapshot)
     local builderCredit = GetNumberParameter("ASAI_INFRA_BUILDER_CREDIT", 2);
     return snapshot.Improvements
         + (snapshot.Builders + snapshot.InFlightBuilders) * builderCredit;
+end
+
+local function GetEconomicSnapshot(playerID)
+    local turn = Game.GetCurrentGameTurn();
+    local cached = m_EconomicSnapshots[playerID];
+    if cached ~= nil and cached.Turn == turn then
+        return cached;
+    end
+
+    local player = Players[playerID];
+    local snapshot = GetSnapshot(playerID);
+    local production, productionOk = TryDiagnosticSensor(
+        "production",
+        function() return CollectProductionDiagnostics(player); end
+    );
+    local queue, queueOk = TryDiagnosticSensor(
+        "production_queue",
+        function() return CollectQueueDiagnostics(player); end
+    );
+    local districts, districtOk = TryDiagnosticSensor(
+        "district_capacity",
+        function() return CollectDistrictDiagnostics(player); end
+    );
+    local strategic, resourceOk = TryDiagnosticSensor(
+        "strategic_resources",
+        function() return CollectStrategicResourceDiagnostics(player); end
+    );
+    local upgrades, upgradeOk = TryDiagnosticSensor(
+        "unit_upgrades",
+        function() return CollectUpgradeDiagnostics(player); end
+    );
+
+    production = production or { Production = -1 };
+    queue = queue or {
+        Units = -1,
+        Districts = -1,
+        Buildings = -1,
+        Projects = -1,
+        Idle = -1,
+        Unknown = -1
+    };
+    districts = districts or { Used = -1, Slots = -1, OpenCities = -1 };
+    strategic = strategic or {
+        Stockpile = -1,
+        Capacity = -1,
+        Net = -1,
+        Types = -1,
+        FullTypes = -1
+    };
+    upgrades = upgrades or { Upgradeable = -1, Ready = -1, Cost = -1 };
+
+    local infrastructureTarget = GetInfrastructureTarget(snapshot);
+    local reserve = snapshot.Cities
+        * GetNumberParameter("ASAI_GOLD_RESERVE_PER_CITY", 15);
+    local goldSurplus = math.max(0, snapshot.GoldBalance - reserve);
+    local result = {
+        Turn = turn,
+        Production = production.Production,
+        ProductionPerCity = productionOk == 1 and snapshot.Cities > 0
+            and production.Production / snapshot.Cities or -1,
+        ProductionPerPopulation = productionOk == 1 and snapshot.Population > 0
+            and production.Production / snapshot.Population or -1,
+        Queue = queue,
+        Districts = districts,
+        DistrictUtilization = districtOk == 1 and districts.Slots > 0
+            and districts.Used / districts.Slots or -1,
+        RouteCoverage = snapshot.RouteCapacity > 0
+            and math.min(snapshot.Traders, snapshot.RouteCapacity)
+                / snapshot.RouteCapacity or -1,
+        RoutePipelineCoverage = snapshot.RouteCapacity > 0
+            and math.min(
+                snapshot.Traders + snapshot.InFlightTraders,
+                snapshot.RouteCapacity
+            ) / snapshot.RouteCapacity or -1,
+        ImprovementCoverage = infrastructureTarget > 0
+            and snapshot.Improvements / infrastructureTarget or -1,
+        ImprovementPipelineCoverage = infrastructureTarget > 0
+            and GetBuilderCoverage(snapshot) / infrastructureTarget or -1,
+        ImprovedLand = snapshot.OwnedPlots > 0
+            and snapshot.Improvements / snapshot.OwnedPlots or -1,
+        GoldReserve = reserve,
+        GoldSurplus = goldSurplus,
+        GoldPerCity = snapshot.Cities > 0
+            and snapshot.GoldBalance / snapshot.Cities or -1,
+        UncommittedGold = upgradeOk == 1
+            and math.max(0, goldSurplus - upgrades.Cost) or -1,
+        Strategic = strategic,
+        Upgrades = upgrades,
+        ProductionOk = productionOk,
+        QueueOk = queueOk,
+        DistrictOk = districtOk,
+        ResourceOk = resourceOk,
+        UpgradeOk = upgradeOk
+    };
+    m_EconomicSnapshots[playerID] = result;
+    return result;
+end
+
+local function GetHumanEconomicReference()
+    local turn = Game.GetCurrentGameTurn();
+    if m_HumanEconomicReference.Turn == turn then
+        return m_HumanEconomicReference.Value;
+    end
+
+    local production = 0;
+    local productionPerCity = 0;
+    local humans = 0;
+    for _, playerID in ipairs(PlayerManager.GetAliveMajorIDs()) do
+        local player = Players[playerID];
+        if player ~= nil and player:IsHuman() then
+            local economic = GetEconomicSnapshot(playerID);
+            if economic.ProductionOk == 1 then
+                production = production + economic.Production;
+                productionPerCity = productionPerCity + economic.ProductionPerCity;
+                humans = humans + 1;
+            end
+        end
+    end
+    if humans == 0 then
+        m_HumanEconomicReference = { Turn = turn, Value = nil };
+        return nil;
+    end
+
+    local result = {
+        Production = production / humans,
+        ProductionPerCity = productionPerCity / humans
+    };
+    m_HumanEconomicReference = { Turn = turn, Value = result };
+    return result;
+end
+
+local function GetDiagnosticRatio(numerator, denominator)
+    if numerator == nil or numerator < 0 or denominator == nil or denominator <= 0 then
+        return -1;
+    end
+    return numerator / denominator;
 end
 
 local function GetMaximumSettlersInFlight(snapshot)
@@ -1752,6 +2071,90 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     ));
 end
 
+local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
+    if not firstTimeThisTurn or not IsMajorAI(playerID) then
+        return;
+    end
+    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 then
+        return;
+    end
+
+    local relativeState = GetRelativeState(playerID);
+    if not relativeState.EvaluatedThisTurn then
+        return;
+    end
+
+    local snapshot = GetSnapshot(playerID);
+    local economic = GetEconomicSnapshot(playerID);
+    local human = GetHumanEconomicReference();
+    local productionRatio = human ~= nil
+        and GetDiagnosticRatio(economic.Production, human.Production) or -1;
+    local productionPerCityRatio = human ~= nil
+        and GetDiagnosticRatio(
+            economic.ProductionPerCity,
+            human.ProductionPerCity
+        ) or -1;
+    local strategicFill = GetDiagnosticRatio(
+        economic.Strategic.Stockpile,
+        economic.Strategic.Capacity
+    );
+    print(string.format(
+        "ASAI_ECONOMY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d production=%.1f production_per_city=%.2f production_per_pop=%.2f production_ratio=%.3f production_per_city_ratio=%.3f district_used=%d district_slots=%d district_util=%.3f district_open_cities=%d route_capacity=%d route_coverage=%.3f route_pipeline=%.3f improvement_coverage=%.3f improvement_pipeline=%.3f improved_land=%.3f production_ok=%d district_ok=%d",
+        snapshot.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(snapshot.Turn),
+        playerID,
+        economic.Production,
+        economic.ProductionPerCity,
+        economic.ProductionPerPopulation,
+        productionRatio,
+        productionPerCityRatio,
+        economic.Districts.Used,
+        economic.Districts.Slots,
+        economic.DistrictUtilization,
+        economic.Districts.OpenCities,
+        snapshot.RouteCapacity,
+        economic.RouteCoverage,
+        economic.RoutePipelineCoverage,
+        economic.ImprovementCoverage,
+        economic.ImprovementPipelineCoverage,
+        economic.ImprovedLand,
+        economic.ProductionOk,
+        economic.DistrictOk
+    ));
+    print(string.format(
+        "ASAI_CONVERSION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d cities=%d queue_units=%d queue_districts=%d queue_buildings=%d queue_projects=%d queue_idle=%d queue_unknown=%d gold=%.1f gold_reserve=%.1f gold_surplus=%.1f gold_per_city=%.1f uncommitted_gold=%.1f strategic_stockpile=%.1f strategic_capacity=%.1f strategic_fill=%.3f strategic_net=%.1f strategic_types=%d strategic_full_types=%d upgradeable=%d upgrade_ready=%d upgrade_cost=%.1f queue_ok=%d resource_ok=%d upgrade_ok=%d",
+        snapshot.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(snapshot.Turn),
+        playerID,
+        snapshot.Cities,
+        economic.Queue.Units,
+        economic.Queue.Districts,
+        economic.Queue.Buildings,
+        economic.Queue.Projects,
+        economic.Queue.Idle,
+        economic.Queue.Unknown,
+        snapshot.GoldBalance,
+        economic.GoldReserve,
+        economic.GoldSurplus,
+        economic.GoldPerCity,
+        economic.UncommittedGold,
+        economic.Strategic.Stockpile,
+        economic.Strategic.Capacity,
+        strategicFill,
+        economic.Strategic.Net,
+        economic.Strategic.Types,
+        economic.Strategic.FullTypes,
+        economic.Upgrades.Upgradeable,
+        economic.Upgrades.Ready,
+        economic.Upgrades.Cost,
+        economic.QueueOk,
+        economic.ResourceOk,
+        economic.UpgradeOk
+    ));
+end
+
 local function LogMetrics(playerID, firstTimeThisTurn)
     if firstTimeThisTurn and IsMajorAI(playerID) then
         local evaluationSuccess, evaluationError = pcall(EvaluateRelativeState, playerID);
@@ -1775,6 +2178,19 @@ local function LogMetrics(playerID, firstTimeThisTurn)
             tostring(metricError)
         ));
         m_ConditionErrors.ASAI_LogMetrics = true;
+    end
+    local diagnosticSuccess, diagnosticError = pcall(
+        WriteEconomicDiagnostics,
+        playerID,
+        firstTimeThisTurn
+    );
+    if not diagnosticSuccess and m_ConditionErrors.ASAI_LogEconomicDiagnostics == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_LogEconomicDiagnostics player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(diagnosticError)
+        ));
+        m_ConditionErrors.ASAI_LogEconomicDiagnostics = true;
     end
 end
 Events.PlayerTurnActivated.Add(LogMetrics);

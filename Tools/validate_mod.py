@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.5.2"
-EXPECTED_MODINFO_VERSION = "10"
+EXPECTED_RELEASE = "0.6.0"
+EXPECTED_MODINFO_VERSION = "11"
 
 
 def default_database() -> Path:
@@ -182,6 +182,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("Lua strategy condition guard does not use pcall")
     if "pcall(WriteMetrics, playerID, firstTimeThisTurn)" not in source:
         errors.append("Lua metrics logger is not fail-closed")
+    if "pcall(\n        WriteEconomicDiagnostics" not in source:
+        errors.append("economic diagnostics logger is not independently fail-closed")
     if "pcall(EvaluateRelativeState, playerID)" not in source:
         errors.append("Lua per-turn relative evaluator is not fail-closed")
     if "GetNumOutgoingRoutes" in source:
@@ -192,7 +194,15 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("player properties must be stored before numeric conversion")
     if "local function EstimateMilitaryStrength(player)" not in source:
         errors.append("gameplay-safe military strength estimator is missing")
-    for marker in ("ASAI_SUPPORT", "ASAI_RECOVERY", "ASAI_METRIC", "ASAI_COMPONENTS"):
+    for marker in (
+        "ASAI_SUPPORT",
+        "ASAI_RECOVERY",
+        "ASAI_METRIC",
+        "ASAI_COMPONENTS",
+        "ASAI_ECONOMY",
+        "ASAI_CONVERSION",
+        "ASAI_DIAGNOSTIC_ERROR",
+    ):
         counts = lua_format_counts(source, marker)
         if counts is None:
             errors.append(f"Lua format call could not be parsed: {marker}")
@@ -267,6 +277,68 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in support_fragments:
         if fragment not in source:
             errors.append(f"bounded support fragment is missing: {fragment}")
+    diagnostic_fragments = (
+        "local function TryDiagnosticSensor(sensorName, collector)",
+        "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
+        "local function CollectProductionDiagnostics(player)",
+        'GameInfo.Yields["YIELD_PRODUCTION"]',
+        "city:GetYield(productionYield.Index)",
+        "local function CollectQueueDiagnostics(player)",
+        "buildQueue:GetCurrentProductionTypeHash()",
+        "local function CollectDistrictDiagnostics(player)",
+        "GetNumZonedDistrictsRequiringPopulation()",
+        "GetNumAllowedDistrictsRequiringPopulation()",
+        "local function CollectStrategicResourceDiagnostics(player)",
+        "GetResourceStockpileCap(resource.ResourceType)",
+        "GetResourceAccumulationPerTurn(resource.ResourceType)",
+        "GetResourceImportPerTurn(resource.ResourceType)",
+        "GetBonusResourcePerTurn(resource.ResourceType)",
+        "GetUnitResourceDemandPerTurn(resource.ResourceType)",
+        "GetPowerResourceDemandPerTurn(resource.ResourceType)",
+        "local resourceNet = accumulation + imports + bonuses",
+        "local function CollectUpgradeDiagnostics(player)",
+        "UnitManager.CanStartCommand(",
+        "UnitCommandTypes.UPGRADE",
+        "unit:GetUpgradeCost()",
+        "local function GetEconomicSnapshot(playerID)",
+        '"production_queue"',
+        '"district_capacity"',
+        '"strategic_resources"',
+        '"unit_upgrades"',
+        "RoutePipelineCoverage = snapshot.RouteCapacity > 0",
+        "ImprovementPipelineCoverage = infrastructureTarget > 0",
+        "UncommittedGold = upgradeOk == 1",
+        "local function GetHumanEconomicReference()",
+        "local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)",
+        "ASAI_ECONOMY turn=%d evaluated_turn=%d",
+        "ASAI_CONVERSION turn=%d evaluated_turn=%d",
+        "production_ratio=%.3f",
+        "district_util=%.3f",
+        "route_coverage=%.3f",
+        "improvement_coverage=%.3f",
+        "queue_units=%d",
+        "gold_surplus=%.1f",
+        "strategic_fill=%.3f",
+        "upgradeable=%d",
+        "production_ok=%d",
+        "queue_ok=%d",
+        "resource_ok=%d",
+        "upgrade_ok=%d",
+    )
+    for fragment in diagnostic_fragments:
+        if fragment not in source:
+            errors.append(f"economic diagnostic fragment is missing: {fragment}")
+    component_block = re.search(
+        r"local RELATIVE_COMPONENTS = \{(.*?)\n\};",
+        source,
+        re.DOTALL,
+    )
+    if component_block is None:
+        errors.append("relative component table could not be parsed")
+    elif 'Key = "Production"' in component_block.group(1):
+        errors.append("diagnostic production entered the relative component table")
+    if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
+        errors.append("diagnostic production must not enter the relative score in 0.6.0")
     infrastructure_fragments = (
         'ASAI_INFRA_START_TURN_STANDARD", 20',
         'ASAI_INFRA_IMPROVEMENTS_PER_CITY_X100", 200',
