@@ -262,7 +262,9 @@ local function CountActiveMajorWars(player, majorOpponents, turn)
     local recentWindow = ScaleStandardTurns(
         GetNumberParameter("ASAI_WAR_RECENT_COMBAT_STANDARD", 8)
     );
-    if activeWars == 0 and turn - lastCombatTurn <= recentWindow then
+    if activeWars == 0
+        and #majorOpponents > 0
+        and turn - lastCombatTurn <= recentWindow then
         activeWars = 1;
     end
     return activeWars, lastCombatTurn;

@@ -30,6 +30,9 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
+EXPECTED_RELEASE = "0.5.0"
+EXPECTED_MODINFO_VERSION = "8"
+
 
 def default_database() -> Path:
     local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
@@ -150,6 +153,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_WAR_FRONT_CITY_DISTANCE",
         "ASAI_WAR_RECENT_COMBAT_STANDARD",
         "ASAI_LAST_MAJOR_COMBAT_TURN",
+        "and #majorOpponents > 0",
         "pcall(\n        RecordUnitDamage",
         "return GetSnapshot(playerID).ActiveMajorWars > 0",
         "Events.UnitDamageChanged.Add(OnUnitDamageChanged)",
@@ -647,10 +651,17 @@ def main() -> int:
     errors: list[str] = []
 
     try:
-        ET.parse(modinfo)
+        modinfo_root = ET.parse(modinfo).getroot()
     except (OSError, ET.ParseError) as error:
         print(f"modinfo error: {error}")
         return 1
+
+    if modinfo_root.get("version") != EXPECTED_MODINFO_VERSION:
+        errors.append(
+            "modinfo version differs: "
+            f"expected {EXPECTED_MODINFO_VERSION}, "
+            f"found {modinfo_root.get('version')}"
+        )
 
     for path in declared_files(modinfo):
         if not path.is_file():
@@ -682,6 +693,15 @@ def main() -> int:
                 ).fetchone()[0]
                 if strategy_count != 12:
                     errors.append(f"expected 12 adaptive strategies, found {strategy_count}")
+                release = target.execute(
+                    "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
+                ).fetchone()
+                if release is None or str(release[0]) != EXPECTED_RELEASE:
+                    errors.append(
+                        "database release differs: "
+                        f"expected {EXPECTED_RELEASE}, "
+                        f"found {None if release is None else release[0]}"
+                    )
 
     if errors:
         print("VALIDATION FAILED")
@@ -690,6 +710,7 @@ def main() -> int:
         return 1
 
     print("VALIDATION PASSED")
+    print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
     print("- adaptive strategies: 12 (including severe support and gated expansion)")
