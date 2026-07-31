@@ -45,6 +45,7 @@ local RELATIVE_FOCUS_PROPERTY = "ASAI_RELATIVE_FOCUS";
 local RELATIVE_FOCUS_CANDIDATE_PROPERTY = "ASAI_RELATIVE_FOCUS_CANDIDATE";
 local RELATIVE_FOCUS_STREAK_PROPERTY = "ASAI_RELATIVE_FOCUS_STREAK";
 local RELATIVE_FOCUS_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_FOCUS_CHANGED_TURN";
+local RELATIVE_FOCUS_HANDOFF_PROPERTY = "ASAI_RELATIVE_FOCUS_HANDOFF_READY";
 local RELATIVE_FOCUS_COOLDOWN_PROPERTY = "ASAI_RELATIVE_FOCUS_COOLDOWN_UNTIL";
 local RELATIVE_FOCUS_STARTED_TURN_PROPERTY = "ASAI_RELATIVE_FOCUS_STARTED_TURN";
 local RELATIVE_FOCUS_REVIEW_TURN_PROPERTY = "ASAI_RELATIVE_FOCUS_REVIEW_TURN";
@@ -775,6 +776,7 @@ local function GetNeutralRelativeState()
         FocusCandidate = RELATIVE_FOCUS_NONE,
         FocusStreak = 0,
         FocusChangedTurn = -100000,
+        FocusHandoffReady = false,
         FocusCooldownUntil = {
             [RELATIVE_FOCUS_SCIENCE] = -1,
             [RELATIVE_FOCUS_CULTURE] = -1,
@@ -845,6 +847,11 @@ local function ReadRelativeState(player)
         RELATIVE_FOCUS_CHANGED_TURN_PROPERTY,
         -100000
     );
+    state.FocusHandoffReady = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_HANDOFF_PROPERTY,
+        0
+    ) == 1;
     local legacyFocusCooldown = GetStoredNumber(
         player,
         RELATIVE_FOCUS_COOLDOWN_PROPERTY,
@@ -932,6 +939,10 @@ local function StoreRelativeState(player, state)
     player:SetProperty(RELATIVE_FOCUS_CANDIDATE_PROPERTY, state.FocusCandidate);
     player:SetProperty(RELATIVE_FOCUS_STREAK_PROPERTY, state.FocusStreak);
     player:SetProperty(RELATIVE_FOCUS_CHANGED_TURN_PROPERTY, state.FocusChangedTurn);
+    player:SetProperty(
+        RELATIVE_FOCUS_HANDOFF_PROPERTY,
+        state.FocusHandoffReady and 1 or 0
+    );
     -- Clear the pre-0.5 global cooldown after migrating it into pillar cooldowns.
     player:SetProperty(RELATIVE_FOCUS_COOLDOWN_PROPERTY, -1);
     for focus, propertyName in pairs(RELATIVE_FOCUS_COOLDOWN_PROPERTIES) do
@@ -1063,13 +1074,31 @@ local function GetDesiredBand(state, thresholds)
     return RELATIVE_MATCHED;
 end
 
+local function GetSecondWeakestCorePillarScore(state)
+    local science = state.Scores.Science;
+    local culture = state.Scores.Culture;
+    local empire = state.Scores.Empire;
+    return science + culture + empire
+        - math.min(science, culture, empire)
+        - math.max(science, culture, empire);
+end
+
 local function GetDesiredSevereCatchup(state)
     local enter = GetNumberParameter("ASAI_RELATIVE_SEVERE_ENTER_X100", 80) / 100;
     local exit = GetNumberParameter("ASAI_RELATIVE_SEVERE_EXIT_X100", 88) / 100;
+    local coreEnter = GetNumberParameter(
+        "ASAI_RELATIVE_SEVERE_CORE_ENTER_X100",
+        78
+    ) / 100;
+    local coreExit = GetNumberParameter(
+        "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
+        86
+    ) / 100;
+    local secondCore = GetSecondWeakestCorePillarScore(state);
     if state.SevereCatchup == 1 then
-        return state.Scores.Overall < exit and 1 or 0;
+        return (state.Scores.Overall < exit or secondCore < coreExit) and 1 or 0;
     end
-    return state.Scores.Overall <= enter and 1 or 0;
+    return (state.Scores.Overall <= enter or secondCore <= coreEnter) and 1 or 0;
 end
 
 local function GetWorstEligibleFocus(state, recoveryThresholds, turn)
@@ -1311,6 +1340,11 @@ local function EvaluateRelativeState(playerID)
             state.SevereChangedTurn = turn;
         end
 
+        if state.FocusHandoffReady
+            and turn - state.FocusChangedTurn >= minimumDwell then
+            state.FocusHandoffReady = false;
+        end
+
         local recoveryThresholds = GetRecoveryThresholds();
         local focusChanged = false;
         local focusRetired = ReviewActiveFocus(state, turn);
@@ -1326,10 +1360,30 @@ local function EvaluateRelativeState(playerID)
             state.FocusCandidate = RELATIVE_FOCUS_NONE;
             state.FocusStreak = 0;
             state.FocusChangedTurn = turn;
+            state.FocusHandoffReady = true;
             focusChanged = true;
+
+            -- Start confirming the best alternative immediately. The failed
+            -- pillar remains on cooldown, but the shared focus slot does not.
+            local desiredFocus = GetDesiredFocus(state, recoveryThresholds, turn);
+            local handoffChanged = false;
+            state.Focus,
+            state.FocusCandidate,
+            state.FocusStreak,
+            handoffChanged = AdvanceConfirmedState(
+                state.Focus,
+                state.FocusCandidate,
+                state.FocusStreak,
+                desiredFocus,
+                true
+            );
+            if handoffChanged then
+                state.FocusHandoffReady = false;
+            end
         else
             local desiredFocus = GetDesiredFocus(state, recoveryThresholds, turn);
-            local canChangeFocus = turn - state.FocusChangedTurn >= minimumDwell;
+            local canChangeFocus = state.FocusHandoffReady
+                or turn - state.FocusChangedTurn >= minimumDwell;
             state.Focus,
             state.FocusCandidate,
             state.FocusStreak,
@@ -1350,6 +1404,7 @@ local function EvaluateRelativeState(playerID)
                 );
             end
             if state.Focus ~= RELATIVE_FOCUS_NONE then
+                state.FocusHandoffReady = false;
                 StartFocusReview(state, state.Focus, turn);
             end
         end
@@ -1373,18 +1428,19 @@ local function EvaluateRelativeState(playerID)
         end
         if severeChanged then
             print(string.format(
-                "ASAI_SUPPORT turn=%d standard_turn=%.1f player=%d relative=%.3f from=%s to=%s",
+                "ASAI_SUPPORT turn=%d standard_turn=%.1f player=%d relative=%.3f second_core=%.3f from=%s to=%s",
                 turn,
                 GetStandardEquivalentTurn(turn),
                 playerID,
                 state.Scores.Overall,
+                GetSecondWeakestCorePillarScore(state),
                 previousSupport,
                 GetSupportName(state)
             ));
         end
         if focusChanged then
             print(string.format(
-                "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s result=%s gain=%.3f raw_gain=%.3f",
+                "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s result=%s handoff_ready=%d gain=%.3f raw_gain=%.3f",
                 turn,
                 GetStandardEquivalentTurn(turn),
                 playerID,
@@ -1397,6 +1453,7 @@ local function EvaluateRelativeState(playerID)
                 GetFocusName(previousFocus),
                 GetFocusName(state.Focus),
                 GetFocusResultName(state.FocusResult),
+                state.FocusHandoffReady and 1 or 0,
                 state.FocusGain,
                 state.FocusRawGain
             ));
@@ -1611,6 +1668,8 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local builderBudget = IsBuilderBudgetReachedSnapshot(snapshot) and 1 or 0;
     local traderBudget = IsTraderBudgetReachedSnapshot(snapshot) and 1 or 0;
     local settlerBudget = IsSettlerBudgetReachedSnapshot(snapshot) and 1 or 0;
+    local secondCore = GetSecondWeakestCorePillarScore(relativeState);
+    local handoffReady = relativeState.FocusHandoffReady and 1 or 0;
     local focusAge = relativeState.FocusStartedTurn >= 0
         and GetStandardEquivalentTurn(snapshot.Turn - relativeState.FocusStartedTurn)
         or 0;
@@ -1618,7 +1677,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -1654,6 +1713,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         snapshot.Era,
         relativeState.RawScores.Overall,
         relativeState.Scores.Overall,
+        secondCore,
         relativeState.RawScores.Science,
         relativeState.Scores.Science,
         relativeState.RawScores.Culture,
@@ -1666,6 +1726,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         GetSupportName(relativeState),
         GetFocusName(relativeState.Focus),
         GetFocusResultName(relativeState.FocusResult),
+        handoffReady,
         relativeState.FocusGain,
         relativeState.FocusRawGain,
         focusAge

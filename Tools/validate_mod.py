@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.5.1"
-EXPECTED_MODINFO_VERSION = "9"
+EXPECTED_RELEASE = "0.5.2"
+EXPECTED_MODINFO_VERSION = "10"
 
 
 def default_database() -> Path:
@@ -102,6 +102,56 @@ def validate_items(connection: sqlite3.Connection) -> list[str]:
     return errors
 
 
+def lua_format_counts(source: str, marker: str) -> tuple[int, int] | None:
+    marker_position = source.find(f'"{marker}')
+    if marker_position < 0:
+        return None
+    call_position = source.rfind("string.format(", 0, marker_position)
+    if call_position < 0:
+        return None
+
+    index = call_position + len("string.format(")
+    depth = 0
+    commas = 0
+    quote = ""
+    escaped = False
+    end_position = -1
+    while index < len(source):
+        character = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+        elif character in ('"', "'"):
+            quote = character
+        elif character in "([{":
+            depth += 1
+        elif character in ")]}":
+            if character == ")" and depth == 0:
+                end_position = index
+                break
+            depth -= 1
+        elif character == "," and depth == 0:
+            commas += 1
+        index += 1
+    if end_position < 0:
+        return None
+
+    body = source[call_position + len("string.format(") : end_position]
+    format_match = re.match(r'\s*"([^"\\]*(?:\\.[^"\\]*)*)"', body, re.DOTALL)
+    if format_match is None:
+        return None
+    placeholders = len(
+        re.findall(r"%(?!%)(?:[-+0 #]*\d*(?:\.\d+)?[a-zA-Z])", format_match.group(1))
+    )
+    # The first top-level comma separates the format string from its first
+    # value, so the comma count equals the number of supplied value arguments.
+    return placeholders, commas
+
+
 def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> list[str]:
     source = lua_file.read_text(encoding="utf-8")
     errors: list[str] = []
@@ -142,6 +192,15 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("player properties must be stored before numeric conversion")
     if "local function EstimateMilitaryStrength(player)" not in source:
         errors.append("gameplay-safe military strength estimator is missing")
+    for marker in ("ASAI_SUPPORT", "ASAI_RECOVERY", "ASAI_METRIC", "ASAI_COMPONENTS"):
+        counts = lua_format_counts(source, marker)
+        if counts is None:
+            errors.append(f"Lua format call could not be parsed: {marker}")
+        elif counts[0] != counts[1]:
+            errors.append(
+                f"Lua format argument mismatch for {marker}: "
+                f"{counts[0]} placeholders, {counts[1]} arguments"
+            )
     war_fragments = (
         "local function CountWarsByOpponentType(playerID, player)",
         "PlayerManager.GetAliveIDs()",
@@ -180,6 +239,12 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "local function ReviewActiveFocus(state, turn)",
         "ASAI_RELATIVE_FOCUS_REVIEW_STANDARD",
         "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD",
+        "RELATIVE_FOCUS_HANDOFF_PROPERTY",
+        "FocusHandoffReady = false",
+        "state.FocusHandoffReady = true",
+        "local canChangeFocus = state.FocusHandoffReady",
+        "and turn - state.FocusChangedTurn >= minimumDwell",
+        "handoff_ready=%d",
         "state.FocusCooldownUntil[focus]",
         "SyncRecoveryFlags(state)",
     )
@@ -187,10 +252,16 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         if fragment not in source:
             errors.append(f"single-focus recovery fragment is missing: {fragment}")
     support_fragments = (
+        "local function GetSecondWeakestCorePillarScore(state)",
         "local function GetDesiredSevereCatchup(state)",
         "ASAI_RELATIVE_SEVERE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_EXIT_X100",
+        "ASAI_RELATIVE_SEVERE_CORE_ENTER_X100",
+        "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
+        "or secondCore <= coreEnter",
+        "or secondCore < coreExit",
         "function ASAI_IsRelativeSevereCatchup(playerID, threshold)",
+        "second_core=%.3f",
         "support=%s",
     )
     for fragment in support_fragments:
@@ -353,6 +424,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD",
         "ASAI_RELATIVE_SEVERE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_EXIT_X100",
+        "ASAI_RELATIVE_SEVERE_CORE_ENTER_X100",
+        "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
         "ASAI_RELATIVE_EARLY_TRAILING_ENTER_X100",
         "ASAI_RELATIVE_EARLY_TRAILING_EXIT_X100",
         "ASAI_RELATIVE_EARLY_LEADING_EXIT_X100",
@@ -499,6 +572,22 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     ):
         errors.append(
             f"relative severe-support thresholds are invalid: {(severe_enter, severe_exit)}"
+        )
+    severe_core_enter = parameters.get("ASAI_RELATIVE_SEVERE_CORE_ENTER_X100")
+    severe_core_exit = parameters.get("ASAI_RELATIVE_SEVERE_CORE_EXIT_X100")
+    if (
+        severe_core_enter is not None
+        and severe_core_exit is not None
+        and not 0 < severe_core_enter < severe_core_exit < 100
+    ):
+        errors.append(
+            "relative severe core-collapse thresholds are invalid: "
+            f"{(severe_core_enter, severe_core_exit)}"
+        )
+    if (severe_core_enter, severe_core_exit) != (78, 86):
+        errors.append(
+            "relative severe core-collapse thresholds differ from the replayed "
+            f"0.5.2 profile: {(severe_core_enter, severe_core_exit)}"
         )
 
     for pillar in ("SCIENCE", "CULTURE", "EMPIRE"):
