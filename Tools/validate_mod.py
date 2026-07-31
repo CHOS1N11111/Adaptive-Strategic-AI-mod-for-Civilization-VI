@@ -590,19 +590,20 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "BUILDING_MUSEUM_ARTIFACT",
         "BUILDING_BROADCAST_CENTER",
     }
-    actual_culture_buildings = {
-        row[0]
-        for row in connection.execute(
-            "SELECT Item FROM AiFavoredItems "
-            "WHERE ListType = 'ASAI_CultureRecoveryBuildings'"
-        )
-    }
-    if actual_culture_buildings != expected_culture_buildings:
-        errors.append(
-            "culture recovery buildings differ: "
-            f"expected {sorted(expected_culture_buildings)}, "
-            f"found {sorted(actual_culture_buildings)}"
-        )
+    for list_type in ("ASAI_CultureRecoveryBuildings", "ASAI_CultureBuildings"):
+        actual_culture_buildings = {
+            row[0]
+            for row in connection.execute(
+                "SELECT Item FROM AiFavoredItems WHERE ListType = ?",
+                (list_type,),
+            )
+        }
+        if actual_culture_buildings != expected_culture_buildings:
+            errors.append(
+                f"{list_type} differs: "
+                f"expected {sorted(expected_culture_buildings)}, "
+                f"found {sorted(actual_culture_buildings)}"
+            )
 
     forbidden_wonder_lists = (
         "ASAI_GoldWonders",
