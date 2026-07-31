@@ -5,6 +5,7 @@ local m_StrengthSnapshots = {};
 local m_HumanReference = { Turn = -1, Value = nil };
 local m_RelativeRuntime = {};
 local m_ConditionErrors = {};
+local m_ProductionApiLogged = false;
 local LAST_MAJOR_COMBAT_TURN_PROPERTY = "ASAI_LAST_MAJOR_COMBAT_TURN";
 
 local RELATIVE_CATCHUP = -1;
@@ -181,23 +182,26 @@ local function CountInFlightUnits(player)
     for _, city in player:GetCities():Members() do
         local buildQueue = city:GetBuildQueue();
         if buildQueue ~= nil then
-            local queueSize = buildQueue:GetSize();
-            for queueIndex = 0, queueSize - 1 do
-                local entry = buildQueue:GetAt(queueIndex);
-                local unitInfo = entry ~= nil
-                    and entry.UnitType ~= nil
-                    and GameInfo.Units[entry.UnitType]
-                    or nil;
-                if unitInfo ~= nil then
-                    if unitInfo.UnitType == "UNIT_BUILDER" then
-                        builders = builders + 1;
-                    end
-                    if unitInfo.MakeTradeRoute then
-                        traders = traders + 1;
-                    end
-                    if unitInfo.FoundCity then
-                        settlers = settlers + 1;
-                    end
+            -- Gameplay scripts expose the current production hash, while the
+            -- UI-only queue size and indexed-entry methods are unavailable.
+            local productionHash = buildQueue:GetCurrentProductionTypeHash();
+            if not m_ProductionApiLogged then
+                print("ASAI_QUEUE_API mode=current_production_hash coverage=current_only");
+                m_ProductionApiLogged = true;
+            end
+            local unitInfo = productionHash ~= nil
+                and productionHash ~= 0
+                and GameInfo.Units[productionHash]
+                or nil;
+            if unitInfo ~= nil then
+                if unitInfo.UnitType == "UNIT_BUILDER" then
+                    builders = builders + 1;
+                end
+                if unitInfo.MakeTradeRoute then
+                    traders = traders + 1;
+                end
+                if unitInfo.FoundCity then
+                    settlers = settlers + 1;
                 end
             end
         end
@@ -353,6 +357,39 @@ local function GetInfrastructureTarget(snapshot)
     return math.ceil(math.max(cityFloor, math.min(populationTarget, landCap)));
 end
 
+local function GetBuilderCoverage(snapshot)
+    local builderCredit = GetNumberParameter("ASAI_INFRA_BUILDER_CREDIT", 2);
+    return snapshot.Improvements
+        + (snapshot.Builders + snapshot.InFlightBuilders) * builderCredit;
+end
+
+local function GetMaximumSettlersInFlight(snapshot)
+    local citiesPerSettler = math.max(
+        1,
+        GetNumberParameter("ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER", 8)
+    );
+    return math.max(1, math.ceil(snapshot.Cities / citiesPerSettler));
+end
+
+local function IsBuilderBudgetReachedSnapshot(snapshot)
+    local startTurn = ScaleStandardTurns(
+        GetNumberParameter("ASAI_INFRA_START_TURN_STANDARD", 20)
+    );
+    return snapshot.Turn >= startTurn
+        and snapshot.Population > 0
+        and GetBuilderCoverage(snapshot) >= GetInfrastructureTarget(snapshot);
+end
+
+local function IsTraderBudgetReachedSnapshot(snapshot)
+    return snapshot.RouteCapacity <= snapshot.Traders + snapshot.InFlightTraders;
+end
+
+local function IsSettlerBudgetReachedSnapshot(snapshot)
+    return snapshot.Cities > 0
+        and snapshot.Settlers + snapshot.InFlightSettlers
+            >= GetMaximumSettlersInFlight(snapshot);
+end
+
 local function IsInfrastructureRecovery(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
@@ -364,11 +401,7 @@ local function IsInfrastructureRecovery(playerID, threshold)
     if snapshot.Turn < startTurn or snapshot.Population <= 0 then
         return false;
     end
-    local target = GetInfrastructureTarget(snapshot);
-    local builderCredit = GetNumberParameter("ASAI_INFRA_BUILDER_CREDIT", 2);
-    local covered = snapshot.Improvements
-        + (snapshot.Builders + snapshot.InFlightBuilders) * builderCredit;
-    return covered < target;
+    return GetBuilderCoverage(snapshot) < GetInfrastructureTarget(snapshot);
 end
 function ASAI_IsInfrastructureRecovery(playerID, threshold)
     return RunStrategyCondition(
@@ -385,7 +418,7 @@ local function IsTradeRecovery(playerID, threshold)
         return false;
     end
     local snapshot = GetSnapshot(playerID);
-    -- Active routes still own trader units; queued traders cover pending gaps.
+    -- Active routes still own trader units; current production covers pending gaps.
     return snapshot.RouteCapacity > snapshot.Traders + snapshot.InFlightTraders;
 end
 function ASAI_IsTradeRecovery(playerID, threshold)
@@ -397,6 +430,54 @@ function ASAI_IsTradeRecovery(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsTradeRecovery.Add(ASAI_IsTradeRecovery);
+
+local function IsBuilderBudgetReached(playerID, threshold)
+    if not IsMajorAI(playerID) then
+        return false;
+    end
+    return IsBuilderBudgetReachedSnapshot(GetSnapshot(playerID));
+end
+function ASAI_IsBuilderBudgetReached(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsBuilderBudgetReached",
+        IsBuilderBudgetReached,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsBuilderBudgetReached.Add(ASAI_IsBuilderBudgetReached);
+
+local function IsTraderBudgetReached(playerID, threshold)
+    if not IsMajorAI(playerID) then
+        return false;
+    end
+    return IsTraderBudgetReachedSnapshot(GetSnapshot(playerID));
+end
+function ASAI_IsTraderBudgetReached(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsTraderBudgetReached",
+        IsTraderBudgetReached,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsTraderBudgetReached.Add(ASAI_IsTraderBudgetReached);
+
+local function IsSettlerBudgetReached(playerID, threshold)
+    if not IsMajorAI(playerID) then
+        return false;
+    end
+    return IsSettlerBudgetReachedSnapshot(GetSnapshot(playerID));
+end
+function ASAI_IsSettlerBudgetReached(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsSettlerBudgetReached",
+        IsSettlerBudgetReached,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsSettlerBudgetReached.Add(ASAI_IsSettlerBudgetReached);
 
 local function IsGoldRecovery(playerID, threshold)
     if not IsMajorAI(playerID) then
@@ -888,15 +969,15 @@ local function GetCompetitionThresholds(era)
     local renaissance = GameInfo.Eras["ERA_RENAISSANCE"];
     local stage = "late";
     local prefix = "ASAI_RELATIVE_LATE_";
-    local defaults = { 90, 96, 108, 115, 90 };
+    local defaults = { 92, 97, 108, 115, 90 };
     if classical ~= nil and era <= classical.Index then
         stage = "early";
         prefix = "ASAI_RELATIVE_EARLY_";
-        defaults = { 80, 88, 118, 125, 80 };
+        defaults = { 88, 94, 118, 125, 80 };
     elseif renaissance ~= nil and era <= renaissance.Index then
         stage = "mid";
         prefix = "ASAI_RELATIVE_MID_";
-        defaults = { 85, 92, 113, 120, 85 };
+        defaults = { 90, 96, 113, 120, 85 };
     end
     return {
         Stage = stage,
@@ -915,18 +996,18 @@ local function GetRecoveryThresholds()
     return {
         [RELATIVE_FOCUS_SCIENCE] = {
             Key = "Science",
-            Enter = GetNumberParameter("ASAI_RELATIVE_SCIENCE_ENTER_X100", 80) / 100,
-            Exit = GetNumberParameter("ASAI_RELATIVE_SCIENCE_EXIT_X100", 92) / 100
+            Enter = GetNumberParameter("ASAI_RELATIVE_SCIENCE_ENTER_X100", 88) / 100,
+            Exit = GetNumberParameter("ASAI_RELATIVE_SCIENCE_EXIT_X100", 96) / 100
         },
         [RELATIVE_FOCUS_CULTURE] = {
             Key = "Culture",
-            Enter = GetNumberParameter("ASAI_RELATIVE_CULTURE_ENTER_X100", 75) / 100,
-            Exit = GetNumberParameter("ASAI_RELATIVE_CULTURE_EXIT_X100", 88) / 100
+            Enter = GetNumberParameter("ASAI_RELATIVE_CULTURE_ENTER_X100", 85) / 100,
+            Exit = GetNumberParameter("ASAI_RELATIVE_CULTURE_EXIT_X100", 95) / 100
         },
         [RELATIVE_FOCUS_EMPIRE] = {
             Key = "Empire",
-            Enter = GetNumberParameter("ASAI_RELATIVE_EMPIRE_ENTER_X100", 80) / 100,
-            Exit = GetNumberParameter("ASAI_RELATIVE_EMPIRE_EXIT_X100", 92) / 100
+            Enter = GetNumberParameter("ASAI_RELATIVE_EMPIRE_ENTER_X100", 85) / 100,
+            Exit = GetNumberParameter("ASAI_RELATIVE_EMPIRE_EXIT_X100", 95) / 100
         }
     };
 end
@@ -983,8 +1064,8 @@ local function GetDesiredBand(state, thresholds)
 end
 
 local function GetDesiredSevereCatchup(state)
-    local enter = GetNumberParameter("ASAI_RELATIVE_SEVERE_ENTER_X100", 75) / 100;
-    local exit = GetNumberParameter("ASAI_RELATIVE_SEVERE_EXIT_X100", 82) / 100;
+    local enter = GetNumberParameter("ASAI_RELATIVE_SEVERE_ENTER_X100", 80) / 100;
+    local exit = GetNumberParameter("ASAI_RELATIVE_SEVERE_EXIT_X100", 88) / 100;
     if state.SevereCatchup == 1 then
         return state.Scores.Overall < exit and 1 or 0;
     end
@@ -1417,11 +1498,7 @@ local function IsExpansionRecovery(playerID, threshold)
     if snapshot.Cities <= 0 or snapshot.ActiveMajorWars > 0 then
         return false;
     end
-    local citiesPerSettler = math.max(
-        1,
-        GetNumberParameter("ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER", 8)
-    );
-    local maximumInFlight = math.max(1, math.ceil(snapshot.Cities / citiesPerSettler));
+    local maximumInFlight = GetMaximumSettlersInFlight(snapshot);
     return snapshot.Settlers + snapshot.InFlightSettlers < maximumInFlight;
 end
 function ASAI_IsExpansionRecovery(playerID, threshold)
@@ -1531,6 +1608,9 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local snapshot = GetSnapshot(playerID);
     local strength = GetStrengthSnapshot(playerID);
     local infrastructureTarget = GetInfrastructureTarget(snapshot);
+    local builderBudget = IsBuilderBudgetReachedSnapshot(snapshot) and 1 or 0;
+    local traderBudget = IsTraderBudgetReachedSnapshot(snapshot) and 1 or 0;
+    local settlerBudget = IsSettlerBudgetReachedSnapshot(snapshot) and 1 or 0;
     local focusAge = relativeState.FocusStartedTurn >= 0
         and GetStandardEquivalentTurn(snapshot.Turn - relativeState.FocusStartedTurn)
         or 0;
@@ -1538,7 +1618,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -1549,6 +1629,9 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         snapshot.OwnedPlots,
         snapshot.Improvements,
         infrastructureTarget,
+        builderBudget,
+        traderBudget,
+        settlerBudget,
         snapshot.Builders,
         snapshot.InFlightBuilders,
         snapshot.Traders,

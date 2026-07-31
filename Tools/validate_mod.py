@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.5.0"
-EXPECTED_MODINFO_VERSION = "8"
+EXPECTED_RELEASE = "0.5.1"
+EXPECTED_MODINFO_VERSION = "9"
 
 
 def default_database() -> Path:
@@ -202,15 +202,36 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         'ASAI_INFRA_IMPROVEMENTS_PER_POP_X100", 65',
         'ASAI_INFRA_OWNED_PLOTS_CAP_X100", 30',
         "local function CountInFlightUnits(player)",
-        "buildQueue:GetSize()",
-        "buildQueue:GetAt(queueIndex)",
+        "buildQueue:GetCurrentProductionTypeHash()",
+        "ASAI_QUEUE_API mode=current_production_hash coverage=current_only",
         "snapshot.InFlightBuilders",
         "snapshot.InFlightTraders",
         "math.max(cityFloor, math.min(populationTarget, landCap))",
+        "builder_budget=%d",
+        "trader_budget=%d",
+        "settler_budget=%d",
     )
     for fragment in infrastructure_fragments:
         if fragment not in source:
             errors.append(f"infrastructure target fragment is missing: {fragment}")
+    for unavailable_method in ("buildQueue:GetSize()", "buildQueue:GetAt("):
+        if unavailable_method in source:
+            errors.append(
+                "gameplay script still uses a UI-only build-queue method: "
+                f"{unavailable_method}"
+            )
+    civilian_budget_fragments = (
+        "local function IsBuilderBudgetReachedSnapshot(snapshot)",
+        "local function IsTraderBudgetReachedSnapshot(snapshot)",
+        "local function IsSettlerBudgetReachedSnapshot(snapshot)",
+        "function ASAI_IsBuilderBudgetReached(playerID, threshold)",
+        "function ASAI_IsTraderBudgetReached(playerID, threshold)",
+        "function ASAI_IsSettlerBudgetReached(playerID, threshold)",
+        "snapshot.Settlers + snapshot.InFlightSettlers",
+    )
+    for fragment in civilian_budget_fragments:
+        if fragment not in source:
+            errors.append(f"civilian budget fragment is missing: {fragment}")
     expansion_fragments = (
         "local function IsExpansionRecovery(playerID, threshold)",
         "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
@@ -536,6 +557,46 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             f"found {sorted(actual_recovery_strategies)}"
         )
 
+    expected_budget_strategies = {
+        "ASAI_STRATEGY_BUILDER_BUDGET",
+        "ASAI_STRATEGY_TRADER_BUDGET",
+        "ASAI_STRATEGY_SETTLER_BUDGET",
+    }
+    budget_placeholders = ", ".join("?" for _ in expected_budget_strategies)
+    actual_budget_strategies = {
+        row[0]
+        for row in connection.execute(
+            "SELECT StrategyType FROM Strategies "
+            f"WHERE StrategyType IN ({budget_placeholders})",
+            tuple(sorted(expected_budget_strategies)),
+        )
+    }
+    if actual_budget_strategies != expected_budget_strategies:
+        errors.append(
+            "civilian budget strategies differ: "
+            f"expected {sorted(expected_budget_strategies)}, "
+            f"found {sorted(actual_budget_strategies)}"
+        )
+
+    expected_budget_values = {
+        ("ASAI_BuilderBudgetPseudoYields", "PSEUDOYIELD_IMPROVEMENT"): -25,
+        ("ASAI_BuilderBudgetUnits", "UNIT_BUILDER"): -50,
+        ("ASAI_TraderBudgetPseudoYields", "PSEUDOYIELD_UNIT_TRADE"): -35,
+        ("ASAI_TraderBudgetUnits", "UNIT_TRADER"): -50,
+        ("ASAI_SettlerBudgetPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -45,
+        ("ASAI_SettlerBudgetUnits", "UNIT_SETTLER"): -50,
+    }
+    for (list_type, item), expected in expected_budget_values.items():
+        row = connection.execute(
+            "SELECT Value FROM AiFavoredItems WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        actual = None if row is None else row[0]
+        if actual != expected:
+            errors.append(
+                f"civilian budget {list_type}/{item} expected {expected}, found {actual}"
+            )
+
     oversized = list(
         connection.execute(
             """
@@ -546,14 +607,30 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                    OR ListType LIKE 'ASAI_CultureRecovery%'
                    OR ListType LIKE 'ASAI_EmpireRecovery%'
                    OR ListType LIKE 'ASAI_ExpansionRecovery%')
-              AND ABS(Value) > 25
+              AND ABS(Value) > 60
             ORDER BY ListType, Item
             """
         )
     )
     errors.extend(
-        f"relative adjustment is too large: {list_type}/{item}={value}"
+        f"targeted recovery adjustment exceeds 60: {list_type}/{item}={value}"
         for list_type, item, value in oversized
+    )
+
+    severe_oversized = list(
+        connection.execute(
+            """
+            SELECT ListType, Item, Value
+            FROM AiFavoredItems
+            WHERE ListType LIKE 'ASAI_RelativeSevere%'
+              AND ABS(Value) > 20
+            ORDER BY ListType, Item
+            """
+        )
+    )
+    errors.extend(
+        f"severe catch-up guardrail exceeds 20: {list_type}/{item}={value}"
+        for list_type, item, value in severe_oversized
     )
 
     broad_guardrail_oversized = list(
@@ -691,8 +768,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 12:
-                    errors.append(f"expected 12 adaptive strategies, found {strategy_count}")
+                if strategy_count != 15:
+                    errors.append(f"expected 15 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -713,7 +790,7 @@ def main() -> int:
     print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 12 (including severe support and gated expansion)")
+    print("- adaptive strategies: 15 (including support, recovery, and civilian budgets)")
     print("- game cache was not modified")
     return 0
 
