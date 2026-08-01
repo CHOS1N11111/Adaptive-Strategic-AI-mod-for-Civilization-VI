@@ -12,6 +12,7 @@ DELETE FROM Strategies WHERE StrategyType LIKE 'ASAI_%';
 DELETE FROM Types WHERE Type LIKE 'ASAI_STRATEGY_%';
 
 INSERT OR IGNORE INTO Types (Type, Kind) VALUES
+    ('ASAI_STRATEGY_OPENING_EXPANSION', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_TRADE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_TRADE_CAPACITY_RECOVERY', 'KIND_VICTORY_STRATEGY'),
@@ -35,6 +36,7 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
 INSERT OR IGNORE INTO Strategies
     (StrategyType, NumConditionsNeeded)
 VALUES
+    ('ASAI_STRATEGY_OPENING_EXPANSION', 1),
     ('ASAI_STRATEGY_INFRA_RECOVERY', 1),
     ('ASAI_STRATEGY_TRADE_RECOVERY', 1),
     ('ASAI_STRATEGY_TRADE_CAPACITY_RECOVERY', 1),
@@ -58,6 +60,8 @@ VALUES
 INSERT OR IGNORE INTO StrategyConditions
     (StrategyType, ConditionFunction, StringValue, ThresholdValue, Disqualifier)
 VALUES
+    ('ASAI_STRATEGY_OPENING_EXPANSION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_OPENING_EXPANSION', 'Call Lua Function', 'ASAI_IsOpeningExpansion', 0, 0),
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'Call Lua Function', 'ASAI_IsInfrastructureRecovery', 0, 0),
     ('ASAI_STRATEGY_TRADE_RECOVERY', 'Is Not Major', NULL, 0, 1),
@@ -98,6 +102,9 @@ VALUES
     ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'Call Lua Function', 'ASAI_IsExpansionRecovery', 0, 0);
 
 INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
+    ('ASAI_OpeningPseudoYields'),
+    ('ASAI_OpeningUnits'),
+    ('ASAI_OpeningYields'),
     ('ASAI_InfraPseudoYields'),
     ('ASAI_InfraUnits'),
     ('ASAI_InfraYields'),
@@ -157,6 +164,9 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_ExpansionRecoveryUnits');
 
 INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
+    ('ASAI_OpeningPseudoYields', 'PseudoYields'),
+    ('ASAI_OpeningUnits', 'Units'),
+    ('ASAI_OpeningYields', 'Yields'),
     ('ASAI_InfraPseudoYields', 'PseudoYields'),
     ('ASAI_InfraUnits', 'Units'),
     ('ASAI_InfraYields', 'Yields'),
@@ -216,6 +226,9 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_ExpansionRecoveryUnits', 'Units');
 
 INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
+    ('ASAI_STRATEGY_OPENING_EXPANSION', 'ASAI_OpeningPseudoYields'),
+    ('ASAI_STRATEGY_OPENING_EXPANSION', 'ASAI_OpeningUnits'),
+    ('ASAI_STRATEGY_OPENING_EXPANSION', 'ASAI_OpeningYields'),
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'ASAI_InfraPseudoYields'),
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'ASAI_InfraUnits'),
     ('ASAI_STRATEGY_INFRA_RECOVERY', 'ASAI_InfraYields'),
@@ -277,14 +290,18 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
 VALUES
+    ('ASAI_OpeningPseudoYields', 'PSEUDOYIELD_WONDER', 1, -35),
+    ('ASAI_OpeningPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 25),
+    ('ASAI_OpeningUnits', 'UNIT_SETTLER', 1, 20),
+    ('ASAI_OpeningYields', 'YIELD_PRODUCTION', 1, 8),
     ('ASAI_InfraPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 55),
     ('ASAI_InfraUnits', 'UNIT_BUILDER', 1, 35),
     ('ASAI_InfraYields', 'YIELD_PRODUCTION', 1, 10),
     ('ASAI_TradePseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 100),
     ('ASAI_TradeUnits', 'UNIT_TRADER', 1, 50),
     ('ASAI_TradeYields', 'YIELD_GOLD', 1, 15),
-    ('ASAI_TradeCapacityDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 40),
-    ('ASAI_TradeCapacityDistricts', 'DISTRICT_HARBOR', 1, 40),
+    ('ASAI_TradeCapacityDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 55),
+    ('ASAI_TradeCapacityDistricts', 'DISTRICT_HARBOR', 1, 55),
     ('ASAI_TradeCapacityYields', 'YIELD_PRODUCTION', 1, 12),
     ('ASAI_TradeCapacityYields', 'YIELD_GOLD', 1, 10),
     ('ASAI_BuilderBudgetPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, -25),
@@ -396,7 +413,7 @@ WHERE BuildingType IN
 -- bypass the adaptive controller.
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_TradeCapacityDistricts', CivUniqueDistrictType, 1, 40
+SELECT 'ASAI_TradeCapacityDistricts', CivUniqueDistrictType, 1, 55
 FROM DistrictReplaces
 WHERE ReplacesDistrictType IN ('DISTRICT_COMMERCIAL_HUB', 'DISTRICT_HARBOR');
 
@@ -454,7 +471,7 @@ WHERE ReplacesDistrictType = 'DISTRICT_THEATER';
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_TradeCapacityBuildings', BuildingType, 1, 55
+SELECT 'ASAI_TradeCapacityBuildings', BuildingType, 1, 90
 FROM Buildings
 WHERE BuildingType IN ('BUILDING_MARKET', 'BUILDING_LIGHTHOUSE')
    OR BuildingType IN (

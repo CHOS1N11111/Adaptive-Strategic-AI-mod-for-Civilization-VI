@@ -759,6 +759,32 @@ function ASAI_IsInfrastructureRecovery(playerID, threshold)
 end
 GameEvents.ASAI_IsInfrastructureRecovery.Add(ASAI_IsInfrastructureRecovery);
 
+local function IsOpeningExpansion(playerID, threshold)
+    if not IsMajorAI(playerID) then
+        return false;
+    end
+    local snapshot = GetSnapshot(playerID);
+    local endTurn = ScaleStandardTurns(
+        GetNumberParameter("ASAI_OPENING_EXPANSION_END_STANDARD", 70)
+    );
+    local cityTarget = math.max(
+        2,
+        GetNumberParameter("ASAI_OPENING_EXPANSION_CITY_TARGET", 3)
+    );
+    return snapshot.Turn < endTurn
+        and snapshot.Cities > 0
+        and snapshot.Cities < cityTarget;
+end
+function ASAI_IsOpeningExpansion(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsOpeningExpansion",
+        IsOpeningExpansion,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsOpeningExpansion.Add(ASAI_IsOpeningExpansion);
+
 local function IsTradeRecovery(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
@@ -1969,7 +1995,8 @@ GameEvents.ASAI_IsEmpireRecovery.Add(ASAI_IsEmpireRecovery);
 local function IsFocusExecutionRecovery(playerID, focus)
     local state = GetRelativeState(playerID);
     return state.Focus == focus
-        and state.FocusResult == RELATIVE_FOCUS_RESULT_STALLED;
+        and (state.FocusResult == RELATIVE_FOCUS_RESULT_STALLED
+            or state.FocusResult == RELATIVE_FOCUS_RESULT_EXECUTING);
 end
 
 local function IsScienceExecutionRecovery(playerID, threshold)
