@@ -56,9 +56,12 @@ local RELATIVE_FOCUS_RAW_BASELINE_PROPERTY = "ASAI_RELATIVE_FOCUS_RAW_BASELINE_X
 local RELATIVE_FOCUS_GAIN_PROPERTY = "ASAI_RELATIVE_FOCUS_GAIN_X1000";
 local RELATIVE_FOCUS_RAW_GAIN_PROPERTY = "ASAI_RELATIVE_FOCUS_RAW_GAIN_X1000";
 local RELATIVE_FOCUS_RESULT_PROPERTY = "ASAI_RELATIVE_FOCUS_RESULT";
+local RELATIVE_FOCUS_EXECUTION_PROPERTY = "ASAI_RELATIVE_FOCUS_EXECUTION";
+local RELATIVE_FOCUS_STALL_COUNT_PROPERTY = "ASAI_RELATIVE_FOCUS_STALL_COUNT";
 local RELATIVE_FOCUS_RESULT_NONE = 0;
 local RELATIVE_FOCUS_RESULT_IMPROVING = 1;
-local RELATIVE_FOCUS_RESULT_STALLED = 2;
+local RELATIVE_FOCUS_RESULT_EXECUTING = 2;
+local RELATIVE_FOCUS_RESULT_STALLED = 3;
 local RELATIVE_FOCUS_COOLDOWN_PROPERTIES = {
     [RELATIVE_FOCUS_SCIENCE] = "ASAI_RELATIVE_SCIENCE_COOLDOWN_UNTIL",
     [RELATIVE_FOCUS_CULTURE] = "ASAI_RELATIVE_CULTURE_COOLDOWN_UNTIL",
@@ -196,34 +199,135 @@ local function CountUnits(player)
     return builders, traders, settlers;
 end
 
+local function GetCurrentProductionType(city)
+    local buildQueue = city:GetBuildQueue();
+    if buildQueue == nil then
+        return nil;
+    end
+    local productionType = buildQueue:CurrentlyBuilding();
+    if not m_ProductionApiLogged then
+        print("ASAI_QUEUE_API mode=currently_building coverage=current_only");
+        m_ProductionApiLogged = true;
+    end
+    if productionType == nil
+        or productionType == ""
+        or productionType == "NONE"
+        or productionType == 0
+        or productionType == -1 then
+        return nil;
+    end
+    local unitInfo = GameInfo.Units[productionType];
+    if unitInfo ~= nil then
+        return unitInfo.UnitType;
+    end
+    local districtInfo = GameInfo.Districts[productionType];
+    if districtInfo ~= nil then
+        return districtInfo.DistrictType;
+    end
+    local buildingInfo = GameInfo.Buildings[productionType];
+    if buildingInfo ~= nil then
+        return buildingInfo.BuildingType;
+    end
+    local projectInfo = GameInfo.Projects[productionType];
+    if projectInfo ~= nil then
+        return projectInfo.ProjectType;
+    end
+    return productionType;
+end
+
+local function IsDistrictRole(districtType, baseDistrictType)
+    if districtType == baseDistrictType then
+        return true;
+    end
+    for replacement in GameInfo.DistrictReplaces() do
+        if replacement.CivUniqueDistrictType == districtType
+            and replacement.ReplacesDistrictType == baseDistrictType then
+            return true;
+        end
+    end
+    return false;
+end
+
+local function IsBuildingRole(buildingType, baseBuildingType)
+    if buildingType == baseBuildingType then
+        return true;
+    end
+    for replacement in GameInfo.BuildingReplaces() do
+        if replacement.CivUniqueBuildingType == buildingType
+            and replacement.ReplacesBuildingType == baseBuildingType then
+            return true;
+        end
+    end
+    return false;
+end
+
+local function ProductionSupportsFocus(productionType, focus)
+    if productionType == nil then
+        return false;
+    end
+
+    local districtInfo = GameInfo.Districts[productionType];
+    local buildingInfo = GameInfo.Buildings[productionType];
+    local projectInfo = GameInfo.Projects[productionType];
+    local unitInfo = GameInfo.Units[productionType];
+    if focus == RELATIVE_FOCUS_SCIENCE then
+        return (districtInfo ~= nil
+                and IsDistrictRole(productionType, "DISTRICT_CAMPUS"))
+            or (buildingInfo ~= nil
+                and IsDistrictRole(buildingInfo.PrereqDistrict, "DISTRICT_CAMPUS"))
+            or (projectInfo ~= nil
+                and IsDistrictRole(projectInfo.PrereqDistrict, "DISTRICT_CAMPUS"));
+    end
+    if focus == RELATIVE_FOCUS_CULTURE then
+        return (districtInfo ~= nil
+                and IsDistrictRole(productionType, "DISTRICT_THEATER"))
+            or (buildingInfo ~= nil
+                and (IsDistrictRole(buildingInfo.PrereqDistrict, "DISTRICT_THEATER")
+                    or IsBuildingRole(productionType, "BUILDING_MONUMENT")))
+            or (projectInfo ~= nil
+                and IsDistrictRole(projectInfo.PrereqDistrict, "DISTRICT_THEATER"));
+    end
+    if focus == RELATIVE_FOCUS_EMPIRE then
+        return (unitInfo ~= nil
+                and (unitInfo.FoundCity
+                    or unitInfo.MakeTradeRoute
+                    or unitInfo.UnitType == "UNIT_BUILDER"))
+            or (buildingInfo ~= nil
+                and ((tonumber(buildingInfo.Housing) or 0) > 0
+                    or IsBuildingRole(productionType, "BUILDING_WATER_MILL")))
+            or (districtInfo ~= nil
+                and (IsDistrictRole(productionType, "DISTRICT_AQUEDUCT")
+                    or IsDistrictRole(productionType, "DISTRICT_NEIGHBORHOOD")));
+    end
+    return false;
+end
+
+local function CountFocusProduction(player, focus)
+    local count = 0;
+    for _, city in player:GetCities():Members() do
+        if ProductionSupportsFocus(GetCurrentProductionType(city), focus) then
+            count = count + 1;
+        end
+    end
+    return count;
+end
+
 local function CountInFlightUnits(player)
     local builders = 0;
     local traders = 0;
     local settlers = 0;
     for _, city in player:GetCities():Members() do
-        local buildQueue = city:GetBuildQueue();
-        if buildQueue ~= nil then
-            -- Gameplay scripts expose the current production hash, while the
-            -- UI-only queue size and indexed-entry methods are unavailable.
-            local productionHash = buildQueue:GetCurrentProductionTypeHash();
-            if not m_ProductionApiLogged then
-                print("ASAI_QUEUE_API mode=current_production_hash coverage=current_only");
-                m_ProductionApiLogged = true;
+        local productionType = GetCurrentProductionType(city);
+        local unitInfo = productionType ~= nil and GameInfo.Units[productionType] or nil;
+        if unitInfo ~= nil then
+            if unitInfo.UnitType == "UNIT_BUILDER" then
+                builders = builders + 1;
             end
-            local unitInfo = productionHash ~= nil
-                and productionHash ~= 0
-                and GameInfo.Units[productionHash]
-                or nil;
-            if unitInfo ~= nil then
-                if unitInfo.UnitType == "UNIT_BUILDER" then
-                    builders = builders + 1;
-                end
-                if unitInfo.MakeTradeRoute then
-                    traders = traders + 1;
-                end
-                if unitInfo.FoundCity then
-                    settlers = settlers + 1;
-                end
+            if unitInfo.MakeTradeRoute then
+                traders = traders + 1;
+            end
+            if unitInfo.FoundCity then
+                settlers = settlers + 1;
             end
         end
     end
@@ -254,25 +358,38 @@ local function CollectQueueDiagnostics(player)
         Buildings = 0,
         Projects = 0,
         Idle = 0,
-        Unknown = 0
+        Unknown = 0,
+        Wonders = 0,
+        Science = 0,
+        Culture = 0,
+        Empire = 0
     };
     for _, city in player:GetCities():Members() do
-        local buildQueue = city:GetBuildQueue();
-        local productionHash = buildQueue ~= nil
-            and buildQueue:GetCurrentProductionTypeHash()
-            or 0;
-        if productionHash == nil or productionHash == 0 then
+        local productionType = GetCurrentProductionType(city);
+        if productionType == nil then
             result.Idle = result.Idle + 1;
-        elseif GameInfo.Units[productionHash] ~= nil then
+        elseif GameInfo.Units[productionType] ~= nil then
             result.Units = result.Units + 1;
-        elseif GameInfo.Districts[productionHash] ~= nil then
+        elseif GameInfo.Districts[productionType] ~= nil then
             result.Districts = result.Districts + 1;
-        elseif GameInfo.Buildings[productionHash] ~= nil then
+        elseif GameInfo.Buildings[productionType] ~= nil then
             result.Buildings = result.Buildings + 1;
-        elseif GameInfo.Projects[productionHash] ~= nil then
+            if GameInfo.Buildings[productionType].IsWonder then
+                result.Wonders = result.Wonders + 1;
+            end
+        elseif GameInfo.Projects[productionType] ~= nil then
             result.Projects = result.Projects + 1;
         else
             result.Unknown = result.Unknown + 1;
+        end
+        if ProductionSupportsFocus(productionType, RELATIVE_FOCUS_SCIENCE) then
+            result.Science = result.Science + 1;
+        end
+        if ProductionSupportsFocus(productionType, RELATIVE_FOCUS_CULTURE) then
+            result.Culture = result.Culture + 1;
+        end
+        if ProductionSupportsFocus(productionType, RELATIVE_FOCUS_EMPIRE) then
+            result.Empire = result.Empire + 1;
         end
     end
     return result;
@@ -280,117 +397,27 @@ end
 
 local function CollectDistrictDiagnostics(player)
     local used = 0;
+    local completed = 0;
     local slots = 0;
-    local openCities = 0;
     for _, city in player:GetCities():Members() do
-        local districts = city:GetDistricts();
-        if districts == nil then
-            error("City:GetDistricts() is unavailable");
-        end
-        local cityUsed = tonumber(
-            districts:GetNumZonedDistrictsRequiringPopulation()
-        );
-        local citySlots = tonumber(
-            districts:GetNumAllowedDistrictsRequiringPopulation()
-        );
-        if cityUsed == nil or citySlots == nil then
-            error("population district-slot methods returned no value");
-        end
-        used = used + cityUsed;
-        slots = slots + citySlots;
-        if cityUsed < citySlots then
-            openCities = openCities + 1;
-        end
+        slots = slots + math.floor((math.max(1, city:GetPopulation()) - 1) / 3) + 1;
     end
-    return { Used = used, Slots = slots, OpenCities = openCities };
-end
-
-local function CollectStrategicResourceDiagnostics(player)
-    local resources = player:GetResources();
-    if resources == nil then
-        error("Player:GetResources() is unavailable");
+    local districts = player:GetDistricts();
+    if districts == nil then
+        error("Player:GetDistricts() is unavailable");
     end
-
-    local stockpile = 0;
-    local capacity = 0;
-    local net = 0;
-    local types = 0;
-    local fullTypes = 0;
-    for resource in GameInfo.Resources() do
-        if resource.ResourceClassType == "RESOURCECLASS_STRATEGIC" then
-            local amount = tonumber(resources:GetResourceAmount(resource.ResourceType)) or 0;
-            local resourceCapacity = tonumber(
-                resources:GetResourceStockpileCap(resource.ResourceType)
-            ) or 0;
-            local accumulation = tonumber(
-                resources:GetResourceAccumulationPerTurn(resource.ResourceType)
-            ) or 0;
-            local imports = tonumber(
-                resources:GetResourceImportPerTurn(resource.ResourceType)
-            ) or 0;
-            local bonuses = tonumber(
-                resources:GetBonusResourcePerTurn(resource.ResourceType)
-            ) or 0;
-            local unitDemand = tonumber(
-                resources:GetUnitResourceDemandPerTurn(resource.ResourceType)
-            ) or 0;
-            local powerDemand = tonumber(
-                resources:GetPowerResourceDemandPerTurn(resource.ResourceType)
-            ) or 0;
-            local resourceNet = accumulation + imports + bonuses
-                - unitDemand - powerDemand;
-            if amount > 0 or resourceNet ~= 0 then
-                stockpile = stockpile + amount;
-                capacity = capacity + math.max(0, resourceCapacity);
-                net = net + resourceNet;
-                types = types + 1;
-                if resourceCapacity > 0 and amount >= resourceCapacity * 0.9 then
-                    fullTypes = fullTypes + 1;
-                end
+    for _, district in districts:Members() do
+        local districtInfo = GameInfo.Districts[district:GetType()];
+        if districtInfo ~= nil
+            and (districtInfo.RequiresPopulation == true
+                or districtInfo.RequiresPopulation == 1) then
+            used = used + 1;
+            if district:IsComplete() then
+                completed = completed + 1;
             end
         end
     end
-    return {
-        Stockpile = stockpile,
-        Capacity = capacity,
-        Net = net,
-        Types = types,
-        FullTypes = fullTypes
-    };
-end
-
-local function CollectUpgradeDiagnostics(player)
-    if UnitCommandTypes == nil or UnitCommandTypes.UPGRADE == nil then
-        error("UnitCommandTypes.UPGRADE is unavailable");
-    end
-
-    local upgradeable = 0;
-    local ready = 0;
-    local cost = 0;
-    for _, unit in player:GetUnits():Members() do
-        local canUpgrade = UnitManager.CanStartCommand(
-            unit,
-            UnitCommandTypes.UPGRADE,
-            true
-        );
-        if canUpgrade then
-            local unitCost = tonumber(unit:GetUpgradeCost());
-            if unitCost ~= nil and unitCost > 0 then
-                upgradeable = upgradeable + 1;
-                cost = cost + unitCost;
-                local canUpgradeNow = UnitManager.CanStartCommand(
-                    unit,
-                    UnitCommandTypes.UPGRADE,
-                    false,
-                    true
-                );
-                if canUpgradeNow then
-                    ready = ready + 1;
-                end
-            end
-        end
-    end
-    return { Upgradeable = upgradeable, Ready = ready, Cost = cost };
+    return { Used = used, Completed = completed, Slots = slots, OpenCities = -1 };
 end
 
 local function CountWarsByOpponentType(playerID, player)
@@ -568,14 +595,6 @@ local function GetEconomicSnapshot(playerID)
         "district_capacity",
         function() return CollectDistrictDiagnostics(player); end
     );
-    local strategic, resourceOk = TryDiagnosticSensor(
-        "strategic_resources",
-        function() return CollectStrategicResourceDiagnostics(player); end
-    );
-    local upgrades, upgradeOk = TryDiagnosticSensor(
-        "unit_upgrades",
-        function() return CollectUpgradeDiagnostics(player); end
-    );
 
     production = production or { Production = -1 };
     queue = queue or {
@@ -584,17 +603,18 @@ local function GetEconomicSnapshot(playerID)
         Buildings = -1,
         Projects = -1,
         Idle = -1,
-        Unknown = -1
+        Unknown = -1,
+        Wonders = -1,
+        Science = -1,
+        Culture = -1,
+        Empire = -1
     };
-    districts = districts or { Used = -1, Slots = -1, OpenCities = -1 };
-    strategic = strategic or {
-        Stockpile = -1,
-        Capacity = -1,
-        Net = -1,
-        Types = -1,
-        FullTypes = -1
+    districts = districts or {
+        Used = -1,
+        Completed = -1,
+        Slots = -1,
+        OpenCities = -1
     };
-    upgrades = upgrades or { Upgradeable = -1, Ready = -1, Cost = -1 };
 
     local infrastructureTarget = GetInfrastructureTarget(snapshot);
     local reserve = snapshot.Cities
@@ -629,15 +649,11 @@ local function GetEconomicSnapshot(playerID)
         GoldSurplus = goldSurplus,
         GoldPerCity = snapshot.Cities > 0
             and snapshot.GoldBalance / snapshot.Cities or -1,
-        UncommittedGold = upgradeOk == 1
-            and math.max(0, goldSurplus - upgrades.Cost) or -1,
-        Strategic = strategic,
-        Upgrades = upgrades,
         ProductionOk = productionOk,
         QueueOk = queueOk,
         DistrictOk = districtOk,
-        ResourceOk = resourceOk,
-        UpgradeOk = upgradeOk
+        ResourceSupported = 0,
+        UpgradeSupported = 0
     };
     m_EconomicSnapshots[playerID] = result;
     return result;
@@ -689,6 +705,16 @@ local function GetMaximumSettlersInFlight(snapshot)
         GetNumberParameter("ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER", 8)
     );
     return math.max(1, math.ceil(snapshot.Cities / citiesPerSettler));
+end
+
+local function GetTradeCapacityTarget(snapshot)
+    local citiesPerCapacity = math.max(
+        1,
+        GetNumberParameter("ASAI_TRADE_CITIES_PER_CAPACITY", 3)
+    );
+    return snapshot.Cities > 0
+        and math.max(1, math.ceil(snapshot.Cities / citiesPerCapacity))
+        or 0;
 end
 
 local function IsBuilderBudgetReachedSnapshot(snapshot)
@@ -750,6 +776,27 @@ function ASAI_IsTradeRecovery(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsTradeRecovery.Add(ASAI_IsTradeRecovery);
+
+local function IsTradeCapacityRecovery(playerID, threshold)
+    if not IsMajorAI(playerID) then
+        return false;
+    end
+    local snapshot = GetSnapshot(playerID);
+    local startTurn = ScaleStandardTurns(
+        GetNumberParameter("ASAI_TRADE_CAPACITY_START_STANDARD", 35)
+    );
+    return snapshot.Turn >= startTurn
+        and snapshot.RouteCapacity < GetTradeCapacityTarget(snapshot);
+end
+function ASAI_IsTradeCapacityRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsTradeCapacityRecovery",
+        IsTradeCapacityRecovery,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsTradeCapacityRecovery.Add(ASAI_IsTradeCapacityRecovery);
 
 local function IsBuilderBudgetReached(playerID, threshold)
     if not IsMajorAI(playerID) then
@@ -1057,6 +1104,9 @@ local function GetFocusResultName(result)
     if result == RELATIVE_FOCUS_RESULT_IMPROVING then
         return "improving";
     end
+    if result == RELATIVE_FOCUS_RESULT_EXECUTING then
+        return "executing";
+    end
     if result == RELATIVE_FOCUS_RESULT_STALLED then
         return "stalled";
     end
@@ -1108,6 +1158,8 @@ local function GetNeutralRelativeState()
         FocusGain = 0,
         FocusRawGain = 0,
         FocusResult = RELATIVE_FOCUS_RESULT_NONE,
+        FocusExecution = 0,
+        FocusStallCount = 0,
         SevereCatchup = 0,
         SevereCandidate = 0,
         SevereStreak = 0,
@@ -1217,6 +1269,16 @@ local function ReadRelativeState(player)
         or state.FocusResult > RELATIVE_FOCUS_RESULT_STALLED then
         state.FocusResult = RELATIVE_FOCUS_RESULT_NONE;
     end
+    state.FocusExecution = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_EXECUTION_PROPERTY,
+        0
+    );
+    state.FocusStallCount = GetStoredNumber(
+        player,
+        RELATIVE_FOCUS_STALL_COUNT_PROPERTY,
+        0
+    );
     state.SevereCatchup = GetStoredNumber(player, RELATIVE_SEVERE_PROPERTY, 0) == 1 and 1 or 0;
     state.SevereCandidate = GetStoredNumber(
         player,
@@ -1286,6 +1348,8 @@ local function StoreRelativeState(player, state)
         math.floor(state.FocusRawGain * 1000 + 0.5)
     );
     player:SetProperty(RELATIVE_FOCUS_RESULT_PROPERTY, state.FocusResult);
+    player:SetProperty(RELATIVE_FOCUS_EXECUTION_PROPERTY, state.FocusExecution);
+    player:SetProperty(RELATIVE_FOCUS_STALL_COUNT_PROPERTY, state.FocusStallCount);
     player:SetProperty(RELATIVE_SEVERE_PROPERTY, state.SevereCatchup);
     player:SetProperty(RELATIVE_SEVERE_CANDIDATE_PROPERTY, state.SevereCandidate);
     player:SetProperty(RELATIVE_SEVERE_STREAK_PROPERTY, state.SevereStreak);
@@ -1486,9 +1550,17 @@ local function StartFocusReview(state, focus, turn)
     state.FocusGain = 0;
     state.FocusRawGain = 0;
     state.FocusResult = RELATIVE_FOCUS_RESULT_NONE;
+    state.FocusExecution = 0;
+    state.FocusStallCount = 0;
 end
 
-local function ReviewActiveFocus(state, turn)
+local function ResetFocusReviewBaseline(state, turn)
+    state.FocusReviewTurn = turn;
+    state.FocusBaseline = GetFocusScore(state, state.Focus, false);
+    state.FocusRawBaseline = GetFocusScore(state, state.Focus, true);
+end
+
+local function ReviewActiveFocus(playerID, state, turn)
     if state.Focus == RELATIVE_FOCUS_NONE then
         return false;
     end
@@ -1498,7 +1570,7 @@ local function ReviewActiveFocus(state, turn)
     end
 
     local reviewWindow = ScaleStandardTurns(
-        GetNumberParameter("ASAI_RELATIVE_FOCUS_REVIEW_STANDARD", 20)
+        GetNumberParameter("ASAI_RELATIVE_FOCUS_REVIEW_STANDARD", 12)
     );
     if turn - state.FocusReviewTurn < reviewWindow then
         return false;
@@ -1507,6 +1579,11 @@ local function ReviewActiveFocus(state, turn)
     state.FocusGain = GetFocusScore(state, state.Focus, false) - state.FocusBaseline;
     state.FocusRawGain = GetFocusScore(state, state.Focus, true)
         - state.FocusRawBaseline;
+    local focusExecution, focusExecutionOk = TryDiagnosticSensor(
+        "focus_production_" .. tostring(playerID),
+        function() return CountFocusProduction(Players[playerID], state.Focus); end
+    );
+    state.FocusExecution = focusExecutionOk == 1 and focusExecution or -1;
     local minimumGain = GetNumberParameter(
         "ASAI_RELATIVE_FOCUS_MIN_GAIN_X100",
         3
@@ -1516,15 +1593,38 @@ local function ReviewActiveFocus(state, turn)
         1
     ) / 100;
     if state.FocusGain < minimumGain and state.FocusRawGain < minimumRawGain then
-        state.FocusResult = RELATIVE_FOCUS_RESULT_STALLED;
-        return true;
+        state.FocusStallCount = state.FocusStallCount + 1;
+        state.FocusResult = state.FocusExecution == 0
+            and RELATIVE_FOCUS_RESULT_STALLED
+            or RELATIVE_FOCUS_RESULT_EXECUTING;
+    else
+        state.FocusResult = RELATIVE_FOCUS_RESULT_IMPROVING;
+        state.FocusStallCount = 0;
     end
 
-    state.FocusResult = RELATIVE_FOCUS_RESULT_IMPROVING;
-    state.FocusReviewTurn = turn;
-    state.FocusBaseline = GetFocusScore(state, state.Focus, false);
-    state.FocusRawBaseline = GetFocusScore(state, state.Focus, true);
-    return false;
+    print(string.format(
+        "ASAI_FOCUS turn=%d standard_turn=%.1f player=%d focus=%s result=%s queue_response=%d stall_count=%d gain=%.3f raw_gain=%.3f",
+        turn,
+        GetStandardEquivalentTurn(turn),
+        playerID,
+        GetFocusName(state.Focus),
+        GetFocusResultName(state.FocusResult),
+        state.FocusExecution,
+        state.FocusStallCount,
+        state.FocusGain,
+        state.FocusRawGain
+    ));
+
+    local stallLimit = math.max(
+        1,
+        GetNumberParameter("ASAI_RELATIVE_FOCUS_STALL_LIMIT", 3)
+    );
+    local retireFocus = state.FocusResult ~= RELATIVE_FOCUS_RESULT_IMPROVING
+        and state.FocusStallCount >= stallLimit;
+    if not retireFocus then
+        ResetFocusReviewBaseline(state, turn);
+    end
+    return retireFocus;
 end
 
 local function AdvanceConfirmedState(current, candidate, streak, desired, canChange)
@@ -1666,7 +1766,7 @@ local function EvaluateRelativeState(playerID)
 
         local recoveryThresholds = GetRecoveryThresholds();
         local focusChanged = false;
-        local focusRetired = ReviewActiveFocus(state, turn);
+        local focusRetired = ReviewActiveFocus(playerID, state, turn);
         if focusRetired then
             local stalledCooldown = ScaleStandardTurns(
                 GetNumberParameter("ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD", 16)
@@ -1866,6 +1966,51 @@ function ASAI_IsEmpireRecovery(playerID, threshold)
 end
 GameEvents.ASAI_IsEmpireRecovery.Add(ASAI_IsEmpireRecovery);
 
+local function IsFocusExecutionRecovery(playerID, focus)
+    local state = GetRelativeState(playerID);
+    return state.Focus == focus
+        and state.FocusResult == RELATIVE_FOCUS_RESULT_STALLED;
+end
+
+local function IsScienceExecutionRecovery(playerID, threshold)
+    return IsFocusExecutionRecovery(playerID, RELATIVE_FOCUS_SCIENCE);
+end
+function ASAI_IsScienceExecutionRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsScienceExecutionRecovery",
+        IsScienceExecutionRecovery,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsScienceExecutionRecovery.Add(ASAI_IsScienceExecutionRecovery);
+
+local function IsCultureExecutionRecovery(playerID, threshold)
+    return IsFocusExecutionRecovery(playerID, RELATIVE_FOCUS_CULTURE);
+end
+function ASAI_IsCultureExecutionRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsCultureExecutionRecovery",
+        IsCultureExecutionRecovery,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsCultureExecutionRecovery.Add(ASAI_IsCultureExecutionRecovery);
+
+local function IsEmpireExecutionRecovery(playerID, threshold)
+    return IsFocusExecutionRecovery(playerID, RELATIVE_FOCUS_EMPIRE);
+end
+function ASAI_IsEmpireExecutionRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsEmpireExecutionRecovery",
+        IsEmpireExecutionRecovery,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsEmpireExecutionRecovery.Add(ASAI_IsEmpireExecutionRecovery);
+
 local function IsExpansionRecovery(playerID, threshold)
     if not GetRelativeState(playerID).Recovery.Empire then
         return false;
@@ -1996,7 +2141,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2017,6 +2162,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         snapshot.Settlers,
         snapshot.InFlightSettlers,
         snapshot.RouteCapacity,
+        GetTradeCapacityTarget(snapshot),
         snapshot.GoldBalance,
         snapshot.NetGold,
         strength.Science,
@@ -2048,7 +2194,9 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         handoffReady,
         relativeState.FocusGain,
         relativeState.FocusRawGain,
-        focusAge
+        focusAge,
+        relativeState.FocusExecution,
+        relativeState.FocusStallCount
     ));
     print(string.format(
         "ASAI_COMPONENTS turn=%d player=%d tech_raw=%.3f tech_controlled=%.3f civics_raw=%.3f civics_controlled=%.3f science_raw=%.3f science_controlled=%.3f culture_raw=%.3f culture_controlled=%.3f cities_raw=%.3f cities_controlled=%.3f pop_raw=%.3f pop_controlled=%.3f military_raw=%.3f military_controlled=%.3f",
@@ -2094,12 +2242,8 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
             economic.ProductionPerCity,
             human.ProductionPerCity
         ) or -1;
-    local strategicFill = GetDiagnosticRatio(
-        economic.Strategic.Stockpile,
-        economic.Strategic.Capacity
-    );
     print(string.format(
-        "ASAI_ECONOMY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d production=%.1f production_per_city=%.2f production_per_pop=%.2f production_ratio=%.3f production_per_city_ratio=%.3f district_used=%d district_slots=%d district_util=%.3f district_open_cities=%d route_capacity=%d route_coverage=%.3f route_pipeline=%.3f improvement_coverage=%.3f improvement_pipeline=%.3f improved_land=%.3f production_ok=%d district_ok=%d",
+        "ASAI_ECONOMY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d production=%.1f production_per_city=%.2f production_per_pop=%.2f production_ratio=%.3f production_per_city_ratio=%.3f district_used=%d district_completed=%d district_estimated_slots=%d district_util=%.3f district_slot_mode=population_formula route_capacity=%d route_coverage=%.3f route_pipeline=%.3f improvement_coverage=%.3f improvement_pipeline=%.3f improved_land=%.3f production_ok=%d district_ok=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2110,9 +2254,9 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         productionRatio,
         productionPerCityRatio,
         economic.Districts.Used,
+        economic.Districts.Completed,
         economic.Districts.Slots,
         economic.DistrictUtilization,
-        economic.Districts.OpenCities,
         snapshot.RouteCapacity,
         economic.RouteCoverage,
         economic.RoutePipelineCoverage,
@@ -2123,7 +2267,7 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         economic.DistrictOk
     ));
     print(string.format(
-        "ASAI_CONVERSION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d cities=%d queue_units=%d queue_districts=%d queue_buildings=%d queue_projects=%d queue_idle=%d queue_unknown=%d gold=%.1f gold_reserve=%.1f gold_surplus=%.1f gold_per_city=%.1f uncommitted_gold=%.1f strategic_stockpile=%.1f strategic_capacity=%.1f strategic_fill=%.3f strategic_net=%.1f strategic_types=%d strategic_full_types=%d upgradeable=%d upgrade_ready=%d upgrade_cost=%.1f queue_ok=%d resource_ok=%d upgrade_ok=%d",
+        "ASAI_CONVERSION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d cities=%d queue_units=%d queue_districts=%d queue_buildings=%d queue_projects=%d queue_wonders=%d queue_idle=%d queue_unknown=%d queue_science=%d queue_culture=%d queue_empire=%d gold=%.1f gold_reserve=%.1f gold_surplus=%.1f gold_per_city=%.1f queue_ok=%d resource_supported=%d upgrade_supported=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2133,25 +2277,19 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         economic.Queue.Districts,
         economic.Queue.Buildings,
         economic.Queue.Projects,
+        economic.Queue.Wonders,
         economic.Queue.Idle,
         economic.Queue.Unknown,
+        economic.Queue.Science,
+        economic.Queue.Culture,
+        economic.Queue.Empire,
         snapshot.GoldBalance,
         economic.GoldReserve,
         economic.GoldSurplus,
         economic.GoldPerCity,
-        economic.UncommittedGold,
-        economic.Strategic.Stockpile,
-        economic.Strategic.Capacity,
-        strategicFill,
-        economic.Strategic.Net,
-        economic.Strategic.Types,
-        economic.Strategic.FullTypes,
-        economic.Upgrades.Upgradeable,
-        economic.Upgrades.Ready,
-        economic.Upgrades.Cost,
         economic.QueueOk,
-        economic.ResourceOk,
-        economic.UpgradeOk
+        economic.ResourceSupported,
+        economic.UpgradeSupported
     ));
 end
 

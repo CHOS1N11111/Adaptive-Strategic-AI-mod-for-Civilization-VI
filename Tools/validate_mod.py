@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.6.0"
-EXPECTED_MODINFO_VERSION = "11"
+EXPECTED_RELEASE = "0.7.0"
+EXPECTED_MODINFO_VERSION = "12"
 
 
 def default_database() -> Path:
@@ -201,6 +201,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_COMPONENTS",
         "ASAI_ECONOMY",
         "ASAI_CONVERSION",
+        "ASAI_FOCUS",
         "ASAI_DIAGNOSTIC_ERROR",
     ):
         counts = lua_format_counts(source, marker)
@@ -246,9 +247,16 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     focus_fragments = (
         "local function GetDesiredFocus(state, recoveryThresholds, turn)",
         "ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100",
-        "local function ReviewActiveFocus(state, turn)",
+        "local function ReviewActiveFocus(playerID, state, turn)",
         "ASAI_RELATIVE_FOCUS_REVIEW_STANDARD",
+        "ASAI_RELATIVE_FOCUS_STALL_LIMIT",
         "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD",
+        '"focus_production_" .. tostring(playerID)',
+        "state.FocusExecution = focusExecutionOk == 1 and focusExecution or -1",
+        'ASAI_RELATIVE_FOCUS_REVIEW_STANDARD", 12',
+        "queue_response=%d",
+        "stall_count=%d",
+        "local function IsFocusExecutionRecovery(playerID, focus)",
         "RELATIVE_FOCUS_HANDOFF_PROPERTY",
         "FocusHandoffReady = false",
         "state.FocusHandoffReady = true",
@@ -283,31 +291,25 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "local function CollectProductionDiagnostics(player)",
         'GameInfo.Yields["YIELD_PRODUCTION"]',
         "city:GetYield(productionYield.Index)",
+        "local function GetCurrentProductionType(city)",
+        "buildQueue:CurrentlyBuilding()",
+        "ASAI_QUEUE_API mode=currently_building coverage=current_only",
         "local function CollectQueueDiagnostics(player)",
-        "buildQueue:GetCurrentProductionTypeHash()",
+        "queue_wonders=%d",
+        "queue_science=%d",
+        "queue_culture=%d",
+        "queue_empire=%d",
         "local function CollectDistrictDiagnostics(player)",
-        "GetNumZonedDistrictsRequiringPopulation()",
-        "GetNumAllowedDistrictsRequiringPopulation()",
-        "local function CollectStrategicResourceDiagnostics(player)",
-        "GetResourceStockpileCap(resource.ResourceType)",
-        "GetResourceAccumulationPerTurn(resource.ResourceType)",
-        "GetResourceImportPerTurn(resource.ResourceType)",
-        "GetBonusResourcePerTurn(resource.ResourceType)",
-        "GetUnitResourceDemandPerTurn(resource.ResourceType)",
-        "GetPowerResourceDemandPerTurn(resource.ResourceType)",
-        "local resourceNet = accumulation + imports + bonuses",
-        "local function CollectUpgradeDiagnostics(player)",
-        "UnitManager.CanStartCommand(",
-        "UnitCommandTypes.UPGRADE",
-        "unit:GetUpgradeCost()",
+        "player:GetDistricts()",
+        "districtInfo.RequiresPopulation == true",
+        "district:IsComplete()",
         "local function GetEconomicSnapshot(playerID)",
         '"production_queue"',
         '"district_capacity"',
-        '"strategic_resources"',
-        '"unit_upgrades"',
         "RoutePipelineCoverage = snapshot.RouteCapacity > 0",
         "ImprovementPipelineCoverage = infrastructureTarget > 0",
-        "UncommittedGold = upgradeOk == 1",
+        "ResourceSupported = 0",
+        "UpgradeSupported = 0",
         "local function GetHumanEconomicReference()",
         "local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)",
         "ASAI_ECONOMY turn=%d evaluated_turn=%d",
@@ -318,12 +320,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "improvement_coverage=%.3f",
         "queue_units=%d",
         "gold_surplus=%.1f",
-        "strategic_fill=%.3f",
-        "upgradeable=%d",
         "production_ok=%d",
         "queue_ok=%d",
-        "resource_ok=%d",
-        "upgrade_ok=%d",
+        "resource_supported=%d",
+        "upgrade_supported=%d",
     )
     for fragment in diagnostic_fragments:
         if fragment not in source:
@@ -338,15 +338,15 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.6.0")
+        errors.append("diagnostic production must not enter the relative score in 0.7.0")
     infrastructure_fragments = (
         'ASAI_INFRA_START_TURN_STANDARD", 20',
         'ASAI_INFRA_IMPROVEMENTS_PER_CITY_X100", 200',
         'ASAI_INFRA_IMPROVEMENTS_PER_POP_X100", 65',
         'ASAI_INFRA_OWNED_PLOTS_CAP_X100", 30',
         "local function CountInFlightUnits(player)",
-        "buildQueue:GetCurrentProductionTypeHash()",
-        "ASAI_QUEUE_API mode=current_production_hash coverage=current_only",
+        "buildQueue:CurrentlyBuilding()",
+        "ASAI_QUEUE_API mode=currently_building coverage=current_only",
         "snapshot.InFlightBuilders",
         "snapshot.InFlightTraders",
         "math.max(cityFloor, math.min(populationTarget, landCap))",
@@ -361,6 +361,18 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         if unavailable_method in source:
             errors.append(
                 "gameplay script still uses a UI-only build-queue method: "
+                f"{unavailable_method}"
+            )
+    for unavailable_method in (
+        "GetCurrentProductionTypeHash",
+        "GetNumZonedDistrictsRequiringPopulation",
+        "GetNumAllowedDistrictsRequiringPopulation",
+        "GetResourceStockpileCap",
+        "UnitManager.CanStartCommand",
+    ):
+        if unavailable_method in source:
+            errors.append(
+                "gameplay script still uses an unavailable runtime method: "
                 f"{unavailable_method}"
             )
     civilian_budget_fragments = (
@@ -480,6 +492,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     parameter_names = (
         "ASAI_RELATIVE_PACING_ENABLED",
         "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
+        "ASAI_TRADE_CAPACITY_START_STANDARD",
+        "ASAI_TRADE_CITIES_PER_CAPACITY",
         "ASAI_WAR_FRONT_CITY_DISTANCE",
         "ASAI_WAR_RECENT_COMBAT_STANDARD",
         "ASAI_WAR_COMBAT_ATTRIBUTION_DISTANCE",
@@ -493,6 +507,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_FOCUS_REVIEW_STANDARD",
         "ASAI_RELATIVE_FOCUS_MIN_GAIN_X100",
         "ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100",
+        "ASAI_RELATIVE_FOCUS_STALL_LIMIT",
         "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD",
         "ASAI_RELATIVE_SEVERE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_EXIT_X100",
@@ -603,6 +618,14 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(
             f"expansion cities per in-flight settler must be positive: {expansion_cities}"
         )
+    trade_capacity_start = parameters.get("ASAI_TRADE_CAPACITY_START_STANDARD")
+    trade_cities = parameters.get("ASAI_TRADE_CITIES_PER_CAPACITY")
+    if trade_capacity_start is not None and trade_capacity_start < 0:
+        errors.append(
+            f"trade-capacity start turn cannot be negative: {trade_capacity_start}"
+        )
+    if trade_cities is not None and trade_cities <= 0:
+        errors.append(f"trade cities per capacity must be positive: {trade_cities}")
     for name in (
         "ASAI_WAR_FRONT_CITY_DISTANCE",
         "ASAI_WAR_RECENT_COMBAT_STANDARD",
@@ -623,6 +646,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     focus_stall_cooldown = parameters.get(
         "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD"
     )
+    focus_stall_limit = parameters.get("ASAI_RELATIVE_FOCUS_STALL_LIMIT")
     if focus_review is not None and focus_review < 8:
         errors.append(f"relative focus review window is too short: {focus_review}")
     for name, value in (
@@ -635,6 +659,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(
             f"relative focus stall cooldown cannot be negative: {focus_stall_cooldown}"
         )
+    if focus_stall_limit is not None and not 1 <= focus_stall_limit <= 5:
+        errors.append(f"relative focus stall limit is invalid: {focus_stall_limit}")
     severe_enter = parameters.get("ASAI_RELATIVE_SEVERE_ENTER_X100")
     severe_exit = parameters.get("ASAI_RELATIVE_SEVERE_EXIT_X100")
     if (
@@ -718,6 +744,28 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             f"found {sorted(actual_recovery_strategies)}"
         )
 
+    expected_execution_strategies = {
+        "ASAI_STRATEGY_TRADE_CAPACITY_RECOVERY",
+        "ASAI_STRATEGY_SCIENCE_EXECUTION_RECOVERY",
+        "ASAI_STRATEGY_CULTURE_EXECUTION_RECOVERY",
+        "ASAI_STRATEGY_EMPIRE_EXECUTION_RECOVERY",
+    }
+    execution_placeholders = ", ".join("?" for _ in expected_execution_strategies)
+    actual_execution_strategies = {
+        row[0]
+        for row in connection.execute(
+            "SELECT StrategyType FROM Strategies "
+            f"WHERE StrategyType IN ({execution_placeholders})",
+            tuple(sorted(expected_execution_strategies)),
+        )
+    }
+    if actual_execution_strategies != expected_execution_strategies:
+        errors.append(
+            "execution recovery strategies differ: "
+            f"expected {sorted(expected_execution_strategies)}, "
+            f"found {sorted(actual_execution_strategies)}"
+        )
+
     expected_budget_strategies = {
         "ASAI_STRATEGY_BUILDER_BUDGET",
         "ASAI_STRATEGY_TRADER_BUDGET",
@@ -758,6 +806,58 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 f"civilian budget {list_type}/{item} expected {expected}, found {actual}"
             )
 
+    expected_execution_values = {
+        ("ASAI_TradeCapacityBuildings", "BUILDING_MARKET"): 55,
+        ("ASAI_TradeCapacityBuildings", "BUILDING_LIGHTHOUSE"): 55,
+        ("ASAI_ScienceExecutionDistricts", "DISTRICT_CAMPUS"): 75,
+        ("ASAI_CultureExecutionDistricts", "DISTRICT_THEATER"): 80,
+        ("ASAI_CultureExecutionBuildings", "BUILDING_MONUMENT"): 80,
+        ("ASAI_EmpireExecutionBuildings", "BUILDING_GRANARY"): 60,
+        ("ASAI_EmpireExecutionBuildings", "BUILDING_WATER_MILL"): 40,
+    }
+    for (list_type, item), expected in expected_execution_values.items():
+        row = connection.execute(
+            "SELECT Value FROM AiFavoredItems WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        actual = None if row is None else row[0]
+        if actual != expected:
+            errors.append(
+                f"execution recovery {list_type}/{item} expected {expected}, "
+                f"found {actual}"
+            )
+
+    district_replacement_expectations = (
+        ("ASAI_TradeCapacityDistricts", "DISTRICT_COMMERCIAL_HUB", 40),
+        ("ASAI_TradeCapacityDistricts", "DISTRICT_HARBOR", 40),
+        ("ASAI_ScienceRecoveryDistricts", "DISTRICT_CAMPUS", 50),
+        ("ASAI_ScienceExecutionDistricts", "DISTRICT_CAMPUS", 75),
+        ("ASAI_CultureRecoveryDistricts", "DISTRICT_THEATER", 55),
+        ("ASAI_CultureExecutionDistricts", "DISTRICT_THEATER", 80),
+    )
+    for list_type, base_district, expected in district_replacement_expectations:
+        missing = [
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT r.CivUniqueDistrictType
+                FROM DistrictReplaces AS r
+                LEFT JOIN AiFavoredItems AS f
+                  ON f.ListType = ?
+                 AND f.Item = r.CivUniqueDistrictType
+                 AND f.Value = ?
+                WHERE r.ReplacesDistrictType = ?
+                  AND f.Item IS NULL
+                ORDER BY r.CivUniqueDistrictType
+                """,
+                (list_type, expected, base_district),
+            )
+        ]
+        if missing:
+            errors.append(
+                f"{list_type} is missing {base_district} replacements: {missing}"
+            )
+
     oversized = list(
         connection.execute(
             """
@@ -784,6 +884,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             SELECT ListType, Item, Value
             FROM AiFavoredItems
             WHERE ListType LIKE 'ASAI_RelativeSevere%'
+              AND Item <> 'PSEUDOYIELD_WONDER'
               AND ABS(Value) > 20
             ORDER BY ListType, Item
             """
@@ -800,6 +901,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             SELECT ListType, Item, Value
             FROM AiFavoredItems
             WHERE ListType LIKE 'ASAI_RelativeCatchup%'
+              AND Item <> 'PSEUDOYIELD_WONDER'
               AND ABS(Value) > 12
             ORDER BY ListType, Item
             """
@@ -826,13 +928,32 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         for list_type, item, value in lead_penalties
     )
 
-    expected_culture_buildings = {
+    expected_victory_culture_buildings = {
         "BUILDING_AMPHITHEATER",
         "BUILDING_MUSEUM_ART",
         "BUILDING_MUSEUM_ARTIFACT",
         "BUILDING_BROADCAST_CENTER",
     }
-    for list_type in ("ASAI_CultureRecoveryBuildings", "ASAI_CultureBuildings"):
+    actual_victory_culture_buildings = {
+        row[0]
+        for row in connection.execute(
+            "SELECT Item FROM AiFavoredItems WHERE ListType = 'ASAI_CultureBuildings'"
+        )
+    }
+    if actual_victory_culture_buildings != expected_victory_culture_buildings:
+        errors.append(
+            "ASAI_CultureBuildings differs: "
+            f"expected {sorted(expected_victory_culture_buildings)}, "
+            f"found {sorted(actual_victory_culture_buildings)}"
+        )
+
+    required_recovery_culture_buildings = expected_victory_culture_buildings | {
+        "BUILDING_MONUMENT"
+    }
+    for list_type in (
+        "ASAI_CultureRecoveryBuildings",
+        "ASAI_CultureExecutionBuildings",
+    ):
         actual_culture_buildings = {
             row[0]
             for row in connection.execute(
@@ -840,11 +961,24 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 (list_type,),
             )
         }
-        if actual_culture_buildings != expected_culture_buildings:
+        missing = required_recovery_culture_buildings - actual_culture_buildings
+        if missing:
+            errors.append(f"{list_type} is missing required buildings: {sorted(missing)}")
+
+    expected_wonder_penalties = {
+        ("ASAI_RelativeCatchupPseudoYields", "PSEUDOYIELD_WONDER"): -20,
+        ("ASAI_RelativeSeverePseudoYields", "PSEUDOYIELD_WONDER"): -30,
+    }
+    for (list_type, item), expected in expected_wonder_penalties.items():
+        row = connection.execute(
+            "SELECT Value FROM AiFavoredItems WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        actual = None if row is None else row[0]
+        if actual != expected:
             errors.append(
-                f"{list_type} differs: "
-                f"expected {sorted(expected_culture_buildings)}, "
-                f"found {sorted(actual_culture_buildings)}"
+                f"wonder opportunity-cost guardrail {list_type} expected "
+                f"{expected}, found {actual}"
             )
 
     forbidden_wonder_lists = (
@@ -929,8 +1063,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 15:
-                    errors.append(f"expected 15 adaptive strategies, found {strategy_count}")
+                if strategy_count != 19:
+                    errors.append(f"expected 19 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -951,7 +1085,7 @@ def main() -> int:
     print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 15 (including support, recovery, and civilian budgets)")
+    print("- adaptive strategies: 19 (including support, execution recovery, and budgets)")
     print("- game cache was not modified")
     return 0
 
