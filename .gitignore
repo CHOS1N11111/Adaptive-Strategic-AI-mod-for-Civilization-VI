@@ -2,4 +2,6 @@ __pycache__/
 *.py[cod]
 *.log
 *.sqlite
-docs/process/session-data/
+
+# Internal development documentation, research, test reports, and session data.
+docs/

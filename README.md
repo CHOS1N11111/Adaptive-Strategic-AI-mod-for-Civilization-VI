@@ -62,8 +62,6 @@
 python .\Tools\validate_mod.py
 ```
 
-`AI/10_CoreEconomy.sql` 中的 `ASAI_ENABLE_METRICS` 在当前测试版默认为 `1`。每次控制器评估会在同一回合输出 `ASAI_METRIC`、`ASAI_COMPONENTS`、`ASAI_ECONOMY` 和 `ASAI_CONVERSION`。后两者记录生产能力、资产利用、当前生产分配、可动用储备和升级积压；每组高风险传感器有独立成功标记，失败值为 `-1`，不会中止控制器。总体档改变时输出 `ASAI_PACING`，焦点改变时输出 `ASAI_RECOVERY`，扶持档变化时输出 `ASAI_SUPPORT`；完整字段定义见 [`docs/design/ECONOMIC_DIAGNOSTICS.md`](docs/design/ECONOMIC_DIAGNOSTICS.md)。
+`AI/10_CoreEconomy.sql` 中的 `ASAI_ENABLE_METRICS` 在当前测试版默认为 `1`。每次控制器评估会在同一回合输出 `ASAI_METRIC`、`ASAI_COMPONENTS`、`ASAI_ECONOMY` 和 `ASAI_CONVERSION`。后两者记录生产能力、资产利用、当前生产分配、可动用储备和升级积压；每组高风险传感器有独立成功标记，失败值为 `-1`，不会中止控制器。总体档改变时输出 `ASAI_PACING`，焦点改变时输出 `ASAI_RECOVERY`，扶持档变化时输出 `ASAI_SUPPORT`。
 
-“比现有 Mod 更好”必须通过多局对照证明。相对区间负责避免比赛过早失去悬念，长期计划、玩家建模、战争生命周期和胜利转化负责让这种竞争像 AI 自己打出来的。完整设计见 [`docs/design/PVP_EXPERIENCE.md`](docs/design/PVP_EXPERIENCE.md)。
-
-完整的产品目标、机制证据、现有 Mod 调研、架构和固定种子测试标准位于 [`docs/README.md`](docs/README.md)。后续参数修改应以这些文档和可复现测试为依据。
+“比现有 Mod 更好”必须通过多局对照证明。相对区间负责避免比赛过早失去悬念，长期计划、玩家建模、战争生命周期和胜利转化负责让这种竞争像 AI 自己打出来的。
