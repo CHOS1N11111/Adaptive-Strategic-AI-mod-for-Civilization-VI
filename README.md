@@ -1,70 +1,72 @@
+**English** | [简体中文](README.zh-CN.md)
+
 # Adaptive Strategic AI 0.8.0
 
-这不是“给 AI 偷资源”的作弊包，而是一个可审计、可测量的 AI 工程基线。当前只支持 Gathering Storm，建议远古时代开局并新建游戏测试。0.8.0 根据一局联机速度第 1-75 回合的完整复盘，修复焦点执行恢复，减少开局奇观陷阱和定居护送浪费，并加快商路容量落地。
+Adaptive Strategic AI is not a cheat pack that feeds hidden resources to the AI. It is an auditable, measurable AI engineering baseline for Gathering Storm. Testing should use a new game starting in the Ancient Era. Release 0.8.0 is based on a complete turn 1-75 Online Speed review and fixes focus execution recovery, reduces opening wonder traps and settler escort waste, and improves the conversion of trade infrastructure into actual route capacity.
 
-## 当前版本做了什么
+## What This Release Does
 
-- 神级 AI 不再免费获得额外开拓者。远古开局总计为 1 开拓者、2 勇士、1 建造者。
-- 神级产出、战斗力和经验奖励按世界时代逐步增长，前期压力降低，后期威胁提高。
-- 一城或两城 AI 在前 70 个标准速度等效回合内临时降低奇观偏好并提高移民倾向；达到 3 城后立即退出，不影响后续奇观或胜利路线。已有及当前在产移民预算仍会反压重复生产。
-- 定居行动保留一个战斗护卫，但不再为安全城址持续凑额外强度，队伍封顶为 1 移民加 1 护卫；城址评价更重视淡水、资源与紧凑布局。
-- AI 会根据自身状态自动启用缺改良、缺商人、缺商路容量、财政赤字、战争动员和现代化六类基础辅助策略。
-- 每个存活主要 AI 都独立比较自己与玩家的综合实力，并检查科技、文化、帝国三个支柱；没有全局竞争者名额，也不会把所有 AI 强行拉成同分。
-- 综合扶持分为轻度和强度受限的严重落后两档；综合严重落后或至少两个核心支柱同时崩塌都可进入强扶持。支柱恢复同时最多一个，无效方向会退出并单独冷却，其他有效支柱可快速接手。
-- 战争记录区分正式宣战与真实接战；只有与主要文明前线接近或近期发生可归属战斗时，才启用本 Mod 的完整战争动员。
-- 基建恢复同时考虑城市数、人口和领土面积，避免高人口或沿海文明长期误判为缺改良。
-- 建造者、商人和移民预算会计入现役单位及每座城市当前正在生产的单位；预算已满时启用对应反向约束，减少多个城市重复下单。玩法脚本无法读取 UI 中尚未开始的未来队列，因此只统计当前项目。
-- 每次控制器评估同时诊断总/每城生产力、按人口公式估算的专业区域容量、商路容量、改良覆盖、当前生产分类和金币储备，用于区分“缺城市”和“城市没有转化为有效资产”。战略资源上限和单位升级可行性在玩法脚本环境中没有可靠 API，日志会明确标记为不支持，不再输出伪精确数据。
-- 科技、文化或帝国焦点在一个复查窗口内没有改善时，控制器会检查实际生产队列；无论完全没有响应，还是已有相关生产但差距仍扩大，都会临时叠加更强的执行恢复权重。只有结果改善后才撤销，基础区域和建筑的文明特色替代品会获得相同信号。
-- 科技、文化、征服、宗教和外交胜利路线得到完整且不同的区域、建筑、单位、科技/市政和项目偏好。
-- 城市进攻行动缩短集结距离，降低无法启动的规模门槛，并要求更合理的远程、攻城和空军组成。
-- 落后 AI 会降低奇观偏好，把生产优先留给扩张、改良、商路和关键区域；强落后时惩罚更高，恢复后自动撤销。活跃主要文明战争仍有独立的奇观机会成本。
-- 没有生成单位、免费科技、免费资源或玩家触发式隐藏补偿。
+- Deity AI no longer receives a free additional Settler. An Ancient Era start now gives each Deity AI 1 Settler, 2 Warriors, and 1 Builder in total.
+- Deity yield, combat, and experience bonuses scale with the world era, reducing early pressure while preserving a stronger late-game threat.
+- A one- or two-city AI temporarily reduces its wonder preference and increases its Settler preference during the first 70 Standard-speed-equivalent turns. The strategy exits immediately at 3 cities and does not constrain later wonders or victory plans. Existing and currently produced Settlers still count against the civilian budget and suppress duplicate production.
+- Settlement operations retain one combat escort but no longer wait for extra formation strength around safe targets. A team is capped at 1 Settler plus 1 escort. Plot evaluation places more value on fresh water, resources, and compact settlement.
+- The AI conditionally enables six baseline support strategies for insufficient improvements, Traders, trade route capacity, budget deficits, wartime mobilization, and military modernization.
+- Every surviving major AI independently compares its overall strength with the human player and checks its science, culture, and empire pillars. There is no global competitor quota, and the system does not force every AI into exact parity.
+- Catch-up support has a modest tier and a bounded severe tier. Severe support can activate when overall strength collapses or at least two core pillars fail together. Only one pillar recovery runs at a time; an ineffective direction exits into its own cooldown so another valid pillar can take over.
+- War tracking distinguishes a formal declaration from actual contact. Full wartime mobilization activates only when the AI is near a major-civilization front or has recently participated in attributable combat.
+- Infrastructure recovery considers city count, population, and owned territory so populous or coastal civilizations are not permanently misclassified as under-improved.
+- Builder, Trader, and Settler budgets include active units and the item each city is currently producing. A reverse-pressure strategy suppresses duplicate orders once a budget is full. Gameplay scripts cannot see future items that have not started in the UI production queue, so only current production is counted.
+- Every controller evaluation diagnoses total and per-city production, population-derived specialty district capacity, trade capacity, improvement coverage, current production categories, and gold reserves. This separates "not enough cities" from "cities are not converting production into useful assets." The gameplay scripting environment exposes no reliable API for strategic-resource stock limits or upgrade feasibility, so the log marks those sensors unsupported instead of emitting false precision.
+- When a science, culture, or empire focus fails to improve during a review window, the controller checks the real production response. Stronger execution weights activate both when no city responds and when relevant production exists but the gap still grows. They are removed only after the result improves. Civilization-specific replacements receive the same district and building signals.
+- Science, culture, domination, religious, and diplomatic victory plans receive distinct preferences for districts, buildings, units, technologies, civics, and projects.
+- City attack operations use shorter assembly distances, lower deadlock-prone launch thresholds, and more practical ranged, siege, and air compositions.
+- A trailing AI reduces wonder preference to preserve production for expansion, improvements, trade, and key districts. Severe support increases that opportunity cost and removes it after recovery. Active wars against major civilizations apply a separate wonder opportunity cost.
+- The mod does not spawn units or grant free technologies, free resources, or hidden bonuses triggered by player performance.
 
-## 玩家相对节奏
+## Player-Relative Pacing
 
-- 从第 35 个标准速度等效回合开始，每回合采样；每 4 个标准速度等效回合才评估一次。联机、标准和史诗速度使用 `GameSpeeds.CostMultiplier` 换算。
-- 综合实力中，科技侧占 32%（科技数 20% + 科研速度 12%），文化侧占 30%（市政数 18% + 文化速度 12%），帝国侧占 25%（城市 10% + 人口 15%），军力占 13%。普通分项限制在 55%-145%，军力最高只按 120% 计入总分。
-- 玩家处于远古/古典时，落后扶持进入/退出线为 88%/94%；中世纪/文艺复兴为 90%/96%；工业时代以后为 92%/97%。领先巩固边界仍为 125%/118%、120%/113% 和 115%/108%。
-- 决策使用速度归一化的指数平滑值；连续 2 次评估越界才切换，状态至少驻留 12 个标准等效回合，正常退出后冷却 8 回合。
-- 科技不高于 88%、文化不高于 85%、帝国不高于 85% 时可成为恢复候选，但同时只激活得分最低的一项；对应退出线为 96%、95%、95%，恢复后或另一支柱显著更差时才退出/切换。
-- 焦点每运行 12 个标准等效回合复查一次：平滑比值改善不足 3 个百分点且原始比值改善不足 1 个百分点时，检查有多少城市正在生产对应资产；完全无响应记为 `stalled`，已有响应但差距仍扩大记为 `executing`，两者都会启用执行恢复。连续 3 个复查窗口仍无效才让该支柱冷却 16 回合，避免过早放弃，也不把长期策略永久锁死。
-- 综合比值不高于 80%，或科技/文化/帝国中第二弱支柱不高于 78% 时，可在连续两次确认后进入强扶持档；只有综合达到 88% 且第二弱支柱达到 86% 才退出。扶持只增加有上限的原生 AI 决策权重，不直接赠送产出、单位或进度。
-- 综合追赶权重保持为小幅通用纠偏；轻度追赶给予 `-20` 的奇观伪产出修正，强扶持额外给予 `-30`，两种状态同时存在时合计 `-50`。领先状态不降低科技、文化、生产、移民或奇观偏好，只保留少量金币与防御倾向。
-- 该机制不会直接增加或扣除任何产出、资源、科技进度、单位或战斗力。启用开关、检查周期、进出阈值和七项权重位于 `AI/10_CoreEconomy.sql`，可直接调整；权重总和应保持为 100。
-- 0.8.0 的生产、区域、商路和转化数据仍不进入上述七项综合总分；只有“当前生产是否响应已选焦点”用于决定是否临时提高对应原生 AI 权重。
+- Sampling starts at turn 35 in Standard-speed-equivalent time. Metrics are sampled every turn and evaluated every 4 Standard-speed-equivalent turns. Online, Standard, and Epic speeds are normalized through `GameSpeeds.CostMultiplier`.
+- Overall strength weights science at 32% (20% completed technologies and 12% science output), culture at 30% (18% completed civics and 12% culture output), empire at 25% (10% cities and 15% population), and military at 13%. Normal components are clamped to 55%-145%; military contributes at no more than 120%.
+- When the player is in the Ancient or Classical Era, catch-up enters/exits at 88%/94%. The Medieval and Renaissance thresholds are 90%/96%, and Industrial or later thresholds are 92%/97%. Lead-consolidation boundaries remain 125%/118%, 120%/113%, and 115%/108% respectively.
+- Decisions use speed-normalized exponential smoothing. A boundary must be crossed on 2 consecutive evaluations before the state changes. A state remains active for at least 12 Standard-speed-equivalent turns, followed by an 8-turn cooldown after a normal exit.
+- Science at or below 88%, culture at or below 85%, and empire at or below 85% can become recovery candidates, but only the weakest eligible pillar activates. Their exit thresholds are 96%, 95%, and 95%. A focus exits or switches only after recovery or when another pillar becomes materially weaker.
+- An active focus is reviewed every 12 Standard-speed-equivalent turns. If the smoothed ratio improves by less than 3 percentage points and the raw ratio by less than 1 point, the controller checks how many cities are producing related assets. No response is classified as `stalled`; a response with a still-growing gap is `executing`. Both activate execution recovery. Three ineffective review windows place that pillar on a 16-turn cooldown, avoiding both premature abandonment and a permanently locked strategy.
+- Severe support can activate after two confirmations when the overall ratio is at or below 80%, or when the second-weakest science, culture, or empire pillar is at or below 78%. It exits only after overall strength reaches 88% and the second-weakest pillar reaches 86%. Support adds bounded native AI decision weights and never grants direct yields, units, or progress.
+- General catch-up weights remain deliberately modest. Normal catch-up applies a `-20` wonder pseudo-yield adjustment, while severe support adds `-30`, for a combined `-50` when both are active. A leading AI does not lose science, culture, production, Settler, or wonder preference; it receives only small gold and defense adjustments.
+- This controller never directly adds or removes yields, resources, technology progress, units, or combat strength. Enable flags, evaluation timing, entry/exit thresholds, and the seven component weights are configurable in `AI/10_CoreEconomy.sql`; the component weights should continue to sum to 100.
+- In 0.8.0, production, districts, trade, and conversion diagnostics still do not enter the seven-component overall score. Only whether current production responds to the selected focus can temporarily raise native AI execution weights.
 
-基建恢复的目标改良数为：`max(2 × 城市数, min(0.65 × 人口, 0.30 × 已拥有地块))`。已有及当前在产建造者会按每个 2 个潜在改良抵扣目标；当前在产商人同样抵扣商路缺口。商路容量低于 `ceil(城市数 / 3)` 时会偏好商业中心/港口，并更强地优先其首个市场/灯塔容量建筑。扩张恢复允许的已有及当前在产移民上限为 `max(1, ceil(城市数 / 5))`。达到上述预算后，独立反压策略降低继续生产对应平民单位的权重。
+The infrastructure improvement target is `max(2 * cities, min(0.65 * population, 0.30 * owned plots))`. Each existing or currently produced Builder offsets two potential improvements; a currently produced Trader similarly offsets the trade-route deficit. When trade capacity is below `ceil(cities / 3)`, the AI favors Commercial Hubs or Harbors and more strongly prioritizes their first Market or Lighthouse capacity building. Expansion recovery allows `max(1, ceil(cities / 5))` existing or currently produced Settlers. Independent budget strategies reduce further civilian production after those limits are reached.
 
-## 神级总奖励曲线
+## Total Deity Bonus Curve
 
-| 世界时代 | 生产/金币 | 科技/文化/信仰 | 战斗力 | 单位经验 |
+| World Era | Production / Gold | Science / Culture / Faith | Combat Strength | Unit Experience |
 | --- | ---: | ---: | ---: | ---: |
-| 远古 | +20% | +10% | +1 | +10% |
-| 古典 | +25% | +14% | +1 | +15% |
-| 中世纪 | +35% | +20% | +1 | +20% |
-| 文艺复兴 | +45% | +28% | +1 | +25% |
-| 工业 | +55% | +36% | +1 | +30% |
-| 现代 | +65% | +44% | +2 | +35% |
-| 原子能 | +75% | +52% | +2 | +40% |
-| 信息/未来 | +90% | +60% | +2 | +40% |
+| Ancient | +20% | +10% | +1 | +10% |
+| Classical | +25% | +14% | +1 | +15% |
+| Medieval | +35% | +20% | +1 | +20% |
+| Renaissance | +45% | +28% | +1 | +25% |
+| Industrial | +55% | +36% | +1 | +30% |
+| Modern | +65% | +44% | +2 | +35% |
+| Atomic | +75% | +52% | +2 | +40% |
+| Information / Future | +90% | +60% | +2 | +40% |
 
-## 使用方法
+## Installation and Use
 
-1. 在“额外内容 -> 模组”中启用 `Adaptive Strategic AI`。
-2. 规则集选择 Gathering Storm，建议神级、标准速度、远古时代开始。
-3. 新建游戏；旧存档不会完整重算起始单位和早期曲线。
+1. Enable `Adaptive Strategic AI` under **Additional Content -> Mods**.
+2. Select the Gathering Storm ruleset. Deity difficulty, Standard speed, and an Ancient Era start are recommended for baseline testing.
+3. Start a new game. Existing saves do not fully recalculate starting units or the early-game bonus curve.
 
-不要同时启用 RHAI、Real Strategy、AI+、Better AI Tweaks、Late Game AI、Smooth Difficulty 或其他修改 AI 策略/难度奖励的模组。UI 模组通常可以共存。Better Balanced Game 虽然不属于 AI Mod，但会大范围改变科技、单位和区域，正式基准阶段也应关闭，之后再单独做兼容配置。
+Do not combine this mod with RHAI, Real Strategy, AI+, Better AI Tweaks, Late Game AI, Smooth Difficulty, or other mods that change AI strategies or difficulty bonuses. UI-only mods are generally compatible. Better Balanced Game is not an AI mod, but it substantially changes technologies, units, and districts; disable it for formal baseline tests and evaluate compatibility separately afterward.
 
-## 验证与基准
+## Validation and Benchmarking
 
-离线检查命令：
+Run the offline validator with:
 
 ```powershell
 python .\Tools\validate_mod.py
 ```
 
-`AI/10_CoreEconomy.sql` 中的 `ASAI_ENABLE_METRICS` 在当前测试版默认为 `1`。每次控制器评估会输出 `ASAI_METRIC`、`ASAI_COMPONENTS`、`ASAI_ECONOMY` 和 `ASAI_CONVERSION`；焦点复查另输出 `ASAI_FOCUS`，其中包含队列响应数和连续失效次数。当前生产通过玩法脚本可用的 `CurrentlyBuilding()` 读取；各诊断传感器独立失败关闭，不会中止控制器。总体档改变时输出 `ASAI_PACING`，焦点改变时输出 `ASAI_RECOVERY`，扶持档变化时输出 `ASAI_SUPPORT`。
+`ASAI_ENABLE_METRICS` in `AI/10_CoreEconomy.sql` defaults to `1` in the current test release. Each controller evaluation emits `ASAI_METRIC`, `ASAI_COMPONENTS`, `ASAI_ECONOMY`, and `ASAI_CONVERSION`. Focus reviews also emit `ASAI_FOCUS`, including queue response and consecutive failure counts. Current production is read through the gameplay-script `CurrentlyBuilding()` API. Diagnostic sensors fail closed independently and do not stop the controller. Overall pacing changes emit `ASAI_PACING`, focus changes emit `ASAI_RECOVERY`, and support-tier changes emit `ASAI_SUPPORT`.
 
-“比现有 Mod 更好”必须通过多局对照证明。相对区间负责避免比赛过早失去悬念，长期计划、玩家建模、战争生命周期和胜利转化负责让这种竞争像 AI 自己打出来的。
+The claim that this mod is better than existing alternatives must be established through multiple controlled games. Relative pacing prevents a match from losing tension too early; long-term planning, player modeling, war lifecycle management, and victory conversion must make that competition feel earned by the AI itself.
