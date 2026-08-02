@@ -22,6 +22,7 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_GOLD_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
@@ -47,6 +48,7 @@ VALUES
     ('ASAI_STRATEGY_GOLD_RECOVERY', 1),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 1),
     ('ASAI_STRATEGY_MILITARY_READINESS', 1),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 1),
     ('ASAI_STRATEGY_LATE_GAME', 1),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 1),
     ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 1),
@@ -82,6 +84,8 @@ VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'Call Lua Function', 'ASAI_IsWarMobilization', 0, 0),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'Call Lua Function', 'ASAI_IsMilitaryReadiness', 0, 0),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 'Call Lua Function', 'ASAI_IsScaleRecovery', 0, 0),
     ('ASAI_STRATEGY_LATE_GAME', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_LATE_GAME', 'Call Lua Function', 'ASAI_IsLateGame', 0, 0),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Is Not Major', NULL, 0, 1),
@@ -139,6 +143,10 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_MilitaryReadinessYields'),
     ('ASAI_MilitaryReadinessDistricts'),
     ('ASAI_MilitaryReadinessBuildings'),
+    ('ASAI_ScaleRecoveryPseudoYields'),
+    ('ASAI_ScaleRecoveryYields'),
+    ('ASAI_ScaleRecoveryDistricts'),
+    ('ASAI_ScaleRecoveryBuildings'),
     ('ASAI_LatePseudoYields'),
     ('ASAI_LateDistricts'),
     ('ASAI_LateBuildings'),
@@ -207,6 +215,10 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_MilitaryReadinessYields', 'Yields'),
     ('ASAI_MilitaryReadinessDistricts', 'Districts'),
     ('ASAI_MilitaryReadinessBuildings', 'Buildings'),
+    ('ASAI_ScaleRecoveryPseudoYields', 'PseudoYields'),
+    ('ASAI_ScaleRecoveryYields', 'Yields'),
+    ('ASAI_ScaleRecoveryDistricts', 'Districts'),
+    ('ASAI_ScaleRecoveryBuildings', 'Buildings'),
     ('ASAI_LatePseudoYields', 'PseudoYields'),
     ('ASAI_LateDistricts', 'Districts'),
     ('ASAI_LateBuildings', 'Buildings'),
@@ -275,6 +287,10 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessYields'),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessDistricts'),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessBuildings'),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 'ASAI_ScaleRecoveryPseudoYields'),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 'ASAI_ScaleRecoveryYields'),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 'ASAI_ScaleRecoveryDistricts'),
+    ('ASAI_STRATEGY_SCALE_RECOVERY', 'ASAI_ScaleRecoveryBuildings'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LatePseudoYields'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateDistricts'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateBuildings'),
@@ -388,19 +404,28 @@ VALUES
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 7),
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 5),
     ('ASAI_RelativeCatchupDistricts', 'DISTRICT_HARBOR', 1, 5),
-    ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 10),
-    ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 18),
+    ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 14),
+    ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 20),
     ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_WONDER', 1, -30),
     ('ASAI_RelativeSeverePseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 6),
-    ('ASAI_RelativeSevereYields', 'YIELD_PRODUCTION', 1, 16),
-    ('ASAI_RelativeSevereYields', 'YIELD_SCIENCE', 1, 12),
-    ('ASAI_RelativeSevereYields', 'YIELD_CULTURE', 1, 12),
-    ('ASAI_RelativeSevereYields', 'YIELD_GOLD', 1, 8),
-    ('ASAI_RelativeSevereDistricts', 'DISTRICT_CAMPUS', 1, 16),
-    ('ASAI_RelativeSevereDistricts', 'DISTRICT_THEATER', 1, 16),
-    ('ASAI_RelativeSevereDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 18),
-    ('ASAI_RelativeSevereDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 8),
-    ('ASAI_RelativeSevereDistricts', 'DISTRICT_HARBOR', 1, 8),
+    ('ASAI_RelativeSevereYields', 'YIELD_PRODUCTION', 1, 20),
+    ('ASAI_RelativeSevereYields', 'YIELD_SCIENCE', 1, 16),
+    ('ASAI_RelativeSevereYields', 'YIELD_CULTURE', 1, 16),
+    ('ASAI_RelativeSevereYields', 'YIELD_GOLD', 1, 10),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_CAMPUS', 1, 20),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_THEATER', 1, 20),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 20),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 12),
+    ('ASAI_RelativeSevereDistricts', 'DISTRICT_HARBOR', 1, 12),
+    ('ASAI_ScaleRecoveryPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 25),
+    ('ASAI_ScaleRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 20),
+    ('ASAI_ScaleRecoveryPseudoYields', 'PSEUDOYIELD_WONDER', 1, -30),
+    ('ASAI_ScaleRecoveryYields', 'YIELD_FOOD', 1, 18),
+    ('ASAI_ScaleRecoveryYields', 'YIELD_PRODUCTION', 1, 20),
+    ('ASAI_ScaleRecoveryYields', 'YIELD_GOLD', 1, 10),
+    ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 30),
+    ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 20),
+    ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_HARBOR', 1, 20),
     ('ASAI_RelativeLeadPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 4),
     ('ASAI_RelativeLeadYields', 'YIELD_GOLD', 1, 3),
     ('ASAI_ScienceRecoveryDistricts', 'DISTRICT_CAMPUS', 1, 50),
@@ -428,8 +453,8 @@ VALUES
     ('ASAI_EmpireExecutionUnits', 'UNIT_TRADER', 1, 20),
     ('ASAI_EmpireExecutionYields', 'YIELD_FOOD', 1, 24),
     ('ASAI_EmpireExecutionYields', 'YIELD_PRODUCTION', 1, 15),
-    ('ASAI_ExpansionRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 25),
-    ('ASAI_ExpansionRecoveryUnits', 'UNIT_SETTLER', 1, 20);
+    ('ASAI_ExpansionRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 45),
+    ('ASAI_ExpansionRecoveryUnits', 'UNIT_SETTLER', 1, 40);
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -475,15 +500,26 @@ INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
 SELECT 'ASAI_RelativeSevereDistricts', CivUniqueDistrictType, 1,
     CASE ReplacesDistrictType
-        WHEN 'DISTRICT_CAMPUS' THEN 16
-        WHEN 'DISTRICT_THEATER' THEN 16
-        WHEN 'DISTRICT_INDUSTRIAL_ZONE' THEN 18
-        ELSE 8
+        WHEN 'DISTRICT_CAMPUS' THEN 20
+        WHEN 'DISTRICT_THEATER' THEN 20
+        WHEN 'DISTRICT_INDUSTRIAL_ZONE' THEN 20
+        ELSE 12
     END
 FROM DistrictReplaces
 WHERE ReplacesDistrictType IN
     ('DISTRICT_CAMPUS', 'DISTRICT_THEATER', 'DISTRICT_INDUSTRIAL_ZONE',
      'DISTRICT_COMMERCIAL_HUB', 'DISTRICT_HARBOR');
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScaleRecoveryDistricts', CivUniqueDistrictType, 1,
+    CASE ReplacesDistrictType
+        WHEN 'DISTRICT_INDUSTRIAL_ZONE' THEN 30
+        ELSE 20
+    END
+FROM DistrictReplaces
+WHERE ReplacesDistrictType IN
+    ('DISTRICT_INDUSTRIAL_ZONE', 'DISTRICT_COMMERCIAL_HUB', 'DISTRICT_HARBOR');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -590,6 +626,52 @@ WHERE BuildingType IN ('BUILDING_GRANARY', 'BUILDING_WATER_MILL')
         FROM BuildingReplaces
         WHERE ReplacesBuildingType IN ('BUILDING_GRANARY', 'BUILDING_WATER_MILL')
    );
+
+-- Scale recovery converts existing cities into population, production, and
+-- trade capacity. It remains independent from the current victory focus.
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScaleRecoveryBuildings', BuildingType, 1,
+    CASE
+        WHEN BuildingType = 'BUILDING_GRANARY' THEN 55
+        WHEN BuildingType IN ('BUILDING_MONUMENT', 'BUILDING_WATER_MILL') THEN 45
+        WHEN BuildingType = 'BUILDING_SEWER' THEN 35
+        WHEN PrereqDistrict = 'DISTRICT_INDUSTRIAL_ZONE' THEN 50
+        WHEN BuildingType IN ('BUILDING_MARKET', 'BUILDING_LIGHTHOUSE') THEN 45
+        WHEN BuildingType IN ('BUILDING_BANK', 'BUILDING_SHIPYARD') THEN 40
+        ELSE 30
+    END
+FROM Buildings
+WHERE COALESCE(IsWonder, 0) = 0
+  AND (BuildingType IN
+        ('BUILDING_MONUMENT', 'BUILDING_GRANARY', 'BUILDING_WATER_MILL',
+         'BUILDING_SEWER', 'BUILDING_MARKET', 'BUILDING_BANK',
+         'BUILDING_STOCK_EXCHANGE', 'BUILDING_LIGHTHOUSE',
+         'BUILDING_SHIPYARD', 'BUILDING_SEAPORT')
+       OR PrereqDistrict = 'DISTRICT_INDUSTRIAL_ZONE');
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScaleRecoveryBuildings', replacements.CivUniqueBuildingType, 1,
+    CASE
+        WHEN base.BuildingType = 'BUILDING_GRANARY' THEN 55
+        WHEN base.BuildingType IN ('BUILDING_MONUMENT', 'BUILDING_WATER_MILL') THEN 45
+        WHEN base.BuildingType = 'BUILDING_SEWER' THEN 35
+        WHEN base.PrereqDistrict = 'DISTRICT_INDUSTRIAL_ZONE' THEN 50
+        WHEN base.BuildingType IN ('BUILDING_MARKET', 'BUILDING_LIGHTHOUSE') THEN 45
+        WHEN base.BuildingType IN ('BUILDING_BANK', 'BUILDING_SHIPYARD') THEN 40
+        ELSE 30
+    END
+FROM BuildingReplaces AS replacements
+JOIN Buildings AS base
+  ON base.BuildingType = replacements.ReplacesBuildingType
+WHERE COALESCE(base.IsWonder, 0) = 0
+  AND (base.BuildingType IN
+        ('BUILDING_MONUMENT', 'BUILDING_GRANARY', 'BUILDING_WATER_MILL',
+         'BUILDING_SEWER', 'BUILDING_MARKET', 'BUILDING_BANK',
+         'BUILDING_STOCK_EXCHANGE', 'BUILDING_LIGHTHOUSE',
+         'BUILDING_SHIPYARD', 'BUILDING_SEAPORT')
+       OR base.PrereqDistrict = 'DISTRICT_INDUSTRIAL_ZONE');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)

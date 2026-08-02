@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Mod id="6f0de0e4-37d7-48ad-a6d4-4a958d76e7f1" version="15">
+<Mod id="6f0de0e4-37d7-48ad-a6d4-4a958d76e7f1" version="16">
   <Properties>
     <Name>Adaptive Strategic AI</Name>
-    <Description>All-major-AI planning with bounded pacing, military readiness, and production-response feedback.</Description>
+    <Description>All-major-AI planning with bounded pacing, military readiness, scale recovery, and production-response feedback.</Description>
     <Teaser>Fair early game. Adaptive pressure.</Teaser>
     <Authors>30474</Authors>
     <AffectsSavedGames>1</AffectsSavedGames>

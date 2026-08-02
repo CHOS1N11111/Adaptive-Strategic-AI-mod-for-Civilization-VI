@@ -76,6 +76,12 @@ local MILITARY_READINESS_CANDIDATE_PROPERTY = "ASAI_MILITARY_READINESS_CANDIDATE
 local MILITARY_READINESS_STREAK_PROPERTY = "ASAI_MILITARY_READINESS_STREAK";
 local MILITARY_READINESS_CHANGED_TURN_PROPERTY = "ASAI_MILITARY_READINESS_CHANGED_TURN";
 local MILITARY_READINESS_COOLDOWN_PROPERTY = "ASAI_MILITARY_READINESS_COOLDOWN_UNTIL";
+local SCALE_RECOVERY_PROPERTY = "ASAI_SCALE_RECOVERY";
+local SCALE_RECOVERY_CANDIDATE_PROPERTY = "ASAI_SCALE_RECOVERY_CANDIDATE";
+local SCALE_RECOVERY_STREAK_PROPERTY = "ASAI_SCALE_RECOVERY_STREAK";
+local SCALE_RECOVERY_CHANGED_TURN_PROPERTY = "ASAI_SCALE_RECOVERY_CHANGED_TURN";
+local SCALE_RECOVERY_COOLDOWN_PROPERTY = "ASAI_SCALE_RECOVERY_COOLDOWN_UNTIL";
+local SCALE_EXPANSION_ALLOWED_PROPERTY = "ASAI_SCALE_EXPANSION_ALLOWED";
 
 local RELATIVE_COMPONENTS = {
     { Key = "Techs", Parameter = "ASAI_RELATIVE_WEIGHT_TECHS", Weight = 20 },
@@ -779,12 +785,24 @@ local function GetDiagnosticRatio(numerator, denominator)
     return numerator / denominator;
 end
 
-local function GetMaximumSettlersInFlight(snapshot)
+local function GetMaximumSettlersInFlight(snapshot, scaleRecovery)
     local citiesPerSettler = math.max(
         1,
         GetNumberParameter("ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER", 8)
     );
-    return math.max(1, math.ceil(snapshot.Cities / citiesPerSettler));
+    local baseline = math.max(1, math.ceil(snapshot.Cities / citiesPerSettler));
+    if not scaleRecovery then
+        return baseline;
+    end
+    local bonus = math.max(
+        0,
+        GetNumberParameter("ASAI_SCALE_RECOVERY_SETTLER_BONUS", 1)
+    );
+    local recoveryCap = math.max(
+        1,
+        GetNumberParameter("ASAI_SCALE_RECOVERY_SETTLER_CAP", 3)
+    );
+    return math.max(baseline, math.min(recoveryCap, baseline + bonus));
 end
 
 local function GetTradeCapacityTarget(snapshot)
@@ -810,10 +828,10 @@ local function IsTraderBudgetReachedSnapshot(snapshot)
     return snapshot.RouteCapacity <= snapshot.Traders + snapshot.InFlightTraders;
 end
 
-local function IsSettlerBudgetReachedSnapshot(snapshot)
+local function IsSettlerBudgetReachedSnapshot(snapshot, scaleRecovery)
     return snapshot.Cities > 0
         and snapshot.Settlers + snapshot.InFlightSettlers
-            >= GetMaximumSettlersInFlight(snapshot);
+            >= GetMaximumSettlersInFlight(snapshot, scaleRecovery);
 end
 
 local function IsInfrastructureRecovery(playerID, threshold)
@@ -940,7 +958,16 @@ local function IsSettlerBudgetReached(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
-    return IsSettlerBudgetReachedSnapshot(GetSnapshot(playerID));
+    local player = Players[playerID];
+    local rawScaleExpansion = player:GetProperty(SCALE_EXPANSION_ALLOWED_PROPERTY);
+    local snapshot = GetSnapshot(playerID);
+    local scaleExpansion = GetNumberParameter(
+        "ASAI_RELATIVE_PACING_ENABLED",
+        1
+    ) == 1
+        and tonumber(rawScaleExpansion) == 1
+        and snapshot.ActiveMajorWars <= 0;
+    return IsSettlerBudgetReachedSnapshot(snapshot, scaleExpansion);
 end
 function ASAI_IsSettlerBudgetReached(playerID, threshold)
     return RunStrategyCondition(
@@ -1290,6 +1317,12 @@ local function GetNeutralRelativeState()
         MilitaryReadinessCooldownUntil = -1,
         MilitaryPlannedCities = 0,
         MilitaryUnitsPerPlannedCity = 0,
+        ScaleRecovery = 0,
+        ScaleRecoveryCandidate = 0,
+        ScaleRecoveryStreak = 0,
+        ScaleRecoveryChangedTurn = -100000,
+        ScaleRecoveryCooldownUntil = -1,
+        ScaleExpansionAllowed = 0,
         LastSampleTurn = -1,
         LastEvaluationTurn = -1,
         EvaluatedThisTurn = false,
@@ -1442,6 +1475,36 @@ local function ReadRelativeState(player)
         MILITARY_READINESS_COOLDOWN_PROPERTY,
         -1
     );
+    state.ScaleRecovery = GetStoredNumber(
+        player,
+        SCALE_RECOVERY_PROPERTY,
+        0
+    ) == 1 and 1 or 0;
+    state.ScaleRecoveryCandidate = GetStoredNumber(
+        player,
+        SCALE_RECOVERY_CANDIDATE_PROPERTY,
+        state.ScaleRecovery
+    ) == 1 and 1 or 0;
+    state.ScaleRecoveryStreak = GetStoredNumber(
+        player,
+        SCALE_RECOVERY_STREAK_PROPERTY,
+        0
+    );
+    state.ScaleRecoveryChangedTurn = GetStoredNumber(
+        player,
+        SCALE_RECOVERY_CHANGED_TURN_PROPERTY,
+        -100000
+    );
+    state.ScaleRecoveryCooldownUntil = GetStoredNumber(
+        player,
+        SCALE_RECOVERY_COOLDOWN_PROPERTY,
+        -1
+    );
+    state.ScaleExpansionAllowed = GetStoredNumber(
+        player,
+        SCALE_EXPANSION_ALLOWED_PROPERTY,
+        0
+    ) == 1 and 1 or 0;
     state.LastSampleTurn = GetStoredNumber(player, RELATIVE_SAMPLE_TURN_PROPERTY, -1);
     state.LastEvaluationTurn = GetStoredNumber(
         player,
@@ -1521,6 +1584,24 @@ local function StoreRelativeState(player, state)
     player:SetProperty(
         MILITARY_READINESS_COOLDOWN_PROPERTY,
         state.MilitaryReadinessCooldownUntil
+    );
+    player:SetProperty(SCALE_RECOVERY_PROPERTY, state.ScaleRecovery);
+    player:SetProperty(
+        SCALE_RECOVERY_CANDIDATE_PROPERTY,
+        state.ScaleRecoveryCandidate
+    );
+    player:SetProperty(SCALE_RECOVERY_STREAK_PROPERTY, state.ScaleRecoveryStreak);
+    player:SetProperty(
+        SCALE_RECOVERY_CHANGED_TURN_PROPERTY,
+        state.ScaleRecoveryChangedTurn
+    );
+    player:SetProperty(
+        SCALE_RECOVERY_COOLDOWN_PROPERTY,
+        state.ScaleRecoveryCooldownUntil
+    );
+    player:SetProperty(
+        SCALE_EXPANSION_ALLOWED_PROPERTY,
+        state.ScaleExpansionAllowed
     );
     player:SetProperty(RELATIVE_SAMPLE_TURN_PROPERTY, state.LastSampleTurn);
     player:SetProperty(RELATIVE_EVALUATION_TURN_PROPERTY, state.LastEvaluationTurn);
@@ -1650,6 +1731,27 @@ local function GetDesiredSevereCatchup(state)
         return (state.Scores.Overall < exit or secondCore < coreExit) and 1 or 0;
     end
     return (state.Scores.Overall <= enter or secondCore <= coreEnter) and 1 or 0;
+end
+
+local function GetDesiredScaleRecovery(state)
+    local enter = GetNumberParameter("ASAI_SCALE_RECOVERY_ENTER_X100", 75) / 100;
+    local exit = GetNumberParameter("ASAI_SCALE_RECOVERY_EXIT_X100", 88) / 100;
+    if state.ScaleRecovery == 1 then
+        return state.Scores.Empire < exit and 1 or 0;
+    end
+    return state.Scores.Empire <= enter and 1 or 0;
+end
+
+local function UpdateScaleExpansionAvailability(state, snapshot)
+    local densityExit = GetNumberParameter(
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
+        225
+    ) / 100;
+    state.ScaleExpansionAllowed = state.ScaleRecovery == 1
+        and snapshot.ActiveMajorWars <= 0
+        and (state.MilitaryReadiness == 0
+            or state.MilitaryUnitsPerPlannedCity >= densityExit)
+        and 1 or 0;
 end
 
 local function GetDesiredMilitaryReadiness(state, densityEnabled)
@@ -1895,6 +1997,7 @@ local function EvaluateRelativeState(playerID)
     state.MilitaryPlannedCities = strengthSnapshot.Cities + plannedExpansion;
     state.MilitaryUnitsPerPlannedCity = state.MilitaryPlannedCities > 0
         and strengthSnapshot.CombatUnits / state.MilitaryPlannedCities or 0;
+    UpdateScaleExpansionAvailability(state, empireSnapshot);
     state.LastSampleTurn = turn;
 
     local thresholds = GetCompetitionThresholds(math.floor(humanStrength.Era + 0.5));
@@ -1910,6 +2013,7 @@ local function EvaluateRelativeState(playerID)
         local previousFocus = state.Focus;
         local previousSevere = state.SevereCatchup;
         local previousMilitaryReadiness = state.MilitaryReadiness;
+        local previousScaleRecovery = state.ScaleRecovery;
         local previousSupport = previousSevere == 1 and "strong"
             or (previousBand == RELATIVE_CATCHUP and "mild" or "none");
         local minimumDwell = ScaleStandardTurns(
@@ -1957,6 +2061,49 @@ local function EvaluateRelativeState(playerID)
         );
         if severeChanged then
             state.SevereChangedTurn = turn;
+        end
+
+        local scaleStartTurn = ScaleStandardTurns(
+            GetNumberParameter("ASAI_SCALE_RECOVERY_START_STANDARD", 50)
+        );
+        local scaleEnabled = turn >= scaleStartTurn;
+        local desiredScaleRecovery = scaleEnabled
+            and GetDesiredScaleRecovery(state) or 0;
+        local scaleEmergencyThreshold = GetNumberParameter(
+            "ASAI_SCALE_RECOVERY_EMERGENCY_X100",
+            60
+        ) / 100;
+        local scaleEmergency = scaleEnabled
+            and state.RawScores.Empire <= scaleEmergencyThreshold;
+        local canChangeScaleRecovery = turn - state.ScaleRecoveryChangedTurn
+            >= minimumDwell;
+        if state.ScaleRecovery == 0
+            and turn < state.ScaleRecoveryCooldownUntil then
+            canChangeScaleRecovery = false;
+        end
+        local scaleRecoveryChanged = false;
+        if state.ScaleRecovery == 0 and scaleEmergency then
+            state.ScaleRecovery = 1;
+            state.ScaleRecoveryCandidate = 1;
+            state.ScaleRecoveryStreak = 0;
+            scaleRecoveryChanged = true;
+        else
+            state.ScaleRecovery,
+            state.ScaleRecoveryCandidate,
+            state.ScaleRecoveryStreak,
+            scaleRecoveryChanged = AdvanceConfirmedState(
+                state.ScaleRecovery,
+                state.ScaleRecoveryCandidate,
+                state.ScaleRecoveryStreak,
+                desiredScaleRecovery,
+                canChangeScaleRecovery
+            );
+        end
+        if scaleRecoveryChanged then
+            state.ScaleRecoveryChangedTurn = turn;
+            if state.ScaleRecovery == 0 then
+                state.ScaleRecoveryCooldownUntil = turn + cooldown;
+            end
         end
 
         local densityStartTurn = ScaleStandardTurns(
@@ -2009,6 +2156,7 @@ local function EvaluateRelativeState(playerID)
                 state.MilitaryReadinessCooldownUntil = turn + cooldown;
             end
         end
+        UpdateScaleExpansionAvailability(state, empireSnapshot);
 
         if state.FocusHandoffReady
             and turn - state.FocusChangedTurn >= minimumDwell then
@@ -2108,6 +2256,21 @@ local function EvaluateRelativeState(playerID)
                 GetSupportName(state)
             ));
         end
+        if scaleRecoveryChanged then
+            local scaleReason = state.ScaleRecovery == 0 and "recovered"
+                or (scaleEmergency and "critical_gap" or "sustained_gap");
+            print(string.format(
+                "ASAI_SCALE turn=%d standard_turn=%.1f player=%d raw_empire=%.3f empire=%.3f from=%s to=%s reason=%s",
+                turn,
+                GetStandardEquivalentTurn(turn),
+                playerID,
+                state.RawScores.Empire,
+                state.Scores.Empire,
+                previousScaleRecovery == 1 and "on" or "off",
+                state.ScaleRecovery == 1 and "on" or "off",
+                scaleReason
+            ));
+        end
         if militaryReadinessChanged then
             local readinessReason = state.MilitaryReadiness == 0 and "recovered"
                 or (militaryEmergency and "critical_gap"
@@ -2195,6 +2358,19 @@ function ASAI_IsMilitaryReadiness(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsMilitaryReadiness.Add(ASAI_IsMilitaryReadiness);
+
+local function IsScaleRecovery(playerID, threshold)
+    return GetRelativeState(playerID).ScaleRecovery == 1;
+end
+function ASAI_IsScaleRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsScaleRecovery",
+        IsScaleRecovery,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsScaleRecovery.Add(ASAI_IsScaleRecovery);
 
 local function IsRelativeConsolidate(playerID, threshold)
     return GetRelativeState(playerID).Band == RELATIVE_CONSOLIDATE;
@@ -2295,14 +2471,21 @@ end
 GameEvents.ASAI_IsEmpireExecutionRecovery.Add(ASAI_IsEmpireExecutionRecovery);
 
 local function IsExpansionRecovery(playerID, threshold)
-    if not GetRelativeState(playerID).Recovery.Empire then
+    local state = GetRelativeState(playerID);
+    if state.ScaleRecovery == 1 and state.ScaleExpansionAllowed ~= 1 then
+        return false;
+    end
+    if not state.Recovery.Empire and state.ScaleExpansionAllowed ~= 1 then
         return false;
     end
     local snapshot = GetSnapshot(playerID);
     if snapshot.Cities <= 0 or snapshot.ActiveMajorWars > 0 then
         return false;
     end
-    local maximumInFlight = GetMaximumSettlersInFlight(snapshot);
+    local maximumInFlight = GetMaximumSettlersInFlight(
+        snapshot,
+        state.ScaleExpansionAllowed == 1
+    );
     return snapshot.Settlers + snapshot.InFlightSettlers < maximumInFlight;
 end
 function ASAI_IsExpansionRecovery(playerID, threshold)
@@ -2414,7 +2597,12 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local infrastructureTarget = GetInfrastructureTarget(snapshot);
     local builderBudget = IsBuilderBudgetReachedSnapshot(snapshot) and 1 or 0;
     local traderBudget = IsTraderBudgetReachedSnapshot(snapshot) and 1 or 0;
-    local settlerBudget = IsSettlerBudgetReachedSnapshot(snapshot) and 1 or 0;
+    local scaleExpansion = relativeState.ScaleExpansionAllowed == 1;
+    local settlerMaximum = GetMaximumSettlersInFlight(snapshot, scaleExpansion);
+    local settlerBudget = IsSettlerBudgetReachedSnapshot(
+        snapshot,
+        scaleExpansion
+    ) and 1 or 0;
     local secondCore = GetSecondWeakestCorePillarScore(relativeState);
     local handoffReady = relativeState.FocusHandoffReady and 1 or 0;
     local focusAge = relativeState.FocusStartedTurn >= 0
@@ -2424,7 +2612,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d scale_recovery=%d scale_expansion=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2438,6 +2626,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         builderBudget,
         traderBudget,
         settlerBudget,
+        settlerMaximum,
         snapshot.Builders,
         snapshot.InFlightBuilders,
         snapshot.Traders,
@@ -2471,6 +2660,8 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.RawScores.Military,
         relativeState.Scores.Military,
         relativeState.MilitaryReadiness,
+        relativeState.ScaleRecovery,
+        relativeState.ScaleExpansionAllowed,
         GetBandName(relativeState.Band),
         GetSupportName(relativeState),
         GetFocusName(relativeState.Focus),

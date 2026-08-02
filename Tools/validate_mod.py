@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.8.2"
-EXPECTED_MODINFO_VERSION = "15"
+EXPECTED_RELEASE = "0.8.3"
+EXPECTED_MODINFO_VERSION = "16"
 
 
 def default_database() -> Path:
@@ -198,6 +198,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("gameplay-safe military strength estimator is missing")
     for marker in (
         "ASAI_SUPPORT",
+        "ASAI_SCALE turn=",
         "ASAI_READINESS",
         "ASAI_RECOVERY",
         "ASAI_METRIC",
@@ -315,6 +316,28 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in military_readiness_fragments:
         if fragment not in source:
             errors.append(f"military readiness fragment is missing: {fragment}")
+    scale_recovery_fragments = (
+        "local function GetDesiredScaleRecovery(state)",
+        "ASAI_SCALE_RECOVERY_START_STANDARD",
+        "ASAI_SCALE_RECOVERY_ENTER_X100",
+        "ASAI_SCALE_RECOVERY_EXIT_X100",
+        "ASAI_SCALE_RECOVERY_EMERGENCY_X100",
+        "state.RawScores.Empire <= scaleEmergencyThreshold",
+        "state.ScaleRecoveryCooldownUntil",
+        "SCALE_RECOVERY_PROPERTY",
+        "player:SetProperty(SCALE_RECOVERY_PROPERTY, state.ScaleRecovery)",
+        "local function UpdateScaleExpansionAvailability(state, snapshot)",
+        "SCALE_EXPANSION_ALLOWED_PROPERTY",
+        "state.ScaleExpansionAllowed",
+        "SCALE_EXPANSION_ALLOWED_PROPERTY,\n        state.ScaleExpansionAllowed",
+        "function ASAI_IsScaleRecovery(playerID, threshold)",
+        "ASAI_SCALE turn=%d standard_turn=%.1f",
+        "scale_recovery=%d",
+        "scale_expansion=%d",
+    )
+    for fragment in scale_recovery_fragments:
+        if fragment not in source:
+            errors.append(f"scale recovery fragment is missing: {fragment}")
     diagnostic_fragments = (
         "local function TryDiagnosticSensor(sensorName, collector)",
         "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
@@ -378,7 +401,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.8.2")
+        errors.append("diagnostic production must not enter the relative score in 0.8.3")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -423,7 +446,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     civilian_budget_fragments = (
         "local function IsBuilderBudgetReachedSnapshot(snapshot)",
         "local function IsTraderBudgetReachedSnapshot(snapshot)",
-        "local function IsSettlerBudgetReachedSnapshot(snapshot)",
+        "local function IsSettlerBudgetReachedSnapshot(snapshot, scaleRecovery)",
         "function ASAI_IsBuilderBudgetReached(playerID, threshold)",
         "function ASAI_IsTraderBudgetReached(playerID, threshold)",
         "function ASAI_IsSettlerBudgetReached(playerID, threshold)",
@@ -435,9 +458,14 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     expansion_fragments = (
         "local function IsExpansionRecovery(playerID, threshold)",
         "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
+        "ASAI_SCALE_RECOVERY_SETTLER_BONUS",
+        "ASAI_SCALE_RECOVERY_SETTLER_CAP",
+        "state.ScaleRecovery == 1 and state.ScaleExpansionAllowed ~= 1",
+        "state.ScaleExpansionAllowed ~= 1",
         "snapshot.Settlers + snapshot.InFlightSettlers < maximumInFlight",
         "function ASAI_IsExpansionRecovery(playerID, threshold)",
         "settlers_inflight=%d",
+        "settler_cap=%d",
     )
     for fragment in expansion_fragments:
         if fragment not in source:
@@ -621,6 +649,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_OPENING_EXPANSION_END_STANDARD",
         "ASAI_OPENING_EXPANSION_CITY_TARGET",
         "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
+        "ASAI_SCALE_RECOVERY_SETTLER_BONUS",
+        "ASAI_SCALE_RECOVERY_SETTLER_CAP",
         "ASAI_TRADE_CAPACITY_START_STANDARD",
         "ASAI_TRADE_CITIES_PER_CAPACITY",
         "ASAI_WAR_FRONT_CITY_DISTANCE",
@@ -642,6 +672,10 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_SEVERE_EXIT_X100",
         "ASAI_RELATIVE_SEVERE_CORE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
+        "ASAI_SCALE_RECOVERY_START_STANDARD",
+        "ASAI_SCALE_RECOVERY_ENTER_X100",
+        "ASAI_SCALE_RECOVERY_EXIT_X100",
+        "ASAI_SCALE_RECOVERY_EMERGENCY_X100",
         "ASAI_RELATIVE_EARLY_TRAILING_ENTER_X100",
         "ASAI_RELATIVE_EARLY_TRAILING_EXIT_X100",
         "ASAI_RELATIVE_EARLY_LEADING_EXIT_X100",
@@ -766,6 +800,21 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 f"{(density_start, density_enter, density_exit)}"
             )
 
+    scale_start = parameters.get("ASAI_SCALE_RECOVERY_START_STANDARD")
+    scale_enter = parameters.get("ASAI_SCALE_RECOVERY_ENTER_X100")
+    scale_exit = parameters.get("ASAI_SCALE_RECOVERY_EXIT_X100")
+    scale_emergency = parameters.get("ASAI_SCALE_RECOVERY_EMERGENCY_X100")
+    if None not in (scale_start, scale_enter, scale_exit, scale_emergency):
+        if scale_start <= 0 or not 0 < scale_emergency < scale_enter < scale_exit < 100:
+            errors.append(
+                "scale-recovery thresholds are not ordered safely: "
+                f"{(scale_start, scale_emergency, scale_enter, scale_exit)}"
+            )
+        if (scale_start, scale_enter, scale_exit, scale_emergency) != (50, 75, 88, 60):
+            errors.append(
+                "scale-recovery thresholds differ from the turn 1-76 replay: "
+                f"{(scale_start, scale_enter, scale_exit, scale_emergency)}"
+            )
     interval = parameters.get("ASAI_RELATIVE_CHECK_INTERVAL_STANDARD")
     minimum_dwell = parameters.get("ASAI_RELATIVE_MIN_DWELL_STANDARD")
     cooldown = parameters.get("ASAI_RELATIVE_COOLDOWN_STANDARD")
@@ -793,6 +842,12 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(
             f"expansion cities per in-flight settler must be positive: {expansion_cities}"
         )
+    scale_settler_bonus = parameters.get("ASAI_SCALE_RECOVERY_SETTLER_BONUS")
+    scale_settler_cap = parameters.get("ASAI_SCALE_RECOVERY_SETTLER_CAP")
+    if scale_settler_bonus is not None and scale_settler_bonus < 0:
+        errors.append(f"scale-recovery settler bonus cannot be negative: {scale_settler_bonus}")
+    if scale_settler_cap is not None and scale_settler_cap < 1:
+        errors.append(f"scale-recovery settler cap must be positive: {scale_settler_cap}")
     trade_capacity_start = parameters.get("ASAI_TRADE_CAPACITY_START_STANDARD")
     trade_cities = parameters.get("ASAI_TRADE_CITIES_PER_CAPACITY")
     if trade_capacity_start is not None and trade_capacity_start < 0:
@@ -1017,6 +1072,121 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             f"expected one military-readiness strategy, found {readiness_strategy}"
         )
 
+    scale_strategy = connection.execute(
+        "SELECT COUNT(*) FROM Strategies "
+        "WHERE StrategyType = 'ASAI_STRATEGY_SCALE_RECOVERY'"
+    ).fetchone()[0]
+    if scale_strategy != 1:
+        errors.append(f"expected one scale-recovery strategy, found {scale_strategy}")
+
+    expected_scale_lists = {
+        "ASAI_ScaleRecoveryPseudoYields",
+        "ASAI_ScaleRecoveryYields",
+        "ASAI_ScaleRecoveryDistricts",
+        "ASAI_ScaleRecoveryBuildings",
+    }
+    actual_scale_lists = {
+        row[0]
+        for row in connection.execute(
+            "SELECT ListType FROM Strategy_Priorities "
+            "WHERE StrategyType = 'ASAI_STRATEGY_SCALE_RECOVERY'"
+        )
+    }
+    if actual_scale_lists != expected_scale_lists:
+        errors.append(
+            "scale-recovery priority lists differ: "
+            f"expected {sorted(expected_scale_lists)}, found {sorted(actual_scale_lists)}"
+        )
+
+    expected_scale_values = {
+        ("ASAI_ScaleRecoveryPseudoYields", "PSEUDOYIELD_IMPROVEMENT"): 25,
+        ("ASAI_ScaleRecoveryPseudoYields", "PSEUDOYIELD_UNIT_TRADE"): 20,
+        ("ASAI_ScaleRecoveryPseudoYields", "PSEUDOYIELD_WONDER"): -30,
+        ("ASAI_ScaleRecoveryYields", "YIELD_FOOD"): 18,
+        ("ASAI_ScaleRecoveryYields", "YIELD_PRODUCTION"): 20,
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_INDUSTRIAL_ZONE"): 30,
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_COMMERCIAL_HUB"): 20,
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_HARBOR"): 20,
+        ("ASAI_ScaleRecoveryBuildings", "BUILDING_GRANARY"): 55,
+        ("ASAI_ScaleRecoveryBuildings", "BUILDING_MONUMENT"): 45,
+        ("ASAI_ScaleRecoveryBuildings", "BUILDING_MARKET"): 45,
+        ("ASAI_ScaleRecoveryBuildings", "BUILDING_LIGHTHOUSE"): 45,
+        ("ASAI_ExpansionRecoveryPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): 45,
+        ("ASAI_ExpansionRecoveryUnits", "UNIT_SETTLER"): 40,
+    }
+    for (list_type, item), expected in expected_scale_values.items():
+        row = connection.execute(
+            "SELECT Value FROM AiFavoredItems WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        actual = None if row is None else row[0]
+        if actual != expected:
+            errors.append(
+                f"scale recovery {list_type}/{item} expected {expected}, found {actual}"
+            )
+
+    missing_scale_building_replacements = [
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT replacements.CivUniqueBuildingType
+            FROM BuildingReplaces AS replacements
+            JOIN Buildings AS base
+              ON base.BuildingType = replacements.ReplacesBuildingType
+            LEFT JOIN AiFavoredItems AS favored
+              ON favored.ListType = 'ASAI_ScaleRecoveryBuildings'
+             AND favored.Item = replacements.CivUniqueBuildingType
+             AND favored.Value = CASE
+                    WHEN base.BuildingType = 'BUILDING_GRANARY' THEN 55
+                    WHEN base.BuildingType IN
+                        ('BUILDING_MONUMENT', 'BUILDING_WATER_MILL') THEN 45
+                    WHEN base.BuildingType = 'BUILDING_SEWER' THEN 35
+                    WHEN base.PrereqDistrict = 'DISTRICT_INDUSTRIAL_ZONE' THEN 50
+                    WHEN base.BuildingType IN
+                        ('BUILDING_MARKET', 'BUILDING_LIGHTHOUSE') THEN 45
+                    WHEN base.BuildingType IN
+                        ('BUILDING_BANK', 'BUILDING_SHIPYARD') THEN 40
+                    ELSE 30
+                 END
+            WHERE COALESCE(base.IsWonder, 0) = 0
+              AND (base.BuildingType IN
+                    ('BUILDING_MONUMENT', 'BUILDING_GRANARY',
+                     'BUILDING_WATER_MILL', 'BUILDING_SEWER',
+                     'BUILDING_MARKET', 'BUILDING_BANK',
+                     'BUILDING_STOCK_EXCHANGE', 'BUILDING_LIGHTHOUSE',
+                     'BUILDING_SHIPYARD', 'BUILDING_SEAPORT')
+                   OR base.PrereqDistrict = 'DISTRICT_INDUSTRIAL_ZONE')
+              AND favored.Item IS NULL
+            ORDER BY replacements.CivUniqueBuildingType
+            """
+        )
+    ]
+    if missing_scale_building_replacements:
+        errors.append(
+            "scale recovery is missing unique building replacements: "
+            f"{missing_scale_building_replacements}"
+        )
+
+    expected_severe_values = {
+        ("ASAI_RelativeSeverePseudoYields", "PSEUDOYIELD_UNIT_TRADE"): 14,
+        ("ASAI_RelativeSeverePseudoYields", "PSEUDOYIELD_IMPROVEMENT"): 20,
+        ("ASAI_RelativeSevereYields", "YIELD_PRODUCTION"): 20,
+        ("ASAI_RelativeSevereYields", "YIELD_SCIENCE"): 16,
+        ("ASAI_RelativeSevereYields", "YIELD_CULTURE"): 16,
+        ("ASAI_RelativeSevereDistricts", "DISTRICT_INDUSTRIAL_ZONE"): 20,
+        ("ASAI_RelativeSevereDistricts", "DISTRICT_COMMERCIAL_HUB"): 12,
+    }
+    for (list_type, item), expected in expected_severe_values.items():
+        row = connection.execute(
+            "SELECT Value FROM AiFavoredItems WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        actual = None if row is None else row[0]
+        if actual != expected:
+            errors.append(
+                f"severe support {list_type}/{item} expected {expected}, found {actual}"
+            )
+
     expected_military_values = {
         ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 35,
         ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): 35,
@@ -1149,6 +1319,9 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_ScienceExecutionDistricts", "DISTRICT_CAMPUS", 75),
         ("ASAI_CultureRecoveryDistricts", "DISTRICT_THEATER", 55),
         ("ASAI_CultureExecutionDistricts", "DISTRICT_THEATER", 100),
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_INDUSTRIAL_ZONE", 30),
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_COMMERCIAL_HUB", 20),
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_HARBOR", 20),
     )
     for list_type, base_district, expected in district_replacement_expectations:
         missing = [
@@ -1182,7 +1355,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                    OR ListType LIKE 'ASAI_ScienceRecovery%'
                    OR ListType LIKE 'ASAI_CultureRecovery%'
                    OR ListType LIKE 'ASAI_EmpireRecovery%'
-                   OR ListType LIKE 'ASAI_ExpansionRecovery%')
+                   OR ListType LIKE 'ASAI_ExpansionRecovery%'
+                   OR ListType LIKE 'ASAI_ScaleRecovery%')
               AND ABS(Value) > 60
             ORDER BY ListType, Item
             """
@@ -1285,6 +1459,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_RelativeCatchupPseudoYields", "PSEUDOYIELD_WONDER"): -20,
         ("ASAI_RelativeSeverePseudoYields", "PSEUDOYIELD_WONDER"): -30,
         ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_WONDER"): -45,
+        ("ASAI_ScaleRecoveryPseudoYields", "PSEUDOYIELD_WONDER"): -30,
     }
     for (list_type, item), expected in expected_wonder_penalties.items():
         row = connection.execute(
@@ -1380,8 +1555,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 21:
-                    errors.append(f"expected 21 adaptive strategies, found {strategy_count}")
+                if strategy_count != 22:
+                    errors.append(f"expected 22 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -1402,7 +1577,7 @@ def main() -> int:
     print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 21 (including military readiness and wartime defense)")
+    print("- adaptive strategies: 22 (including military readiness and scale recovery)")
     print("- game cache was not modified")
     return 0
 
