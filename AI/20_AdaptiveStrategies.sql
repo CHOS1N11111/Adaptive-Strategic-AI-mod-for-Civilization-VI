@@ -21,6 +21,7 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_SETTLER_BUDGET', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_GOLD_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
@@ -45,6 +46,7 @@ VALUES
     ('ASAI_STRATEGY_SETTLER_BUDGET', 1),
     ('ASAI_STRATEGY_GOLD_RECOVERY', 1),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 1),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 1),
     ('ASAI_STRATEGY_LATE_GAME', 1),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 1),
     ('ASAI_STRATEGY_RELATIVE_SEVERE_CATCHUP', 1),
@@ -78,6 +80,8 @@ VALUES
     ('ASAI_STRATEGY_GOLD_RECOVERY', 'Call Lua Function', 'ASAI_IsGoldRecovery', 0, 0),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'Call Lua Function', 'ASAI_IsWarMobilization', 0, 0),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'Call Lua Function', 'ASAI_IsMilitaryReadiness', 0, 0),
     ('ASAI_STRATEGY_LATE_GAME', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_LATE_GAME', 'Call Lua Function', 'ASAI_IsLateGame', 0, 0),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'Is Not Major', NULL, 0, 1),
@@ -127,8 +131,14 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_WarPseudoYields'),
     ('ASAI_WarUnitBuilds'),
     ('ASAI_WarYields'),
-    ('ASAI_WarOperations'),
+    ('ASAI_WarDistricts'),
+    ('ASAI_WarBuildings'),
     ('ASAI_WarWonders'),
+    ('ASAI_MilitaryReadinessPseudoYields'),
+    ('ASAI_MilitaryReadinessUnitBuilds'),
+    ('ASAI_MilitaryReadinessYields'),
+    ('ASAI_MilitaryReadinessDistricts'),
+    ('ASAI_MilitaryReadinessBuildings'),
     ('ASAI_LatePseudoYields'),
     ('ASAI_LateDistricts'),
     ('ASAI_LateBuildings'),
@@ -189,8 +199,14 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_WarPseudoYields', 'PseudoYields'),
     ('ASAI_WarUnitBuilds', 'UnitPromotionClasses'),
     ('ASAI_WarYields', 'Yields'),
-    ('ASAI_WarOperations', 'AiOperationTypes'),
+    ('ASAI_WarDistricts', 'Districts'),
+    ('ASAI_WarBuildings', 'Buildings'),
     ('ASAI_WarWonders', 'Buildings'),
+    ('ASAI_MilitaryReadinessPseudoYields', 'PseudoYields'),
+    ('ASAI_MilitaryReadinessUnitBuilds', 'UnitPromotionClasses'),
+    ('ASAI_MilitaryReadinessYields', 'Yields'),
+    ('ASAI_MilitaryReadinessDistricts', 'Districts'),
+    ('ASAI_MilitaryReadinessBuildings', 'Buildings'),
     ('ASAI_LatePseudoYields', 'PseudoYields'),
     ('ASAI_LateDistricts', 'Districts'),
     ('ASAI_LateBuildings', 'Buildings'),
@@ -251,8 +267,14 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'ASAI_WarPseudoYields'),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'ASAI_WarUnitBuilds'),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'ASAI_WarYields'),
-    ('ASAI_STRATEGY_WAR_MOBILIZATION', 'ASAI_WarOperations'),
+    ('ASAI_STRATEGY_WAR_MOBILIZATION', 'ASAI_WarDistricts'),
+    ('ASAI_STRATEGY_WAR_MOBILIZATION', 'ASAI_WarBuildings'),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'ASAI_WarWonders'),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessPseudoYields'),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessUnitBuilds'),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessYields'),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessDistricts'),
+    ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessBuildings'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LatePseudoYields'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateDistricts'),
     ('ASAI_STRATEGY_LATE_GAME', 'ASAI_LateBuildings'),
@@ -315,18 +337,36 @@ VALUES
     ('ASAI_GoldDistricts', 'DISTRICT_HARBOR', 1, 30),
     ('ASAI_GoldYields', 'YIELD_GOLD', 1, 60),
     ('ASAI_GoldYields', 'YIELD_PRODUCTION', 1, 10),
-    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 45),
-    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_AIR_COMBAT', 1, 25),
-    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 40),
-    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -35),
-    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_MELEE', 1, 10),
-    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_RANGED', 1, 25),
+    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 60),
+    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_AIR_COMBAT', 1, 30),
+    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_NUMBER', 1, 30),
+    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 55),
+    ('ASAI_WarPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -65),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_MELEE', 1, 30),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_RANGED', 1, 50),
     ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_SIEGE', 1, 50),
-    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_AIR_FIGHTER', 1, 20),
-    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_AIR_BOMBER', 1, 30),
-    ('ASAI_WarYields', 'YIELD_PRODUCTION', 1, 25),
-    ('ASAI_WarYields', 'YIELD_GOLD', 1, 10),
-    ('ASAI_WarOperations', 'CITY_ASSAULT', 1, 1),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_ANTI_CAVALRY', 1, 40),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_LIGHT_CAVALRY', 1, 25),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_HEAVY_CAVALRY', 1, 25),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_AIR_FIGHTER', 1, 30),
+    ('ASAI_WarUnitBuilds', 'PROMOTION_CLASS_AIR_BOMBER', 1, 40),
+    ('ASAI_WarYields', 'YIELD_PRODUCTION', 1, 30),
+    ('ASAI_WarYields', 'YIELD_GOLD', 1, 15),
+    ('ASAI_WarDistricts', 'DISTRICT_ENCAMPMENT', 1, 35),
+    ('ASAI_MilitaryReadinessPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 35),
+    ('ASAI_MilitaryReadinessPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_NUMBER', 1, 35),
+    ('ASAI_MilitaryReadinessPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 30),
+    ('ASAI_MilitaryReadinessPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -30),
+    ('ASAI_MilitaryReadinessPseudoYields', 'PSEUDOYIELD_WONDER', 1, -45),
+    ('ASAI_MilitaryReadinessUnitBuilds', 'PROMOTION_CLASS_MELEE', 1, 25),
+    ('ASAI_MilitaryReadinessUnitBuilds', 'PROMOTION_CLASS_RANGED', 1, 45),
+    ('ASAI_MilitaryReadinessUnitBuilds', 'PROMOTION_CLASS_SIEGE', 1, 10),
+    ('ASAI_MilitaryReadinessUnitBuilds', 'PROMOTION_CLASS_ANTI_CAVALRY', 1, 35),
+    ('ASAI_MilitaryReadinessUnitBuilds', 'PROMOTION_CLASS_LIGHT_CAVALRY', 1, 15),
+    ('ASAI_MilitaryReadinessUnitBuilds', 'PROMOTION_CLASS_HEAVY_CAVALRY', 1, 15),
+    ('ASAI_MilitaryReadinessYields', 'YIELD_PRODUCTION', 1, 18),
+    ('ASAI_MilitaryReadinessYields', 'YIELD_GOLD', 1, 10),
+    ('ASAI_MilitaryReadinessDistricts', 'DISTRICT_ENCAMPMENT', 1, 30),
     ('ASAI_LatePseudoYields', 'PSEUDOYIELD_UNIT_AIR_COMBAT', 1, 75),
     ('ASAI_LatePseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 25),
     ('ASAI_LateDistricts', 'DISTRICT_AERODROME', 1, 35),
@@ -553,6 +593,42 @@ WHERE BuildingType IN ('BUILDING_GRANARY', 'BUILDING_WATER_MILL')
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_WarWonders', BuildingType, 1, -35
+SELECT 'ASAI_MilitaryReadinessDistricts', CivUniqueDistrictType, 1, 30
+FROM DistrictReplaces
+WHERE ReplacesDistrictType = 'DISTRICT_ENCAMPMENT';
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_WarDistricts', CivUniqueDistrictType, 1, 35
+FROM DistrictReplaces
+WHERE ReplacesDistrictType = 'DISTRICT_ENCAMPMENT';
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_MilitaryReadinessBuildings', BuildingType, 1, 60
+FROM Buildings
+WHERE COALESCE(OuterDefenseHitPoints, 0) > 0
+   OR BuildingType IN (
+        SELECT CivUniqueBuildingType
+        FROM BuildingReplaces
+        WHERE ReplacesBuildingType IN
+            ('BUILDING_WALLS', 'BUILDING_CASTLE', 'BUILDING_STAR_FORT')
+   );
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_WarBuildings', BuildingType, 1, 90
+FROM Buildings
+WHERE COALESCE(OuterDefenseHitPoints, 0) > 0
+   OR BuildingType IN (
+        SELECT CivUniqueBuildingType
+        FROM BuildingReplaces
+        WHERE ReplacesBuildingType IN
+            ('BUILDING_WALLS', 'BUILDING_CASTLE', 'BUILDING_STAR_FORT')
+   );
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_WarWonders', BuildingType, 1, -60
 FROM Buildings
 WHERE IsWonder = 1;

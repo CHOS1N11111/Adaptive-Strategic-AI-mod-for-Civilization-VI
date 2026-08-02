@@ -71,6 +71,11 @@ local RELATIVE_SEVERE_PROPERTY = "ASAI_RELATIVE_SEVERE_CATCHUP";
 local RELATIVE_SEVERE_CANDIDATE_PROPERTY = "ASAI_RELATIVE_SEVERE_CANDIDATE";
 local RELATIVE_SEVERE_STREAK_PROPERTY = "ASAI_RELATIVE_SEVERE_STREAK";
 local RELATIVE_SEVERE_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_SEVERE_CHANGED_TURN";
+local MILITARY_READINESS_PROPERTY = "ASAI_MILITARY_READINESS";
+local MILITARY_READINESS_CANDIDATE_PROPERTY = "ASAI_MILITARY_READINESS_CANDIDATE";
+local MILITARY_READINESS_STREAK_PROPERTY = "ASAI_MILITARY_READINESS_STREAK";
+local MILITARY_READINESS_CHANGED_TURN_PROPERTY = "ASAI_MILITARY_READINESS_CHANGED_TURN";
+local MILITARY_READINESS_COOLDOWN_PROPERTY = "ASAI_MILITARY_READINESS_COOLDOWN_UNTIL";
 
 local RELATIVE_COMPONENTS = {
     { Key = "Techs", Parameter = "ASAI_RELATIVE_WEIGHT_TECHS", Weight = 20 },
@@ -261,6 +266,42 @@ local function IsBuildingRole(buildingType, baseBuildingType)
     return false;
 end
 
+local function GetUnitBaseStrength(unitInfo)
+    if unitInfo == nil then
+        return 0;
+    end
+    return math.max(
+        tonumber(unitInfo.Combat) or 0,
+        tonumber(unitInfo.RangedCombat) or 0,
+        tonumber(unitInfo.Bombard) or 0,
+        tonumber(unitInfo.AntiAirCombat) or 0
+    );
+end
+
+local function AddMilitaryRole(profile, unitInfo)
+    if GetUnitBaseStrength(unitInfo) <= 0 then
+        return;
+    end
+    profile.Combat = profile.Combat + 1;
+    if unitInfo.Domain == "DOMAIN_LAND" then
+        profile.Land = profile.Land + 1;
+    elseif unitInfo.Domain == "DOMAIN_SEA" then
+        profile.Naval = profile.Naval + 1;
+    elseif unitInfo.Domain == "DOMAIN_AIR" then
+        profile.Air = profile.Air + 1;
+    end
+
+    local promotionClass = unitInfo.PromotionClass;
+    if promotionClass == "PROMOTION_CLASS_RANGED" then
+        profile.Ranged = profile.Ranged + 1;
+    elseif promotionClass == "PROMOTION_CLASS_SIEGE" then
+        profile.Siege = profile.Siege + 1;
+    elseif promotionClass == "PROMOTION_CLASS_LIGHT_CAVALRY"
+        or promotionClass == "PROMOTION_CLASS_HEAVY_CAVALRY" then
+        profile.Mobile = profile.Mobile + 1;
+    end
+end
+
 local function ProductionSupportsFocus(productionType, focus)
     if productionType == nil then
         return false;
@@ -354,6 +395,13 @@ end
 local function CollectQueueDiagnostics(player)
     local result = {
         Units = 0,
+        Combat = 0,
+        Land = 0,
+        Ranged = 0,
+        Siege = 0,
+        Mobile = 0,
+        Naval = 0,
+        Air = 0,
         Districts = 0,
         Buildings = 0,
         Projects = 0,
@@ -370,6 +418,7 @@ local function CollectQueueDiagnostics(player)
             result.Idle = result.Idle + 1;
         elseif GameInfo.Units[productionType] ~= nil then
             result.Units = result.Units + 1;
+            AddMilitaryRole(result, GameInfo.Units[productionType]);
         elseif GameInfo.Districts[productionType] ~= nil then
             result.Districts = result.Districts + 1;
         elseif GameInfo.Buildings[productionType] ~= nil then
@@ -418,6 +467,30 @@ local function CollectDistrictDiagnostics(player)
         end
     end
     return { Used = used, Completed = completed, Slots = slots, OpenCities = -1 };
+end
+
+local function CollectDefenseDiagnostics(player)
+    local cities = 0;
+    local defendedCities = 0;
+    for _, city in player:GetCities():Members() do
+        cities = cities + 1;
+        local cityBuildings = city:GetBuildings();
+        if cityBuildings == nil or cityBuildings.HasBuilding == nil then
+            error("City:GetBuildings():HasBuilding() is unavailable");
+        end
+        local defended = false;
+        for buildingInfo in GameInfo.Buildings() do
+            if (tonumber(buildingInfo.OuterDefenseHitPoints) or 0) > 0
+                and cityBuildings:HasBuilding(buildingInfo.Index) then
+                defended = true;
+                break;
+            end
+        end
+        if defended then
+            defendedCities = defendedCities + 1;
+        end
+    end
+    return { Cities = cities, DefendedCities = defendedCities };
 end
 
 local function CountWarsByOpponentType(playerID, player)
@@ -599,6 +672,13 @@ local function GetEconomicSnapshot(playerID)
     production = production or { Production = -1 };
     queue = queue or {
         Units = -1,
+        Combat = -1,
+        Land = -1,
+        Ranged = -1,
+        Siege = -1,
+        Mobile = -1,
+        Naval = -1,
+        Air = -1,
         Districts = -1,
         Buildings = -1,
         Projects = -1,
@@ -943,18 +1023,23 @@ end
 
 local function EstimateMilitaryStrength(player)
     local strength = 0;
+    local profile = {
+        Combat = 0,
+        Land = 0,
+        Ranged = 0,
+        Siege = 0,
+        Mobile = 0,
+        Naval = 0,
+        Air = 0
+    };
     for _, unit in player:GetUnits():Members() do
         local unitInfo = GameInfo.Units[unit:GetType()];
         if unitInfo ~= nil then
-            strength = strength + math.max(
-                tonumber(unitInfo.Combat) or 0,
-                tonumber(unitInfo.RangedCombat) or 0,
-                tonumber(unitInfo.Bombard) or 0,
-                tonumber(unitInfo.AntiAirCombat) or 0
-            );
+            strength = strength + GetUnitBaseStrength(unitInfo);
+            AddMilitaryRole(profile, unitInfo);
         end
     end
-    return strength;
+    return strength, profile;
 end
 
 local function GetStrengthSnapshot(playerID)
@@ -973,6 +1058,7 @@ local function GetStrengthSnapshot(playerID)
     end
 
     local techs, civics = CountResearched(player);
+    local military, profile = EstimateMilitaryStrength(player);
     local snapshot = {
         Turn = turn,
         Techs = techs,
@@ -981,7 +1067,14 @@ local function GetStrengthSnapshot(playerID)
         Culture = math.max(0, player:GetCulture():GetCultureYield()),
         Cities = cities,
         Population = population,
-        Military = EstimateMilitaryStrength(player)
+        Military = military,
+        CombatUnits = profile.Combat,
+        LandCombatUnits = profile.Land,
+        RangedUnits = profile.Ranged,
+        SiegeUnits = profile.Siege,
+        MobileUnits = profile.Mobile,
+        NavalUnits = profile.Naval,
+        AirUnits = profile.Air
     };
     m_StrengthSnapshots[playerID] = snapshot;
     return snapshot;
@@ -1190,6 +1283,13 @@ local function GetNeutralRelativeState()
         SevereCandidate = 0,
         SevereStreak = 0,
         SevereChangedTurn = -100000,
+        MilitaryReadiness = 0,
+        MilitaryReadinessCandidate = 0,
+        MilitaryReadinessStreak = 0,
+        MilitaryReadinessChangedTurn = -100000,
+        MilitaryReadinessCooldownUntil = -1,
+        MilitaryPlannedCities = 0,
+        MilitaryUnitsPerPlannedCity = 0,
         LastSampleTurn = -1,
         LastEvaluationTurn = -1,
         EvaluatedThisTurn = false,
@@ -1317,6 +1417,31 @@ local function ReadRelativeState(player)
         RELATIVE_SEVERE_CHANGED_TURN_PROPERTY,
         -100000
     );
+    state.MilitaryReadiness = GetStoredNumber(
+        player,
+        MILITARY_READINESS_PROPERTY,
+        0
+    ) == 1 and 1 or 0;
+    state.MilitaryReadinessCandidate = GetStoredNumber(
+        player,
+        MILITARY_READINESS_CANDIDATE_PROPERTY,
+        state.MilitaryReadiness
+    ) == 1 and 1 or 0;
+    state.MilitaryReadinessStreak = GetStoredNumber(
+        player,
+        MILITARY_READINESS_STREAK_PROPERTY,
+        0
+    );
+    state.MilitaryReadinessChangedTurn = GetStoredNumber(
+        player,
+        MILITARY_READINESS_CHANGED_TURN_PROPERTY,
+        -100000
+    );
+    state.MilitaryReadinessCooldownUntil = GetStoredNumber(
+        player,
+        MILITARY_READINESS_COOLDOWN_PROPERTY,
+        -1
+    );
     state.LastSampleTurn = GetStoredNumber(player, RELATIVE_SAMPLE_TURN_PROPERTY, -1);
     state.LastEvaluationTurn = GetStoredNumber(
         player,
@@ -1380,6 +1505,23 @@ local function StoreRelativeState(player, state)
     player:SetProperty(RELATIVE_SEVERE_CANDIDATE_PROPERTY, state.SevereCandidate);
     player:SetProperty(RELATIVE_SEVERE_STREAK_PROPERTY, state.SevereStreak);
     player:SetProperty(RELATIVE_SEVERE_CHANGED_TURN_PROPERTY, state.SevereChangedTurn);
+    player:SetProperty(MILITARY_READINESS_PROPERTY, state.MilitaryReadiness);
+    player:SetProperty(
+        MILITARY_READINESS_CANDIDATE_PROPERTY,
+        state.MilitaryReadinessCandidate
+    );
+    player:SetProperty(
+        MILITARY_READINESS_STREAK_PROPERTY,
+        state.MilitaryReadinessStreak
+    );
+    player:SetProperty(
+        MILITARY_READINESS_CHANGED_TURN_PROPERTY,
+        state.MilitaryReadinessChangedTurn
+    );
+    player:SetProperty(
+        MILITARY_READINESS_COOLDOWN_PROPERTY,
+        state.MilitaryReadinessCooldownUntil
+    );
     player:SetProperty(RELATIVE_SAMPLE_TURN_PROPERTY, state.LastSampleTurn);
     player:SetProperty(RELATIVE_EVALUATION_TURN_PROPERTY, state.LastEvaluationTurn);
 end
@@ -1508,6 +1650,33 @@ local function GetDesiredSevereCatchup(state)
         return (state.Scores.Overall < exit or secondCore < coreExit) and 1 or 0;
     end
     return (state.Scores.Overall <= enter or secondCore <= coreEnter) and 1 or 0;
+end
+
+local function GetDesiredMilitaryReadiness(state, densityEnabled)
+    local enter = GetNumberParameter(
+        "ASAI_MILITARY_READINESS_ENTER_X100",
+        78
+    ) / 100;
+    local exit = GetNumberParameter(
+        "ASAI_MILITARY_READINESS_EXIT_X100",
+        92
+    ) / 100;
+    local densityEnter = GetNumberParameter(
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_ENTER_X100",
+        175
+    ) / 100;
+    local densityExit = GetNumberParameter(
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
+        225
+    ) / 100;
+    if state.MilitaryReadiness == 1 then
+        return (state.Scores.Military < exit
+            or (densityEnabled and state.MilitaryUnitsPerPlannedCity < densityExit))
+            and 1 or 0;
+    end
+    return (state.Scores.Military <= enter
+        or (densityEnabled and state.MilitaryUnitsPerPlannedCity <= densityEnter))
+        and 1 or 0;
 end
 
 local function GetWorstEligibleFocus(state, recoveryThresholds, turn)
@@ -1708,10 +1877,8 @@ local function EvaluateRelativeState(playerID)
         return state;
     end
 
-    local measurements = GetRelativeMeasurements(
-        GetStrengthSnapshot(playerID),
-        humanStrength
-    );
+    local strengthSnapshot = GetStrengthSnapshot(playerID);
+    local measurements = GetRelativeMeasurements(strengthSnapshot, humanStrength);
     local initialized = state.LastSampleTurn >= 0;
     state.RawScores = measurements.Raw;
     state.RawRatios = measurements.RawRatios;
@@ -1722,6 +1889,12 @@ local function EvaluateRelativeState(playerID)
         GetSmoothingAlpha(),
         initialized
     );
+    local empireSnapshot = GetSnapshot(playerID);
+    local plannedExpansion = (empireSnapshot.Settlers
+        + empireSnapshot.InFlightSettlers > 0) and 1 or 0;
+    state.MilitaryPlannedCities = strengthSnapshot.Cities + plannedExpansion;
+    state.MilitaryUnitsPerPlannedCity = state.MilitaryPlannedCities > 0
+        and strengthSnapshot.CombatUnits / state.MilitaryPlannedCities or 0;
     state.LastSampleTurn = turn;
 
     local thresholds = GetCompetitionThresholds(math.floor(humanStrength.Era + 0.5));
@@ -1736,6 +1909,7 @@ local function EvaluateRelativeState(playerID)
         local previousBand = state.Band;
         local previousFocus = state.Focus;
         local previousSevere = state.SevereCatchup;
+        local previousMilitaryReadiness = state.MilitaryReadiness;
         local previousSupport = previousSevere == 1 and "strong"
             or (previousBand == RELATIVE_CATCHUP and "mild" or "none");
         local minimumDwell = ScaleStandardTurns(
@@ -1783,6 +1957,57 @@ local function EvaluateRelativeState(playerID)
         );
         if severeChanged then
             state.SevereChangedTurn = turn;
+        end
+
+        local densityStartTurn = ScaleStandardTurns(
+            GetNumberParameter("ASAI_MILITARY_DENSITY_START_STANDARD", 50)
+        );
+        local densityEnabled = turn >= densityStartTurn;
+        local densityEnter = GetNumberParameter(
+            "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_ENTER_X100",
+            175
+        ) / 100;
+        local militaryDensityGap = densityEnabled
+            and state.MilitaryUnitsPerPlannedCity <= densityEnter;
+        local desiredMilitaryReadiness = GetDesiredMilitaryReadiness(
+            state,
+            densityEnabled
+        );
+        local emergencyThreshold = GetNumberParameter(
+            "ASAI_MILITARY_READINESS_EMERGENCY_X100",
+            60
+        ) / 100;
+        local militaryEmergency = state.RawScores.Military <= emergencyThreshold;
+        local canChangeMilitaryReadiness = turn - state.MilitaryReadinessChangedTurn
+            >= minimumDwell;
+        if state.MilitaryReadiness == 0
+            and turn < state.MilitaryReadinessCooldownUntil then
+            canChangeMilitaryReadiness = false;
+        end
+        local militaryReadinessChanged = false;
+        if state.MilitaryReadiness == 0
+            and militaryEmergency then
+            state.MilitaryReadiness = 1;
+            state.MilitaryReadinessCandidate = 1;
+            state.MilitaryReadinessStreak = 0;
+            militaryReadinessChanged = true;
+        else
+            state.MilitaryReadiness,
+            state.MilitaryReadinessCandidate,
+            state.MilitaryReadinessStreak,
+            militaryReadinessChanged = AdvanceConfirmedState(
+                state.MilitaryReadiness,
+                state.MilitaryReadinessCandidate,
+                state.MilitaryReadinessStreak,
+                desiredMilitaryReadiness,
+                canChangeMilitaryReadiness
+            );
+        end
+        if militaryReadinessChanged then
+            state.MilitaryReadinessChangedTurn = turn;
+            if state.MilitaryReadiness == 0 then
+                state.MilitaryReadinessCooldownUntil = turn + cooldown;
+            end
         end
 
         if state.FocusHandoffReady
@@ -1883,6 +2108,24 @@ local function EvaluateRelativeState(playerID)
                 GetSupportName(state)
             ));
         end
+        if militaryReadinessChanged then
+            local readinessReason = state.MilitaryReadiness == 0 and "recovered"
+                or (militaryEmergency and "critical_gap"
+                    or (militaryDensityGap and "force_density" or "sustained_gap"));
+            print(string.format(
+                "ASAI_READINESS turn=%d standard_turn=%.1f player=%d raw_military=%.3f military=%.3f planned_cities=%d units_per_planned_city=%.2f from=%s to=%s reason=%s",
+                turn,
+                GetStandardEquivalentTurn(turn),
+                playerID,
+                state.RawScores.Military,
+                state.Scores.Military,
+                state.MilitaryPlannedCities,
+                state.MilitaryUnitsPerPlannedCity,
+                previousMilitaryReadiness == 1 and "on" or "off",
+                state.MilitaryReadiness == 1 and "on" or "off",
+                readinessReason
+            ));
+        end
         if focusChanged then
             print(string.format(
                 "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s result=%s handoff_ready=%d gain=%.3f raw_gain=%.3f",
@@ -1939,6 +2182,19 @@ function ASAI_IsRelativeSevereCatchup(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsRelativeSevereCatchup.Add(ASAI_IsRelativeSevereCatchup);
+
+local function IsMilitaryReadiness(playerID, threshold)
+    return GetRelativeState(playerID).MilitaryReadiness == 1;
+end
+function ASAI_IsMilitaryReadiness(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsMilitaryReadiness",
+        IsMilitaryReadiness,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsMilitaryReadiness.Add(ASAI_IsMilitaryReadiness);
 
 local function IsRelativeConsolidate(playerID, threshold)
     return GetRelativeState(playerID).Band == RELATIVE_CONSOLIDATE;
@@ -2168,7 +2424,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2214,6 +2470,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.Scores.Empire,
         relativeState.RawScores.Military,
         relativeState.Scores.Military,
+        relativeState.MilitaryReadiness,
         GetBandName(relativeState.Band),
         GetSupportName(relativeState),
         GetFocusName(relativeState.Focus),
@@ -2320,6 +2577,65 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
     ));
 end
 
+local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
+    if not firstTimeThisTurn or not IsMajorAI(playerID) then
+        return;
+    end
+    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 then
+        return;
+    end
+
+    local relativeState = GetRelativeState(playerID);
+    if not relativeState.EvaluatedThisTurn then
+        return;
+    end
+
+    local snapshot = GetSnapshot(playerID);
+    local strength = GetStrengthSnapshot(playerID);
+    local economic = GetEconomicSnapshot(playerID);
+    local defenses, defenseSupported = TryDiagnosticSensor(
+        "city_defenses",
+        function() return CollectDefenseDiagnostics(Players[playerID]); end
+    );
+    defenses = defenses or { Cities = snapshot.Cities, DefendedCities = -1 };
+    local unitsPerCity = snapshot.Cities > 0
+        and strength.CombatUnits / snapshot.Cities or 0;
+    local defenseCoverage = defenseSupported == 1 and defenses.Cities > 0
+        and defenses.DefendedCities / defenses.Cities or -1;
+    print(string.format(
+        "ASAI_MILITARY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d strength=%d combat_units=%d land_units=%d ranged_units=%d siege_units=%d mobile_units=%d naval_units=%d air_units=%d units_per_city=%.2f planned_cities=%d units_per_planned_city=%.2f queue_combat=%d queue_land=%d queue_ranged=%d queue_siege=%d queue_mobile=%d queue_naval=%d queue_air=%d defended_cities=%d defense_coverage=%.3f defense_supported=%d military_raw=%.3f military_ratio=%.3f military_readiness=%d active_major_wars=%d",
+        snapshot.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(snapshot.Turn),
+        playerID,
+        strength.Military,
+        strength.CombatUnits,
+        strength.LandCombatUnits,
+        strength.RangedUnits,
+        strength.SiegeUnits,
+        strength.MobileUnits,
+        strength.NavalUnits,
+        strength.AirUnits,
+        unitsPerCity,
+        relativeState.MilitaryPlannedCities,
+        relativeState.MilitaryUnitsPerPlannedCity,
+        economic.Queue.Combat,
+        economic.Queue.Land,
+        economic.Queue.Ranged,
+        economic.Queue.Siege,
+        economic.Queue.Mobile,
+        economic.Queue.Naval,
+        economic.Queue.Air,
+        defenses.DefendedCities,
+        defenseCoverage,
+        defenseSupported,
+        relativeState.RawScores.Military,
+        relativeState.Scores.Military,
+        relativeState.MilitaryReadiness,
+        snapshot.ActiveMajorWars
+    ));
+end
+
 local function LogMetrics(playerID, firstTimeThisTurn)
     if firstTimeThisTurn and IsMajorAI(playerID) then
         local evaluationSuccess, evaluationError = pcall(EvaluateRelativeState, playerID);
@@ -2356,6 +2672,19 @@ local function LogMetrics(playerID, firstTimeThisTurn)
             tostring(diagnosticError)
         ));
         m_ConditionErrors.ASAI_LogEconomicDiagnostics = true;
+    end
+    local militarySuccess, militaryError = pcall(
+        WriteMilitaryDiagnostics,
+        playerID,
+        firstTimeThisTurn
+    );
+    if not militarySuccess and m_ConditionErrors.ASAI_LogMilitaryDiagnostics == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_LogMilitaryDiagnostics player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(militaryError)
+        ));
+        m_ConditionErrors.ASAI_LogMilitaryDiagnostics = true;
     end
 end
 Events.PlayerTurnActivated.Add(LogMetrics);

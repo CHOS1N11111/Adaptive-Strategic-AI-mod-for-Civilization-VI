@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.8.1"
-EXPECTED_MODINFO_VERSION = "14"
+EXPECTED_RELEASE = "0.8.2"
+EXPECTED_MODINFO_VERSION = "15"
 
 
 def default_database() -> Path:
@@ -184,6 +184,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("Lua metrics logger is not fail-closed")
     if "pcall(\n        WriteEconomicDiagnostics" not in source:
         errors.append("economic diagnostics logger is not independently fail-closed")
+    if "pcall(\n        WriteMilitaryDiagnostics" not in source:
+        errors.append("military diagnostics logger is not independently fail-closed")
     if "pcall(EvaluateRelativeState, playerID)" not in source:
         errors.append("Lua per-turn relative evaluator is not fail-closed")
     if "GetNumOutgoingRoutes" in source:
@@ -196,11 +198,13 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("gameplay-safe military strength estimator is missing")
     for marker in (
         "ASAI_SUPPORT",
+        "ASAI_READINESS",
         "ASAI_RECOVERY",
         "ASAI_METRIC",
         "ASAI_COMPONENTS",
         "ASAI_ECONOMY",
         "ASAI_CONVERSION",
+        "ASAI_MILITARY turn=",
         "ASAI_FOCUS",
         "ASAI_DIAGNOSTIC_ERROR",
     ):
@@ -287,6 +291,30 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in support_fragments:
         if fragment not in source:
             errors.append(f"bounded support fragment is missing: {fragment}")
+    military_readiness_fragments = (
+        "local function GetDesiredMilitaryReadiness(state, densityEnabled)",
+        "ASAI_MILITARY_READINESS_ENTER_X100",
+        "ASAI_MILITARY_READINESS_EXIT_X100",
+        "ASAI_MILITARY_READINESS_EMERGENCY_X100",
+        "ASAI_MILITARY_DENSITY_START_STANDARD",
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_ENTER_X100",
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
+        "state.MilitaryPlannedCities = strengthSnapshot.Cities + plannedExpansion",
+        "state.MilitaryUnitsPerPlannedCity",
+        "local densityEnabled = turn >= densityStartTurn",
+        "local militaryDensityGap = densityEnabled",
+        "state.RawScores.Military <= emergencyThreshold",
+        "if state.MilitaryReadiness == 0\n            and militaryEmergency then",
+        "state.MilitaryReadinessCooldownUntil",
+        "MILITARY_READINESS_PROPERTY",
+        "function ASAI_IsMilitaryReadiness(playerID, threshold)",
+        "ASAI_READINESS turn=%d standard_turn=%.1f",
+        'militaryDensityGap and "force_density" or "sustained_gap"',
+        "military_readiness=%d",
+    )
+    for fragment in military_readiness_fragments:
+        if fragment not in source:
+            errors.append(f"military readiness fragment is missing: {fragment}")
     diagnostic_fragments = (
         "local function TryDiagnosticSensor(sensorName, collector)",
         "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
@@ -326,6 +354,16 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "queue_ok=%d",
         "resource_supported=%d",
         "upgrade_supported=%d",
+        "local function GetUnitBaseStrength(unitInfo)",
+        "local function AddMilitaryRole(profile, unitInfo)",
+        "local function CollectDefenseDiagnostics(player)",
+        "local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)",
+        "ASAI_MILITARY turn=%d evaluated_turn=%d",
+        "planned_cities=%d",
+        "units_per_planned_city=%.2f",
+        "queue_combat=%d",
+        "defense_coverage=%.3f",
+        "defense_supported=%d",
     )
     for fragment in diagnostic_fragments:
         if fragment not in source:
@@ -340,7 +378,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.8.1")
+        errors.append("diagnostic production must not enter the relative score in 0.8.2")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -622,6 +660,12 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_COMPONENT_MIN_X100",
         "ASAI_RELATIVE_COMPONENT_MAX_X100",
         "ASAI_RELATIVE_MILITARY_MAX_X100",
+        "ASAI_MILITARY_READINESS_ENTER_X100",
+        "ASAI_MILITARY_READINESS_EXIT_X100",
+        "ASAI_MILITARY_READINESS_EMERGENCY_X100",
+        "ASAI_MILITARY_DENSITY_START_STANDARD",
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_ENTER_X100",
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
         "ASAI_RELATIVE_SCIENCE_ENTER_X100",
         "ASAI_RELATIVE_SCIENCE_EXIT_X100",
         "ASAI_RELATIVE_CULTURE_ENTER_X100",
@@ -686,6 +730,40 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             errors.append(
                 "relative military cap must be between 100 and the component maximum: "
                 f"{military_maximum}"
+            )
+
+    readiness_enter = parameters.get("ASAI_MILITARY_READINESS_ENTER_X100")
+    readiness_exit = parameters.get("ASAI_MILITARY_READINESS_EXIT_X100")
+    readiness_emergency = parameters.get("ASAI_MILITARY_READINESS_EMERGENCY_X100")
+    if None not in (readiness_enter, readiness_exit, readiness_emergency):
+        if not 0 < readiness_emergency < readiness_enter < readiness_exit < 100:
+            errors.append(
+                "military-readiness thresholds are not ordered safely: "
+                f"{(readiness_emergency, readiness_enter, readiness_exit)}"
+            )
+        if (readiness_enter, readiness_exit, readiness_emergency) != (78, 92, 60):
+            errors.append(
+                "military-readiness thresholds differ from the turn 1-76 replay: "
+                f"{(readiness_enter, readiness_exit, readiness_emergency)}"
+            )
+
+    density_start = parameters.get("ASAI_MILITARY_DENSITY_START_STANDARD")
+    density_enter = parameters.get(
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_ENTER_X100"
+    )
+    density_exit = parameters.get(
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100"
+    )
+    if None not in (density_start, density_enter, density_exit):
+        if density_start <= 0 or not 0 < density_enter < density_exit:
+            errors.append(
+                "military-density thresholds are not ordered safely: "
+                f"{(density_start, density_enter, density_exit)}"
+            )
+        if (density_start, density_enter, density_exit) != (50, 175, 225):
+            errors.append(
+                "military-density thresholds differ from the turn 1-76 replay: "
+                f"{(density_start, density_enter, density_exit)}"
             )
 
     interval = parameters.get("ASAI_RELATIVE_CHECK_INTERVAL_STANDARD")
@@ -930,6 +1008,118 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 f"civilian budget {list_type}/{item} expected {expected}, found {actual}"
             )
 
+    readiness_strategy = connection.execute(
+        "SELECT COUNT(*) FROM Strategies "
+        "WHERE StrategyType = 'ASAI_STRATEGY_MILITARY_READINESS'"
+    ).fetchone()[0]
+    if readiness_strategy != 1:
+        errors.append(
+            f"expected one military-readiness strategy, found {readiness_strategy}"
+        )
+
+    expected_military_values = {
+        ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 35,
+        ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): 35,
+        ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): 30,
+        ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -30,
+        ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_WONDER"): -45,
+        ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_RANGED"): 45,
+        ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_ANTI_CAVALRY"): 35,
+        ("ASAI_MilitaryReadinessYields", "YIELD_PRODUCTION"): 18,
+        ("ASAI_MilitaryReadinessDistricts", "DISTRICT_ENCAMPMENT"): 30,
+        ("ASAI_MilitaryReadinessBuildings", "BUILDING_WALLS"): 60,
+        ("ASAI_WarPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 60,
+        ("ASAI_WarPseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): 30,
+        ("ASAI_WarPseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): 55,
+        ("ASAI_WarPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -65,
+        ("ASAI_WarUnitBuilds", "PROMOTION_CLASS_RANGED"): 50,
+        ("ASAI_WarUnitBuilds", "PROMOTION_CLASS_ANTI_CAVALRY"): 40,
+        ("ASAI_WarYields", "YIELD_PRODUCTION"): 30,
+        ("ASAI_WarDistricts", "DISTRICT_ENCAMPMENT"): 35,
+        ("ASAI_WarBuildings", "BUILDING_WALLS"): 90,
+    }
+    for (list_type, item), expected in expected_military_values.items():
+        row = connection.execute(
+            "SELECT Value FROM AiFavoredItems WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        actual = None if row is None else row[0]
+        if actual != expected:
+            errors.append(
+                f"military readiness {list_type}/{item} expected {expected}, "
+                f"found {actual}"
+            )
+
+    obsolete_war_operation = connection.execute(
+        "SELECT COUNT(*) FROM AiLists WHERE ListType = 'ASAI_WarOperations'"
+    ).fetchone()[0] + connection.execute(
+        "SELECT COUNT(*) FROM AiFavoredItems "
+        "WHERE ListType = 'ASAI_WarOperations' OR "
+        "(ListType LIKE 'ASAI_War%' AND Item = 'CITY_ASSAULT')"
+    ).fetchone()[0]
+    if obsolete_war_operation:
+        errors.append(
+            "wartime mobilization still adds an extra CITY_ASSAULT operation slot"
+        )
+
+    for list_type, expected in (
+        ("ASAI_MilitaryReadinessBuildings", 60),
+        ("ASAI_WarBuildings", 90),
+    ):
+        missing_defenses = [
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT b.BuildingType
+                FROM Buildings AS b
+                LEFT JOIN AiFavoredItems AS f
+                  ON f.ListType = ?
+                 AND f.Item = b.BuildingType
+                 AND f.Value = ?
+                WHERE (COALESCE(b.OuterDefenseHitPoints, 0) > 0
+                       OR b.BuildingType IN (
+                            SELECT CivUniqueBuildingType
+                            FROM BuildingReplaces
+                            WHERE ReplacesBuildingType IN
+                                ('BUILDING_WALLS', 'BUILDING_CASTLE', 'BUILDING_STAR_FORT')
+                       ))
+                  AND f.Item IS NULL
+                ORDER BY b.BuildingType
+                """,
+                (list_type, expected),
+            )
+        ]
+        if missing_defenses:
+            errors.append(
+                f"{list_type} is missing defensive buildings: {missing_defenses}"
+            )
+
+    for list_type, expected in (
+        ("ASAI_MilitaryReadinessDistricts", 30),
+        ("ASAI_WarDistricts", 35),
+    ):
+        missing_encampments = [
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT r.CivUniqueDistrictType
+                FROM DistrictReplaces AS r
+                LEFT JOIN AiFavoredItems AS f
+                  ON f.ListType = ?
+                 AND f.Item = r.CivUniqueDistrictType
+                 AND f.Value = ?
+                WHERE r.ReplacesDistrictType = 'DISTRICT_ENCAMPMENT'
+                  AND f.Item IS NULL
+                ORDER BY r.CivUniqueDistrictType
+                """,
+                (list_type, expected),
+            )
+        ]
+        if missing_encampments:
+            errors.append(
+                f"{list_type} is missing Encampment replacements: {missing_encampments}"
+            )
+
     expected_execution_values = {
         ("ASAI_TradeCapacityBuildings", "BUILDING_MARKET"): 120,
         ("ASAI_TradeCapacityBuildings", "BUILDING_LIGHTHOUSE"): 120,
@@ -1094,6 +1284,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_OpeningPseudoYields", "PSEUDOYIELD_WONDER"): -35,
         ("ASAI_RelativeCatchupPseudoYields", "PSEUDOYIELD_WONDER"): -20,
         ("ASAI_RelativeSeverePseudoYields", "PSEUDOYIELD_WONDER"): -30,
+        ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_WONDER"): -45,
     }
     for (list_type, item), expected in expected_wonder_penalties.items():
         row = connection.execute(
@@ -1131,9 +1322,9 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             "WHERE ListType = 'ASAI_WarWonders'"
         )
     }
-    if war_wonder_values != {-35}:
+    if war_wonder_values != {-60}:
         errors.append(
-            f"major-war wonder penalty expected only -35, found {sorted(war_wonder_values)}"
+            f"major-war wonder penalty expected only -60, found {sorted(war_wonder_values)}"
         )
     return errors
 
@@ -1189,8 +1380,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 20:
-                    errors.append(f"expected 20 adaptive strategies, found {strategy_count}")
+                if strategy_count != 21:
+                    errors.append(f"expected 21 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -1211,7 +1402,7 @@ def main() -> int:
     print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 20 (including opening, support, execution recovery, and budgets)")
+    print("- adaptive strategies: 21 (including military readiness and wartime defense)")
     print("- game cache was not modified")
     return 0
 
