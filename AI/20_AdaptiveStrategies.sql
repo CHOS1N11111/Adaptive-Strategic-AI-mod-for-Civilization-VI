@@ -304,12 +304,12 @@ VALUES
     ('ASAI_TradeCapacityDistricts', 'DISTRICT_HARBOR', 1, 55),
     ('ASAI_TradeCapacityYields', 'YIELD_PRODUCTION', 1, 12),
     ('ASAI_TradeCapacityYields', 'YIELD_GOLD', 1, 10),
-    ('ASAI_BuilderBudgetPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, -25),
-    ('ASAI_BuilderBudgetUnits', 'UNIT_BUILDER', 1, -50),
-    ('ASAI_TraderBudgetPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, -35),
-    ('ASAI_TraderBudgetUnits', 'UNIT_TRADER', 1, -50),
-    ('ASAI_SettlerBudgetPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -45),
-    ('ASAI_SettlerBudgetUnits', 'UNIT_SETTLER', 1, -50),
+    ('ASAI_BuilderBudgetPseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, -40),
+    ('ASAI_BuilderBudgetUnits', 'UNIT_BUILDER', 1, -70),
+    ('ASAI_TraderBudgetPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, -50),
+    ('ASAI_TraderBudgetUnits', 'UNIT_TRADER', 1, -70),
+    ('ASAI_SettlerBudgetPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -65),
+    ('ASAI_SettlerBudgetUnits', 'UNIT_SETTLER', 1, -80),
     ('ASAI_GoldPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 60),
     ('ASAI_GoldDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 30),
     ('ASAI_GoldDistricts', 'DISTRICT_HARBOR', 1, 30),
@@ -377,7 +377,7 @@ VALUES
     ('ASAI_ScienceExecutionDistricts', 'DISTRICT_CAMPUS', 1, 75),
     ('ASAI_ScienceExecutionYields', 'YIELD_SCIENCE', 1, 40),
     ('ASAI_ScienceExecutionYields', 'YIELD_PRODUCTION', 1, 15),
-    ('ASAI_CultureExecutionDistricts', 'DISTRICT_THEATER', 1, 80),
+    ('ASAI_CultureExecutionDistricts', 'DISTRICT_THEATER', 1, 100),
     ('ASAI_CultureExecutionYields', 'YIELD_CULTURE', 1, 44),
     ('ASAI_CultureExecutionYields', 'YIELD_PRODUCTION', 1, 15),
     ('ASAI_EmpireExecutionPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 45),
@@ -465,13 +465,13 @@ WHERE ReplacesDistrictType = 'DISTRICT_THEATER';
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_CultureExecutionDistricts', CivUniqueDistrictType, 1, 80
+SELECT 'ASAI_CultureExecutionDistricts', CivUniqueDistrictType, 1, 100
 FROM DistrictReplaces
 WHERE ReplacesDistrictType = 'DISTRICT_THEATER';
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_TradeCapacityBuildings', BuildingType, 1, 90
+SELECT 'ASAI_TradeCapacityBuildings', BuildingType, 1, 120
 FROM Buildings
 WHERE BuildingType IN ('BUILDING_MARKET', 'BUILDING_LIGHTHOUSE')
    OR BuildingType IN (
@@ -514,14 +514,14 @@ WHERE BuildingType = 'BUILDING_MONUMENT'
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_CultureExecutionBuildings', BuildingType, 1, 65
+SELECT 'ASAI_CultureExecutionBuildings', BuildingType, 1, 80
 FROM Buildings
 WHERE PrereqDistrict = 'DISTRICT_THEATER'
   AND COALESCE(IsWonder, 0) = 0;
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_CultureExecutionBuildings', BuildingType, 1, 80
+SELECT 'ASAI_CultureExecutionBuildings', BuildingType, 1, 100
 FROM Buildings
 WHERE BuildingType = 'BUILDING_MONUMENT'
    OR BuildingType IN (

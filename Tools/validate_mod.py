@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.8.0"
-EXPECTED_MODINFO_VERSION = "13"
+EXPECTED_RELEASE = "0.8.1"
+EXPECTED_MODINFO_VERSION = "14"
 
 
 def default_database() -> Path:
@@ -340,7 +340,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.8.0")
+        errors.append("diagnostic production must not enter the relative score in 0.8.1")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -912,12 +912,12 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         )
 
     expected_budget_values = {
-        ("ASAI_BuilderBudgetPseudoYields", "PSEUDOYIELD_IMPROVEMENT"): -25,
-        ("ASAI_BuilderBudgetUnits", "UNIT_BUILDER"): -50,
-        ("ASAI_TraderBudgetPseudoYields", "PSEUDOYIELD_UNIT_TRADE"): -35,
-        ("ASAI_TraderBudgetUnits", "UNIT_TRADER"): -50,
-        ("ASAI_SettlerBudgetPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -45,
-        ("ASAI_SettlerBudgetUnits", "UNIT_SETTLER"): -50,
+        ("ASAI_BuilderBudgetPseudoYields", "PSEUDOYIELD_IMPROVEMENT"): -40,
+        ("ASAI_BuilderBudgetUnits", "UNIT_BUILDER"): -70,
+        ("ASAI_TraderBudgetPseudoYields", "PSEUDOYIELD_UNIT_TRADE"): -50,
+        ("ASAI_TraderBudgetUnits", "UNIT_TRADER"): -70,
+        ("ASAI_SettlerBudgetPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -65,
+        ("ASAI_SettlerBudgetUnits", "UNIT_SETTLER"): -80,
     }
     for (list_type, item), expected in expected_budget_values.items():
         row = connection.execute(
@@ -931,11 +931,12 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             )
 
     expected_execution_values = {
-        ("ASAI_TradeCapacityBuildings", "BUILDING_MARKET"): 90,
-        ("ASAI_TradeCapacityBuildings", "BUILDING_LIGHTHOUSE"): 90,
+        ("ASAI_TradeCapacityBuildings", "BUILDING_MARKET"): 120,
+        ("ASAI_TradeCapacityBuildings", "BUILDING_LIGHTHOUSE"): 120,
         ("ASAI_ScienceExecutionDistricts", "DISTRICT_CAMPUS"): 75,
-        ("ASAI_CultureExecutionDistricts", "DISTRICT_THEATER"): 80,
-        ("ASAI_CultureExecutionBuildings", "BUILDING_MONUMENT"): 80,
+        ("ASAI_CultureExecutionDistricts", "DISTRICT_THEATER"): 100,
+        ("ASAI_CultureExecutionBuildings", "BUILDING_AMPHITHEATER"): 80,
+        ("ASAI_CultureExecutionBuildings", "BUILDING_MONUMENT"): 100,
         ("ASAI_EmpireExecutionBuildings", "BUILDING_GRANARY"): 60,
         ("ASAI_EmpireExecutionBuildings", "BUILDING_WATER_MILL"): 40,
     }
@@ -957,7 +958,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_ScienceRecoveryDistricts", "DISTRICT_CAMPUS", 50),
         ("ASAI_ScienceExecutionDistricts", "DISTRICT_CAMPUS", 75),
         ("ASAI_CultureRecoveryDistricts", "DISTRICT_THEATER", 55),
-        ("ASAI_CultureExecutionDistricts", "DISTRICT_THEATER", 80),
+        ("ASAI_CultureExecutionDistricts", "DISTRICT_THEATER", 100),
     )
     for list_type, base_district, expected in district_replacement_expectations:
         missing = [
