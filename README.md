@@ -2,7 +2,7 @@
 
 # Adaptive Strategic AI 0.8.4
 
-Adaptive Strategic AI is an auditable, measurable AI engineering baseline for Gathering Storm. Testing should use a new game starting in the Ancient Era. Release 0.8.4 adds a disclosed, reversible result layer after the complete turn 1-76 Online Speed review showed that severe decision weights alone detected collapse but did not restore competitive output.
+Adaptive Strategic AI reshapes Civilization VI: Gathering Storm AI behavior around expansion, economic development, military readiness, and player-relative pacing. Version 0.8.4 adds a transparent, reversible Deity catch-up layer for civilizations that fall severely behind.
 
 ## What This Release Does
 
@@ -16,15 +16,15 @@ Adaptive Strategic AI is an auditable, measurable AI engineering baseline for Ga
 - War tracking distinguishes a formal declaration from actual contact. Full wartime mobilization activates only when the AI is near a major-civilization front or has recently participated in attributable combat.
 - Military readiness runs independently from the single science, culture, or empire recovery focus. It enters after two evaluations at or below 78% of the player's smoothed military strength, enters immediately when raw strength falls to 60%, or enters from Standard-equivalent turn 50 when combat-unit density is at or below 1.75 per planned city. A planned city is an existing city plus at most one expansion slot when a Settler exists or is currently being produced. While active, it favors a mixed standing army, ranged and anti-cavalry units, walls, Encampments, production, and gold while increasing the opportunity cost of extra Settlers and wonders.
 - Scale recovery also runs independently from the shared pillar focus. From Standard-equivalent turn 50 it enters after two evaluations at or below 75% of the player's smoothed empire scale, or immediately when the raw empire ratio reaches 60%. It remains active across science, culture, and empire focus changes until the smoothed empire ratio reaches 88%. While active, it favors population, production, improvements, trade capacity, Industrial Zones, Commercial Hubs/Harbors, and their foundational buildings while increasing wonder opportunity cost.
-- Scale recovery permits one additional Settler pipeline, capped at three total. Active major wars still disable expansion recovery, and military readiness pauses extra expansion while combat-unit density remains below 2.25 per planned city. This prevents economic catch-up from cancelling the defensive floor introduced in 0.8.2.
+- Scale recovery permits one additional Settler pipeline, capped at three total. Active major wars still disable expansion recovery, and military readiness pauses extra expansion while combat-unit density remains below 2.25 per planned city. This prevents economic catch-up from cancelling the defensive floor.
 - Infrastructure recovery considers city count, population, and owned territory so populous or coastal civilizations are not permanently misclassified as under-improved.
-- Builder, Trader, and Settler budgets include active units and the item each city is currently producing. A stronger reverse-pressure strategy suppresses duplicate orders once a budget is full. Gameplay scripts cannot see future items that have not started in the UI production queue, so only current production is counted.
-- Every controller evaluation diagnoses total and per-city production, population-derived specialty district capacity, trade capacity, improvement coverage, current production categories, and gold reserves. This separates "not enough cities" from "cities are not converting production into useful assets." The gameplay scripting environment exposes no reliable API for strategic-resource stock limits or upgrade feasibility, so the log marks those sensors unsupported instead of emitting false precision.
-- When a science, culture, or empire focus fails to improve during a review window, the controller checks the real production response. Stronger execution weights activate both when no city responds and when relevant production exists but the gap still grows. Release 0.8.1 gives this temporary culture-execution state more authority over Theater Squares, their buildings, and Monuments after logs showed repeated order cancellation. The weights are removed after the result improves. Civilization-specific replacements receive the same district and building signals.
+- Builder, Trader, and Settler budgets include active units and the item each city is currently producing. Once a budget is full, reverse pressure reduces duplicate orders across cities.
+- The controller tracks total and per-city production, specialty district capacity, trade capacity, improvement coverage, current construction, and gold reserves. These signals distinguish expansion shortages from cities that are not converting production into useful assets.
+- When a science, culture, or empire focus fails to improve, the controller checks actual city production and temporarily strengthens the relevant execution weights. Theater Squares, their buildings, Monuments, and civilization-specific replacements receive the corresponding culture signal. The extra weights are removed after recovery.
 - Science, culture, domination, religious, and diplomatic victory plans receive distinct preferences for districts, buildings, units, technologies, civics, and projects.
-- City attack operations use shorter assembly distances, lower deadlock-prone launch thresholds, and more practical ranged, siege, and air compositions. Wartime mobilization no longer adds another `CITY_ASSAULT` slot on top of the base, per-war, and military-victory limits, preventing scarce defensive units from being split across unnecessary assaults.
+- City attack operations use shorter assembly distances, practical launch thresholds, and more balanced ranged, siege, and air compositions. Wartime mobilization avoids splitting scarce defensive units across unnecessary assaults.
 - A trailing AI reduces wonder preference to preserve production for expansion, improvements, trade, and key districts. Severe support increases that opportunity cost and removes it after recovery. Military weakness and active major-civilization wars apply stronger, temporary opportunity costs.
-- The mod does not spawn units or grant technologies, civics, resources, cities, or accumulated progress. Its only player-relative result modifier is the logged severe Deity yield layer described above; it does not affect Gold, Faith, combat strength, or matched/leading AIs.
+- The mod does not spawn units or grant technologies, civics, resources, cities, or accumulated progress. Its only player-relative result modifier is the severe Deity yield layer described above; it does not affect Gold, Faith, combat strength, or matched/leading AIs.
 
 ## Player-Relative Pacing
 
@@ -39,7 +39,7 @@ Adaptive Strategic AI is an auditable, measurable AI engineering baseline for Ga
 - Severe support can activate after two confirmations when the overall ratio is at or below 80%, or when the second-weakest science, culture, or empire pillar is at or below 78%. It exits only after overall strength reaches 88% and the second-weakest pillar reaches 86%. On Deity, the active state adds `+20%` Production and `+15%` Science/Culture to every current or future city. Exit attaches `-20%/-15%/-15%`, exactly cancelling the entry ledger; re-entry remains capped at the same net tier.
 - General catch-up weights remain deliberately modest. Normal catch-up applies a `-20` wonder pseudo-yield adjustment, while severe support adds `-30`, for a combined `-50` when both are active. A leading AI does not lose science, culture, production, Settler, or wonder preference; it receives only small gold and defense adjustments.
 - The severe result layer changes future city yield rates rather than awarding stored yields or research/civic progress. `ASAI_SEVERE_RESULT_YIELDS_ENABLED` can disable it; evaluation timing, entry/exit thresholds, and the seven component weights remain configurable in `AI/10_CoreEconomy.sql`, and the component weights should continue to sum to 100.
-- In 0.8.4, production, districts, trade, military composition, and conversion diagnostics still do not enter the seven-component overall score. Focus response, military readiness, and scale recovery raise bounded native AI execution weights; the severe result layer is reported separately so decision and multiplier effects can be distinguished.
+- Production, districts, trade, military composition, and conversion diagnostics do not enter the seven-component overall score. Focus response, military readiness, and scale recovery raise bounded native AI execution weights; the severe result layer is tracked separately.
 
 The infrastructure improvement target is `max(2 * cities, min(0.65 * population, 0.30 * owned plots))`. Each existing or currently produced Builder offsets two potential improvements; a currently produced Trader similarly offsets the trade-route deficit. When trade capacity is below `ceil(cities / 3)`, the AI favors Commercial Hubs or Harbors and gives their first Market or Lighthouse a `+120` conditional priority so capacity is completed before more competing orders displace it. Baseline expansion recovery allows `max(1, ceil(cities / 5))` existing or currently produced Settlers; scale recovery adds one slot up to a total cap of three. Independent budget strategies reduce further civilian production after the active limit is reached.
 
@@ -61,19 +61,17 @@ While confirmed severe support is active on Deity, add `+20` percentage points t
 ## Installation and Use
 
 1. Enable `Adaptive Strategic AI` under **Additional Content -> Mods**.
-2. Select the Gathering Storm ruleset. Deity difficulty, Standard speed, and an Ancient Era start are recommended for baseline testing.
+2. Select the Gathering Storm ruleset. Deity difficulty, Standard speed, and an Ancient Era start are recommended.
 3. Start a new game. Existing saves do not fully recalculate starting units or the early-game bonus curve.
 
-Do not combine this mod with RHAI, Real Strategy, AI+, Better AI Tweaks, Late Game AI, Smooth Difficulty, or other mods that change AI strategies or difficulty bonuses. UI-only mods are generally compatible. Better Balanced Game is not an AI mod, but it substantially changes technologies, units, and districts; disable it for formal baseline tests and evaluate compatibility separately afterward.
+Do not combine this mod with RHAI, Real Strategy, AI+, Better AI Tweaks, Late Game AI, Smooth Difficulty, or other mods that change AI strategies or difficulty bonuses. UI-only mods are generally compatible. Better Balanced Game is not an AI mod, but it substantially changes technologies, units, and districts, so compatibility is not guaranteed.
 
-## Validation and Benchmarking
+## Diagnostics and Configuration
 
-Run the offline validator with:
+The repository includes an offline consistency check:
 
 ```powershell
 python .\Tools\validate_mod.py
 ```
 
-`ASAI_ENABLE_METRICS` in `AI/10_CoreEconomy.sql` defaults to `1` in the current test release. Each controller evaluation emits `ASAI_METRIC`, `ASAI_COMPONENTS`, `ASAI_ECONOMY`, `ASAI_CONVERSION`, and `ASAI_MILITARY`. The metric line includes scale recovery, the active Settler cap, and `result_yields`; the military line records unit roles, current military production, wall coverage, planned cities, and combat units per planned city. Focus reviews also emit `ASAI_FOCUS`, including queue response and consecutive failure counts. Current production is read through the gameplay-script `CurrentlyBuilding()` API. Diagnostic sensors fail closed independently and do not stop the controller. Overall pacing changes emit `ASAI_PACING`, focus changes emit `ASAI_RECOVERY`, support-tier changes emit `ASAI_SUPPORT`, yield-ledger changes emit `ASAI_RESULT`, scale changes emit `ASAI_SCALE`, and military readiness changes emit `ASAI_READINESS` with reason fields.
-
-The claim that this mod is better than existing alternatives must be established through multiple controlled games. Relative pacing prevents a match from losing tension too early; long-term planning, player modeling, war lifecycle management, and victory conversion must make that competition feel earned by the AI itself.
+`ASAI_ENABLE_METRICS` in `AI/10_CoreEconomy.sql` defaults to `1`. Each controller evaluation emits `ASAI_METRIC`, `ASAI_COMPONENTS`, `ASAI_ECONOMY`, `ASAI_CONVERSION`, and `ASAI_MILITARY`. These entries cover relative strength, economic conversion, scale recovery, the active Settler cap, city defenses, unit roles, and military density. Focus reviews emit `ASAI_FOCUS`. State changes use `ASAI_PACING`, `ASAI_RECOVERY`, `ASAI_SUPPORT`, `ASAI_RESULT`, `ASAI_SCALE`, and `ASAI_READINESS`, including reason fields where applicable.
