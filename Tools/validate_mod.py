@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.8.3"
-EXPECTED_MODINFO_VERSION = "16"
+EXPECTED_RELEASE = "0.8.4"
+EXPECTED_MODINFO_VERSION = "17"
 
 
 def default_database() -> Path:
@@ -198,6 +198,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("gameplay-safe military strength estimator is missing")
     for marker in (
         "ASAI_SUPPORT",
+        "ASAI_RESULT turn=",
         "ASAI_SCALE turn=",
         "ASAI_READINESS",
         "ASAI_RECOVERY",
@@ -292,6 +293,30 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in support_fragments:
         if fragment not in source:
             errors.append(f"bounded support fragment is missing: {fragment}")
+    severe_result_fragments = (
+        "SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY",
+        'SEVERE_RESULT_YIELDS_ON_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_ON"',
+        'SEVERE_RESULT_YIELDS_OFF_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_OFF"',
+        "SEVERE_RESULT_PRODUCTION_PERCENT = 20",
+        "SEVERE_RESULT_SCIENCE_PERCENT = 15",
+        "SEVERE_RESULT_CULTURE_PERCENT = 15",
+        "SevereResultYieldsActive = 0",
+        "local function SyncSevereResultYields(playerID, player, state, turn)",
+        "ASAI_SEVERE_RESULT_YIELDS_ENABLED",
+        "enabled and state.SevereCatchup == 1",
+        "player:AttachModifierByID(modifierID)",
+        "state.SevereResultYieldsActive = desiredActive and 1 or 0",
+        "state.SevereResultYieldsActive\n    )",
+        "player:SetProperty(\n        SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY",
+        "SyncSevereResultYields(playerID, player, state, turn)",
+        "ASAI_RESULT turn=%d standard_turn=%.1f",
+        "result_yields=%d",
+    )
+    for fragment in severe_result_fragments:
+        if fragment not in source:
+            errors.append(f"severe result-yield fragment is missing: {fragment}")
+    if "DetachModifierByID" in source:
+        errors.append("Lua must not rely on the unavailable modifier detach API")
     military_readiness_fragments = (
         "local function GetDesiredMilitaryReadiness(state, densityEnabled)",
         "ASAI_MILITARY_READINESS_ENTER_X100",
@@ -401,7 +426,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.8.3")
+        errors.append("diagnostic production must not enter the relative score in 0.8.4")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -499,6 +524,83 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         actual = None if row is None else str(row[0])
         if actual != expected:
             errors.append(f"modifier argument {key} expected {expected}, found {actual}")
+
+    result_enabled = connection.execute(
+        "SELECT Value FROM GlobalParameters "
+        "WHERE Name = 'ASAI_SEVERE_RESULT_YIELDS_ENABLED'"
+    ).fetchone()
+    if result_enabled is None or int(result_enabled[0]) != 1:
+        errors.append(
+            "severe result-yield layer must default enabled, found "
+            f"{None if result_enabled is None else result_enabled[0]}"
+        )
+
+    expected_result_amounts = {
+        "ASAI_SEVERE_RESULT_YIELDS_ON": "20, 15, 15",
+        "ASAI_SEVERE_RESULT_YIELDS_OFF": "-20, -15, -15",
+    }
+    yield_types = "YIELD_PRODUCTION, YIELD_SCIENCE, YIELD_CULTURE"
+    parsed_result_amounts: dict[str, list[int]] = {}
+    for modifier_id, expected_amount in expected_result_amounts.items():
+        definition = connection.execute(
+            "SELECT ModifierType, OwnerRequirementSetId, Permanent, RunOnce "
+            "FROM Modifiers WHERE ModifierId = ?",
+            (modifier_id,),
+        ).fetchone()
+        expected_definition = (
+            "MODIFIER_PLAYER_CITIES_ADJUST_CITY_YIELD_MODIFIER",
+            "ASAI_DEITY_AI",
+            0,
+            0,
+        )
+        if definition != expected_definition:
+            errors.append(
+                f"result modifier {modifier_id} expected {expected_definition}, "
+                f"found {definition}"
+            )
+        arguments = dict(
+            connection.execute(
+                "SELECT Name, Value FROM ModifierArguments WHERE ModifierId = ?",
+                (modifier_id,),
+            )
+        )
+        if arguments.get("YieldType") != yield_types:
+            errors.append(
+                f"result modifier {modifier_id} yield order differs: "
+                f"{arguments.get('YieldType')}"
+            )
+        if str(arguments.get("Amount")) != expected_amount:
+            errors.append(
+                f"result modifier {modifier_id} amount expected {expected_amount}, "
+                f"found {arguments.get('Amount')}"
+            )
+        try:
+            parsed_result_amounts[modifier_id] = [
+                int(value.strip())
+                for value in str(arguments.get("Amount", "")).split(",")
+            ]
+        except ValueError:
+            errors.append(f"result modifier {modifier_id} has non-integer amounts")
+
+    positive = parsed_result_amounts.get("ASAI_SEVERE_RESULT_YIELDS_ON")
+    negative = parsed_result_amounts.get("ASAI_SEVERE_RESULT_YIELDS_OFF")
+    if positive is not None and negative is not None:
+        if len(positive) != 3 or len(negative) != 3:
+            errors.append("severe result-yield ledger must contain exactly three yields")
+        elif any(on + off != 0 for on, off in zip(positive, negative)):
+            errors.append(
+                f"severe result-yield ledger does not cancel exactly: {positive}/{negative}"
+            )
+
+    statically_attached_results = connection.execute(
+        "SELECT COUNT(*) FROM TraitModifiers "
+        "WHERE ModifierId IN "
+        "('ASAI_SEVERE_RESULT_YIELDS_ON', 'ASAI_SEVERE_RESULT_YIELDS_OFF')"
+    ).fetchone()[0]
+    if statically_attached_results:
+        errors.append(
+            "severe result modifiers must only be attached by the runtime state machine"
+        )
 
     unattached = connection.execute(
         """

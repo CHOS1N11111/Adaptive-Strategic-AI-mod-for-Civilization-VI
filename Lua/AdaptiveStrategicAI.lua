@@ -71,6 +71,12 @@ local RELATIVE_SEVERE_PROPERTY = "ASAI_RELATIVE_SEVERE_CATCHUP";
 local RELATIVE_SEVERE_CANDIDATE_PROPERTY = "ASAI_RELATIVE_SEVERE_CANDIDATE";
 local RELATIVE_SEVERE_STREAK_PROPERTY = "ASAI_RELATIVE_SEVERE_STREAK";
 local RELATIVE_SEVERE_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_SEVERE_CHANGED_TURN";
+local SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY = "ASAI_SEVERE_RESULT_YIELDS_ACTIVE";
+local SEVERE_RESULT_YIELDS_ON_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_ON";
+local SEVERE_RESULT_YIELDS_OFF_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_OFF";
+local SEVERE_RESULT_PRODUCTION_PERCENT = 20;
+local SEVERE_RESULT_SCIENCE_PERCENT = 15;
+local SEVERE_RESULT_CULTURE_PERCENT = 15;
 local MILITARY_READINESS_PROPERTY = "ASAI_MILITARY_READINESS";
 local MILITARY_READINESS_CANDIDATE_PROPERTY = "ASAI_MILITARY_READINESS_CANDIDATE";
 local MILITARY_READINESS_STREAK_PROPERTY = "ASAI_MILITARY_READINESS_STREAK";
@@ -1310,6 +1316,7 @@ local function GetNeutralRelativeState()
         SevereCandidate = 0,
         SevereStreak = 0,
         SevereChangedTurn = -100000,
+        SevereResultYieldsActive = 0,
         MilitaryReadiness = 0,
         MilitaryReadinessCandidate = 0,
         MilitaryReadinessStreak = 0,
@@ -1450,6 +1457,11 @@ local function ReadRelativeState(player)
         RELATIVE_SEVERE_CHANGED_TURN_PROPERTY,
         -100000
     );
+    state.SevereResultYieldsActive = GetStoredNumber(
+        player,
+        SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY,
+        0
+    ) == 1 and 1 or 0;
     state.MilitaryReadiness = GetStoredNumber(
         player,
         MILITARY_READINESS_PROPERTY,
@@ -1568,6 +1580,10 @@ local function StoreRelativeState(player, state)
     player:SetProperty(RELATIVE_SEVERE_CANDIDATE_PROPERTY, state.SevereCandidate);
     player:SetProperty(RELATIVE_SEVERE_STREAK_PROPERTY, state.SevereStreak);
     player:SetProperty(RELATIVE_SEVERE_CHANGED_TURN_PROPERTY, state.SevereChangedTurn);
+    player:SetProperty(
+        SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY,
+        state.SevereResultYieldsActive
+    );
     player:SetProperty(MILITARY_READINESS_PROPERTY, state.MilitaryReadiness);
     player:SetProperty(
         MILITARY_READINESS_CANDIDATE_PROPERTY,
@@ -1740,6 +1756,58 @@ local function GetDesiredScaleRecovery(state)
         return state.Scores.Empire < exit and 1 or 0;
     end
     return state.Scores.Empire <= enter and 1 or 0;
+end
+
+local function SyncSevereResultYields(playerID, player, state, turn)
+    local enabled = GetNumberParameter(
+        "ASAI_SEVERE_RESULT_YIELDS_ENABLED",
+        1
+    ) == 1;
+    local desiredActive = enabled and state.SevereCatchup == 1;
+    local currentlyActive = state.SevereResultYieldsActive == 1;
+    if desiredActive == currentlyActive then
+        return;
+    end
+
+    local modifierID = desiredActive and SEVERE_RESULT_YIELDS_ON_MODIFIER
+        or SEVERE_RESULT_YIELDS_OFF_MODIFIER;
+    local success, attachError = pcall(
+        function() player:AttachModifierByID(modifierID); end
+    );
+    if not success then
+        local errorKey = "ASAI_SevereResultYields_" .. tostring(playerID)
+            .. "_" .. modifierID;
+        if m_ConditionErrors[errorKey] == nil then
+            print(string.format(
+                "ASAI_ERROR condition=ASAI_SevereResultYields player=%d modifier=%s fallback=retry error=%s",
+                playerID,
+                modifierID,
+                tostring(attachError)
+            ));
+            m_ConditionErrors[errorKey] = true;
+        end
+        return;
+    end
+
+    state.SevereResultYieldsActive = desiredActive and 1 or 0;
+    player:SetProperty(
+        SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY,
+        state.SevereResultYieldsActive
+    );
+    local direction = desiredActive and 1 or -1;
+    print(string.format(
+        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d active=%d action=%s production=%d science=%d culture=%d relative=%.3f second_core=%.3f",
+        turn,
+        GetStandardEquivalentTurn(turn),
+        playerID,
+        state.SevereResultYieldsActive,
+        desiredActive and "activate" or "deactivate",
+        direction * SEVERE_RESULT_PRODUCTION_PERCENT,
+        direction * SEVERE_RESULT_SCIENCE_PERCENT,
+        direction * SEVERE_RESULT_CULTURE_PERCENT,
+        state.Scores.Overall,
+        GetSecondWeakestCorePillarScore(state)
+    ));
 end
 
 local function UpdateScaleExpansionAvailability(state, snapshot)
@@ -2311,6 +2379,7 @@ local function EvaluateRelativeState(playerID)
         end
     end
 
+    SyncSevereResultYields(playerID, player, state, turn);
     StoreRelativeState(player, state);
     m_RelativeRuntime[playerID] = state;
     return state;
@@ -2612,7 +2681,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d scale_recovery=%d scale_expansion=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d scale_recovery=%d scale_expansion=%d result_yields=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2662,6 +2731,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.MilitaryReadiness,
         relativeState.ScaleRecovery,
         relativeState.ScaleExpansionAllowed,
+        relativeState.SevereResultYieldsActive,
         GetBandName(relativeState.Band),
         GetSupportName(relativeState),
         GetFocusName(relativeState.Focus),
