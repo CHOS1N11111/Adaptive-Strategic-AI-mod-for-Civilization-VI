@@ -814,7 +814,7 @@ end
 local function GetTradeCapacityTarget(snapshot)
     local citiesPerCapacity = math.max(
         1,
-        GetNumberParameter("ASAI_TRADE_CITIES_PER_CAPACITY", 3)
+        GetNumberParameter("ASAI_TRADE_CITIES_PER_CAPACITY", 2)
     );
     return snapshot.Cities > 0
         and math.max(1, math.ceil(snapshot.Cities / citiesPerCapacity))
@@ -873,7 +873,7 @@ local function IsOpeningExpansion(playerID, threshold)
     );
     local cityTarget = math.max(
         2,
-        GetNumberParameter("ASAI_OPENING_EXPANSION_CITY_TARGET", 3)
+        GetNumberParameter("ASAI_OPENING_EXPANSION_CITY_TARGET", 4)
     );
     return snapshot.Turn < endTurn
         and snapshot.Cities > 0

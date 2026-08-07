@@ -1,29 +1,23 @@
--- Adaptive Strategic AI: transparent difficulty curve for Gathering Storm.
+-- Adaptive Strategic AI: competitive difficulty curve for Gathering Storm.
 -- Vanilla Deity totals are +80% production/gold, +32% science/culture/faith,
--- +4 combat strength, and +40% unit XP. These modifiers offset the opening
--- bonus and then add it back as the world era advances.
+-- +4 combat strength, and +40% unit XP. These modifiers retain a visible but
+-- reduced opening lead, then ramp to a stronger late-game economy.
 
--- High difficulties keep an early escort and a builder, but no free settlers.
+-- Deity receives one extra Settler, two extra Warriors, and one Builder. This
+-- sits between the previous reduced start and the full vanilla Deity opening.
 DELETE FROM MajorStartingUnits
 WHERE Era = 'ERA_ANCIENT'
   AND AiOnly = 1
-  AND Unit = 'UNIT_SETTLER';
+  AND Unit IN ('UNIT_SETTLER', 'UNIT_WARRIOR', 'UNIT_BUILDER');
 
-UPDATE MajorStartingUnits
-SET Quantity = 1,
-    MinDifficulty = 'DIFFICULTY_KING',
-    DifficultyDelta = 0
-WHERE Era = 'ERA_ANCIENT'
-  AND AiOnly = 1
-  AND Unit = 'UNIT_WARRIOR';
-
-UPDATE MajorStartingUnits
-SET Quantity = 1,
-    MinDifficulty = 'DIFFICULTY_EMPEROR',
-    DifficultyDelta = 0
-WHERE Era = 'ERA_ANCIENT'
-  AND AiOnly = 1
-  AND Unit = 'UNIT_BUILDER';
+INSERT INTO MajorStartingUnits
+    (Unit, Era, Quantity, NotStartTile, OnDistrictCreated, AiOnly,
+     MinDifficulty, DifficultyDelta)
+VALUES
+    ('UNIT_SETTLER', 'ERA_ANCIENT', 1, 0, 1, 1, 'DIFFICULTY_DEITY', 0),
+    ('UNIT_WARRIOR', 'ERA_ANCIENT', 1, 1, 0, 1, 'DIFFICULTY_KING', 0),
+    ('UNIT_WARRIOR', 'ERA_ANCIENT', 1, 1, 0, 1, 'DIFFICULTY_DEITY', 0),
+    ('UNIT_BUILDER', 'ERA_ANCIENT', 1, 0, 1, 1, 'DIFFICULTY_EMPEROR', 0);
 
 INSERT OR IGNORE INTO Requirements
     (RequirementId, RequirementType, Inverse)
@@ -134,89 +128,89 @@ VALUES
     ('ASAI_DEITY_INFORMATION_PRODUCTION', 'MODIFIER_PLAYER_CITIES_ADJUST_CITY_YIELD_MODIFIER', 'ASAI_DEITY_AI_INFORMATION'),
     ('ASAI_DEITY_INFORMATION_GOLD', 'MODIFIER_PLAYER_CITIES_ADJUST_CITY_YIELD_MODIFIER', 'ASAI_DEITY_AI_INFORMATION');
 
-INSERT OR IGNORE INTO ModifierArguments
+INSERT OR REPLACE INTO ModifierArguments
     (ModifierId, Name, Value)
 VALUES
     ('ASAI_DEITY_OPENING_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_OPENING_SCIENCE', 'Amount', -22),
+    ('ASAI_DEITY_OPENING_SCIENCE', 'Amount', -8),
     ('ASAI_DEITY_OPENING_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_OPENING_CULTURE', 'Amount', -22),
+    ('ASAI_DEITY_OPENING_CULTURE', 'Amount', -8),
     ('ASAI_DEITY_OPENING_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_OPENING_FAITH', 'Amount', -22),
+    ('ASAI_DEITY_OPENING_FAITH', 'Amount', -8),
     ('ASAI_DEITY_OPENING_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
-    ('ASAI_DEITY_OPENING_PRODUCTION', 'Amount', -60),
+    ('ASAI_DEITY_OPENING_PRODUCTION', 'Amount', -30),
     ('ASAI_DEITY_OPENING_GOLD', 'YieldType', 'YIELD_GOLD'),
-    ('ASAI_DEITY_OPENING_GOLD', 'Amount', -60),
+    ('ASAI_DEITY_OPENING_GOLD', 'Amount', -30),
     ('ASAI_DEITY_CLASSICAL_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_CLASSICAL_SCIENCE', 'Amount', 4),
+    ('ASAI_DEITY_CLASSICAL_SCIENCE', 'Amount', 3),
     ('ASAI_DEITY_CLASSICAL_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_CLASSICAL_CULTURE', 'Amount', 4),
+    ('ASAI_DEITY_CLASSICAL_CULTURE', 'Amount', 3),
     ('ASAI_DEITY_CLASSICAL_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_CLASSICAL_FAITH', 'Amount', 4),
+    ('ASAI_DEITY_CLASSICAL_FAITH', 'Amount', 3),
     ('ASAI_DEITY_CLASSICAL_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
     ('ASAI_DEITY_CLASSICAL_PRODUCTION', 'Amount', 5),
     ('ASAI_DEITY_CLASSICAL_GOLD', 'YieldType', 'YIELD_GOLD'),
     ('ASAI_DEITY_CLASSICAL_GOLD', 'Amount', 5),
     ('ASAI_DEITY_MEDIEVAL_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_MEDIEVAL_SCIENCE', 'Amount', 6),
+    ('ASAI_DEITY_MEDIEVAL_SCIENCE', 'Amount', 5),
     ('ASAI_DEITY_MEDIEVAL_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_MEDIEVAL_CULTURE', 'Amount', 6),
+    ('ASAI_DEITY_MEDIEVAL_CULTURE', 'Amount', 5),
     ('ASAI_DEITY_MEDIEVAL_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_MEDIEVAL_FAITH', 'Amount', 6),
+    ('ASAI_DEITY_MEDIEVAL_FAITH', 'Amount', 5),
     ('ASAI_DEITY_MEDIEVAL_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
-    ('ASAI_DEITY_MEDIEVAL_PRODUCTION', 'Amount', 10),
+    ('ASAI_DEITY_MEDIEVAL_PRODUCTION', 'Amount', 7),
     ('ASAI_DEITY_MEDIEVAL_GOLD', 'YieldType', 'YIELD_GOLD'),
-    ('ASAI_DEITY_MEDIEVAL_GOLD', 'Amount', 10),
+    ('ASAI_DEITY_MEDIEVAL_GOLD', 'Amount', 7),
     ('ASAI_DEITY_RENAISSANCE_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_RENAISSANCE_SCIENCE', 'Amount', 8),
+    ('ASAI_DEITY_RENAISSANCE_SCIENCE', 'Amount', 6),
     ('ASAI_DEITY_RENAISSANCE_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_RENAISSANCE_CULTURE', 'Amount', 8),
+    ('ASAI_DEITY_RENAISSANCE_CULTURE', 'Amount', 6),
     ('ASAI_DEITY_RENAISSANCE_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_RENAISSANCE_FAITH', 'Amount', 8),
+    ('ASAI_DEITY_RENAISSANCE_FAITH', 'Amount', 6),
     ('ASAI_DEITY_RENAISSANCE_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
-    ('ASAI_DEITY_RENAISSANCE_PRODUCTION', 'Amount', 10),
+    ('ASAI_DEITY_RENAISSANCE_PRODUCTION', 'Amount', 6),
     ('ASAI_DEITY_RENAISSANCE_GOLD', 'YieldType', 'YIELD_GOLD'),
-    ('ASAI_DEITY_RENAISSANCE_GOLD', 'Amount', 10),
+    ('ASAI_DEITY_RENAISSANCE_GOLD', 'Amount', 6),
     ('ASAI_DEITY_INDUSTRIAL_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_INDUSTRIAL_SCIENCE', 'Amount', 8),
+    ('ASAI_DEITY_INDUSTRIAL_SCIENCE', 'Amount', 6),
     ('ASAI_DEITY_INDUSTRIAL_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_INDUSTRIAL_CULTURE', 'Amount', 8),
+    ('ASAI_DEITY_INDUSTRIAL_CULTURE', 'Amount', 6),
     ('ASAI_DEITY_INDUSTRIAL_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_INDUSTRIAL_FAITH', 'Amount', 8),
+    ('ASAI_DEITY_INDUSTRIAL_FAITH', 'Amount', 6),
     ('ASAI_DEITY_INDUSTRIAL_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
-    ('ASAI_DEITY_INDUSTRIAL_PRODUCTION', 'Amount', 10),
+    ('ASAI_DEITY_INDUSTRIAL_PRODUCTION', 'Amount', 6),
     ('ASAI_DEITY_INDUSTRIAL_GOLD', 'YieldType', 'YIELD_GOLD'),
-    ('ASAI_DEITY_INDUSTRIAL_GOLD', 'Amount', 10),
+    ('ASAI_DEITY_INDUSTRIAL_GOLD', 'Amount', 6),
     ('ASAI_DEITY_MODERN_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_MODERN_SCIENCE', 'Amount', 8),
+    ('ASAI_DEITY_MODERN_SCIENCE', 'Amount', 6),
     ('ASAI_DEITY_MODERN_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_MODERN_CULTURE', 'Amount', 8),
+    ('ASAI_DEITY_MODERN_CULTURE', 'Amount', 6),
     ('ASAI_DEITY_MODERN_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_MODERN_FAITH', 'Amount', 8),
+    ('ASAI_DEITY_MODERN_FAITH', 'Amount', 6),
     ('ASAI_DEITY_MODERN_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
-    ('ASAI_DEITY_MODERN_PRODUCTION', 'Amount', 10),
+    ('ASAI_DEITY_MODERN_PRODUCTION', 'Amount', 6),
     ('ASAI_DEITY_MODERN_GOLD', 'YieldType', 'YIELD_GOLD'),
-    ('ASAI_DEITY_MODERN_GOLD', 'Amount', 10),
+    ('ASAI_DEITY_MODERN_GOLD', 'Amount', 6),
     ('ASAI_DEITY_ATOMIC_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_ATOMIC_SCIENCE', 'Amount', 8),
+    ('ASAI_DEITY_ATOMIC_SCIENCE', 'Amount', 5),
     ('ASAI_DEITY_ATOMIC_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_ATOMIC_CULTURE', 'Amount', 8),
+    ('ASAI_DEITY_ATOMIC_CULTURE', 'Amount', 5),
     ('ASAI_DEITY_ATOMIC_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_ATOMIC_FAITH', 'Amount', 8),
+    ('ASAI_DEITY_ATOMIC_FAITH', 'Amount', 5),
     ('ASAI_DEITY_ATOMIC_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
-    ('ASAI_DEITY_ATOMIC_PRODUCTION', 'Amount', 10),
+    ('ASAI_DEITY_ATOMIC_PRODUCTION', 'Amount', 5),
     ('ASAI_DEITY_ATOMIC_GOLD', 'YieldType', 'YIELD_GOLD'),
-    ('ASAI_DEITY_ATOMIC_GOLD', 'Amount', 10),
+    ('ASAI_DEITY_ATOMIC_GOLD', 'Amount', 5),
     ('ASAI_DEITY_INFORMATION_SCIENCE', 'YieldType', 'YIELD_SCIENCE'),
-    ('ASAI_DEITY_INFORMATION_SCIENCE', 'Amount', 8),
+    ('ASAI_DEITY_INFORMATION_SCIENCE', 'Amount', 5),
     ('ASAI_DEITY_INFORMATION_CULTURE', 'YieldType', 'YIELD_CULTURE'),
-    ('ASAI_DEITY_INFORMATION_CULTURE', 'Amount', 8),
+    ('ASAI_DEITY_INFORMATION_CULTURE', 'Amount', 5),
     ('ASAI_DEITY_INFORMATION_FAITH', 'YieldType', 'YIELD_FAITH'),
-    ('ASAI_DEITY_INFORMATION_FAITH', 'Amount', 8),
+    ('ASAI_DEITY_INFORMATION_FAITH', 'Amount', 5),
     ('ASAI_DEITY_INFORMATION_PRODUCTION', 'YieldType', 'YIELD_PRODUCTION'),
-    ('ASAI_DEITY_INFORMATION_PRODUCTION', 'Amount', 15),
+    ('ASAI_DEITY_INFORMATION_PRODUCTION', 'Amount', 5),
     ('ASAI_DEITY_INFORMATION_GOLD', 'YieldType', 'YIELD_GOLD'),
-    ('ASAI_DEITY_INFORMATION_GOLD', 'Amount', 15);
+    ('ASAI_DEITY_INFORMATION_GOLD', 'Amount', 5);
 
 -- Combat and experience bonuses also ramp instead of peaking on turn one.
 INSERT OR IGNORE INTO Modifiers
@@ -232,18 +226,18 @@ VALUES
     ('ASAI_DEITY_MODERN_XP', 'MODIFIER_PLAYER_UNITS_ADJUST_UNIT_EXPERIENCE_MODIFIER', 'ASAI_DEITY_AI_MODERN'),
     ('ASAI_DEITY_ATOMIC_XP', 'MODIFIER_PLAYER_UNITS_ADJUST_UNIT_EXPERIENCE_MODIFIER', 'ASAI_DEITY_AI_ATOMIC');
 
-INSERT OR IGNORE INTO ModifierArguments
+INSERT OR REPLACE INTO ModifierArguments
     (ModifierId, Name, Value)
 VALUES
-    ('ASAI_DEITY_OPENING_COMBAT', 'Amount', -3),
+    ('ASAI_DEITY_OPENING_COMBAT', 'Amount', -1),
     ('ASAI_DEITY_MODERN_COMBAT', 'Amount', 1),
-    ('ASAI_DEITY_OPENING_XP', 'Amount', -30),
-    ('ASAI_DEITY_CLASSICAL_XP', 'Amount', 5),
-    ('ASAI_DEITY_MEDIEVAL_XP', 'Amount', 5),
-    ('ASAI_DEITY_RENAISSANCE_XP', 'Amount', 5),
-    ('ASAI_DEITY_INDUSTRIAL_XP', 'Amount', 5),
-    ('ASAI_DEITY_MODERN_XP', 'Amount', 5),
-    ('ASAI_DEITY_ATOMIC_XP', 'Amount', 5);
+    ('ASAI_DEITY_OPENING_XP', 'Amount', -10),
+    ('ASAI_DEITY_CLASSICAL_XP', 'Amount', 2),
+    ('ASAI_DEITY_MEDIEVAL_XP', 'Amount', 2),
+    ('ASAI_DEITY_RENAISSANCE_XP', 'Amount', 2),
+    ('ASAI_DEITY_INDUSTRIAL_XP', 'Amount', 2),
+    ('ASAI_DEITY_MODERN_XP', 'Amount', 2),
+    ('ASAI_DEITY_ATOMIC_XP', 'Amount', 0);
 
 INSERT OR IGNORE INTO TraitModifiers
     (TraitType, ModifierId)

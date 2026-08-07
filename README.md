@@ -1,14 +1,14 @@
 **English** | [简体中文](README.zh-CN.md)
 
-# Adaptive Strategic AI 0.8.5
+# Adaptive Strategic AI 0.8.6
 
-Adaptive Strategic AI reshapes Civilization VI: Gathering Storm AI behavior around expansion, economic development, military readiness, and player-relative pacing. Version 0.8.5 strengthens reversible Deity support when one core pillar collapses and adds military production execution when readiness is not translating into units.
+Adaptive Strategic AI reshapes Civilization VI: Gathering Storm AI behavior around expansion, economic development, military readiness, and player-relative pacing. Version 0.8.6 gives Deity AI a credible opening lead so the player must catch established competitors, while retaining the bounded recovery and military execution systems for later reversals.
 
 ## What This Release Does
 
-- Deity AI no longer receives a free additional Settler. An Ancient Era start now gives each Deity AI 1 Settler, 2 Warriors, and 1 Builder in total.
-- Deity yield, combat, and experience bonuses scale with the world era, reducing early pressure while preserving a stronger late-game threat.
-- A one- or two-city AI temporarily reduces its wonder preference and increases its Settler preference during the first 70 Standard-speed-equivalent turns. The strategy exits immediately at 3 cities and does not constrain later wonders or victory plans. Existing and currently produced Settlers still count against the civilian budget and suppress duplicate production.
+- An Ancient Era Deity AI starts with 2 Settlers, 3 Warriors, and 1 Builder in total. This is a meaningful opening advantage but remains below the full vanilla Deity start of approximately 3 Settlers, 5 Warriors, and 2 Builders.
+- Deity begins at `+50%` Production/Gold, `+24%` Science/Culture/Faith, `+3` combat strength, and `+30%` unit experience, then scales smoothly with the world era to preserve late-game pressure.
+- An AI below 4 cities temporarily reduces its wonder preference and increases its Settler preference during the first 70 Standard-speed-equivalent turns. The strategy exits immediately at 4 cities and does not constrain later wonders or victory plans. Existing and currently produced Settlers still count against the civilian budget and suppress duplicate production.
 - Settlement operations retain one combat escort but no longer wait for extra formation strength around safe targets. A team is capped at 1 Settler plus 1 escort. Plot evaluation places more value on fresh water, resources, and compact settlement.
 - The AI conditionally enables baseline support strategies for insufficient improvements, Traders, trade route capacity, budget deficits, military readiness, wartime mobilization, and military modernization.
 - Every surviving major AI independently compares its overall strength with the human player and checks its science, culture, and empire pillars. There is no global competitor quota, and the system does not force every AI into exact parity.
@@ -47,14 +47,14 @@ The infrastructure improvement target is `max(2 * cities, min(0.65 * population,
 
 | World Era | Production / Gold | Science / Culture / Faith | Combat Strength | Unit Experience |
 | --- | ---: | ---: | ---: | ---: |
-| Ancient | +20% | +10% | +1 | +10% |
-| Classical | +25% | +14% | +1 | +15% |
-| Medieval | +35% | +20% | +1 | +20% |
-| Renaissance | +45% | +28% | +1 | +25% |
-| Industrial | +55% | +36% | +1 | +30% |
-| Modern | +65% | +44% | +2 | +35% |
-| Atomic | +75% | +52% | +2 | +40% |
-| Information / Future | +90% | +60% | +2 | +40% |
+| Ancient | +50% | +24% | +3 | +30% |
+| Classical | +55% | +27% | +3 | +32% |
+| Medieval | +62% | +32% | +3 | +34% |
+| Renaissance | +68% | +38% | +3 | +36% |
+| Industrial | +74% | +44% | +3 | +38% |
+| Modern | +80% | +50% | +4 | +40% |
+| Atomic | +85% | +55% | +4 | +40% |
+| Information / Future | +90% | +60% | +4 | +40% |
 
 While confirmed severe support is active on Deity, add `+40` percentage points to Production and `+30` to Science/Culture in the applicable row. Gold, Faith, combat strength, and experience are unchanged. Recovery removes the complete adaptive addition.
 

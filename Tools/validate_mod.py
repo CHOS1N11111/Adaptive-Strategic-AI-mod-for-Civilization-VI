@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.8.5"
-EXPECTED_MODINFO_VERSION = "18"
+EXPECTED_RELEASE = "0.8.6"
+EXPECTED_MODINFO_VERSION = "19"
 
 
 def default_database() -> Path:
@@ -440,11 +440,12 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.8.5")
+        errors.append("diagnostic production must not enter the relative score in 0.8.6")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
-        'ASAI_OPENING_EXPANSION_CITY_TARGET", 3',
+        'ASAI_OPENING_EXPANSION_CITY_TARGET", 4',
+        'ASAI_TRADE_CITIES_PER_CAPACITY", 2',
         "snapshot.Cities < cityTarget",
         "function ASAI_IsOpeningExpansion(playerID, threshold)",
         'ASAI_INFRA_START_TURN_STANDARD", 20',
@@ -514,22 +515,105 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
 
 def validate_invariants(connection: sqlite3.Connection) -> list[str]:
     errors: list[str] = []
-    ai_settlers = connection.execute(
-        """
-        SELECT COUNT(*) FROM MajorStartingUnits
-        WHERE Era = 'ERA_ANCIENT' AND AiOnly = 1 AND Unit = 'UNIT_SETTLER'
-        """
-    ).fetchone()[0]
-    if ai_settlers != 0:
-        errors.append(f"expected no free Ancient AI settlers, found {ai_settlers}")
+    starting_rows = {
+        (
+            row[0],
+            int(row[1]),
+            int(row[2]),
+            int(row[3]),
+            row[4],
+            float(row[5]),
+        )
+        for row in connection.execute(
+            """
+            SELECT Unit, Quantity, NotStartTile, OnDistrictCreated,
+                   MinDifficulty, DifficultyDelta
+            FROM MajorStartingUnits
+            WHERE Era = 'ERA_ANCIENT'
+              AND AiOnly = 1
+              AND Unit IN ('UNIT_SETTLER', 'UNIT_WARRIOR', 'UNIT_BUILDER')
+            """
+        )
+    }
+    expected_starting_rows = {
+        ("UNIT_SETTLER", 1, 0, 1, "DIFFICULTY_DEITY", 0.0),
+        ("UNIT_WARRIOR", 1, 1, 0, "DIFFICULTY_KING", 0.0),
+        ("UNIT_WARRIOR", 1, 1, 0, "DIFFICULTY_DEITY", 0.0),
+        ("UNIT_BUILDER", 1, 0, 1, "DIFFICULTY_EMPEROR", 0.0),
+    }
+    if starting_rows != expected_starting_rows:
+        errors.append(
+            "Ancient AI starting-unit profile differs: "
+            f"expected {sorted(expected_starting_rows)}, found {sorted(starting_rows)}"
+        )
+
+    yield_adjustments = {
+        "OPENING": (-8, -30),
+        "CLASSICAL": (3, 5),
+        "MEDIEVAL": (5, 7),
+        "RENAISSANCE": (6, 6),
+        "INDUSTRIAL": (6, 6),
+        "MODERN": (6, 6),
+        "ATOMIC": (5, 5),
+        "INFORMATION": (5, 5),
+    }
+    expected_curve = {
+        "OPENING": (24, 50),
+        "CLASSICAL": (27, 55),
+        "MEDIEVAL": (32, 62),
+        "RENAISSANCE": (38, 68),
+        "INDUSTRIAL": (44, 74),
+        "MODERN": (50, 80),
+        "ATOMIC": (55, 85),
+        "INFORMATION": (60, 90),
+    }
+    actual_science_total = 32
+    actual_production_total = 80
+    for stage, (science_adjustment, production_adjustment) in yield_adjustments.items():
+        actual_stage_adjustments: dict[str, int] = {}
+        for yield_name in ("SCIENCE", "CULTURE", "FAITH", "PRODUCTION", "GOLD"):
+            modifier_id = f"ASAI_DEITY_{stage}_{yield_name}"
+            row = connection.execute(
+                "SELECT Value FROM ModifierArguments "
+                "WHERE ModifierId = ? AND Name = 'Amount'",
+                (modifier_id,),
+            ).fetchone()
+            if row is None:
+                errors.append(f"missing Deity curve amount: {modifier_id}")
+                continue
+            actual_stage_adjustments[yield_name] = int(row[0])
+        for yield_name in ("SCIENCE", "CULTURE", "FAITH"):
+            actual = actual_stage_adjustments.get(yield_name)
+            if actual != science_adjustment:
+                errors.append(
+                    f"{stage} {yield_name} adjustment expected "
+                    f"{science_adjustment}, found {actual}"
+                )
+        for yield_name in ("PRODUCTION", "GOLD"):
+            actual = actual_stage_adjustments.get(yield_name)
+            if actual != production_adjustment:
+                errors.append(
+                    f"{stage} {yield_name} adjustment expected "
+                    f"{production_adjustment}, found {actual}"
+                )
+        actual_science_total += actual_stage_adjustments.get("SCIENCE", 0)
+        actual_production_total += actual_stage_adjustments.get("PRODUCTION", 0)
+        if (actual_science_total, actual_production_total) != expected_curve[stage]:
+            errors.append(
+                f"{stage} cumulative Deity curve expected {expected_curve[stage]}, "
+                f"found {(actual_science_total, actual_production_total)}"
+            )
 
     expected_arguments = {
-        ("ASAI_DEITY_OPENING_SCIENCE", "Amount"): "-22",
-        ("ASAI_DEITY_OPENING_PRODUCTION", "Amount"): "-60",
-        ("ASAI_DEITY_INFORMATION_SCIENCE", "Amount"): "8",
-        ("ASAI_DEITY_INFORMATION_PRODUCTION", "Amount"): "15",
-        ("ASAI_DEITY_OPENING_COMBAT", "Amount"): "-3",
+        ("ASAI_DEITY_OPENING_COMBAT", "Amount"): "-1",
         ("ASAI_DEITY_MODERN_COMBAT", "Amount"): "1",
+        ("ASAI_DEITY_OPENING_XP", "Amount"): "-10",
+        ("ASAI_DEITY_CLASSICAL_XP", "Amount"): "2",
+        ("ASAI_DEITY_MEDIEVAL_XP", "Amount"): "2",
+        ("ASAI_DEITY_RENAISSANCE_XP", "Amount"): "2",
+        ("ASAI_DEITY_INDUSTRIAL_XP", "Amount"): "2",
+        ("ASAI_DEITY_MODERN_XP", "Amount"): "2",
+        ("ASAI_DEITY_ATOMIC_XP", "Amount"): "0",
     }
     for key, expected in expected_arguments.items():
         row = connection.execute(
@@ -957,6 +1041,11 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(f"opening expansion end turn must be positive: {opening_end}")
     if opening_cities is not None and opening_cities < 2:
         errors.append(f"opening expansion city target is too small: {opening_cities}")
+    if opening_cities != 4:
+        errors.append(
+            "opening expansion city target differs from the competitive opening: "
+            f"{opening_cities}"
+        )
     expansion_cities = parameters.get("ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER")
     if expansion_cities is not None and expansion_cities <= 0:
         errors.append(
@@ -1757,6 +1846,10 @@ def main() -> int:
     print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
+    print(
+        "- Deity opening: 2 Settlers, 3 Warriors, 1 Builder; "
+        "+50% Production/Gold, +24% Science/Culture/Faith, +3 combat, +30% XP"
+    )
     print(
         "- adaptive strategies: 23 "
         "(including military readiness, military execution, and scale recovery)"
