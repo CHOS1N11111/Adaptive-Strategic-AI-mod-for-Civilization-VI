@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.8.4"
-EXPECTED_MODINFO_VERSION = "17"
+EXPECTED_RELEASE = "0.8.5"
+EXPECTED_MODINFO_VERSION = "18"
 
 
 def default_database() -> Path:
@@ -279,15 +279,21 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
             errors.append(f"single-focus recovery fragment is missing: {fragment}")
     support_fragments = (
         "local function GetSecondWeakestCorePillarScore(state)",
+        "local function GetWeakestCorePillarScore(state)",
         "local function GetDesiredSevereCatchup(state)",
         "ASAI_RELATIVE_SEVERE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_EXIT_X100",
         "ASAI_RELATIVE_SEVERE_CORE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
+        "ASAI_RELATIVE_SEVERE_WEAKEST_ENTER_X100",
+        "ASAI_RELATIVE_SEVERE_WEAKEST_EXIT_X100",
         "or secondCore <= coreEnter",
         "or secondCore < coreExit",
+        "or weakestCore <= weakestEnter",
+        "or weakestCore < weakestExit",
         "function ASAI_IsRelativeSevereCatchup(playerID, threshold)",
         "second_core=%.3f",
+        "weakest_core=%.3f",
         "support=%s",
     )
     for fragment in support_fragments:
@@ -297,9 +303,9 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY",
         'SEVERE_RESULT_YIELDS_ON_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_ON"',
         'SEVERE_RESULT_YIELDS_OFF_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_OFF"',
-        "SEVERE_RESULT_PRODUCTION_PERCENT = 20",
-        "SEVERE_RESULT_SCIENCE_PERCENT = 15",
-        "SEVERE_RESULT_CULTURE_PERCENT = 15",
+        "SEVERE_RESULT_PRODUCTION_PERCENT = 40",
+        "SEVERE_RESULT_SCIENCE_PERCENT = 30",
+        "SEVERE_RESULT_CULTURE_PERCENT = 30",
         "SevereResultYieldsActive = 0",
         "local function SyncSevereResultYields(playerID, player, state, turn)",
         "ASAI_SEVERE_RESULT_YIELDS_ENABLED",
@@ -334,9 +340,17 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "state.MilitaryReadinessCooldownUntil",
         "MILITARY_READINESS_PROPERTY",
         "function ASAI_IsMilitaryReadiness(playerID, threshold)",
+        "local function GetMilitaryQueueTarget(snapshot)",
+        "ASAI_MILITARY_QUEUE_TARGET_X100",
+        "ASAI_WAR_QUEUE_TARGET_X100",
+        "local function GetMilitaryExecutionStatus(playerID)",
+        "economic.Queue.Combat < target",
+        "function ASAI_IsMilitaryExecutionRecovery(playerID, threshold)",
         "ASAI_READINESS turn=%d standard_turn=%.1f",
         'militaryDensityGap and "force_density" or "sustained_gap"',
         "military_readiness=%d",
+        "queue_target=%d",
+        "military_execution=%d",
     )
     for fragment in military_readiness_fragments:
         if fragment not in source:
@@ -426,7 +440,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.8.4")
+        errors.append("diagnostic production must not enter the relative score in 0.8.5")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -536,8 +550,8 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         )
 
     expected_result_amounts = {
-        "ASAI_SEVERE_RESULT_YIELDS_ON": "20, 15, 15",
-        "ASAI_SEVERE_RESULT_YIELDS_OFF": "-20, -15, -15",
+        "ASAI_SEVERE_RESULT_YIELDS_ON": "40, 30, 30",
+        "ASAI_SEVERE_RESULT_YIELDS_OFF": "-40, -30, -30",
     }
     yield_types = "YIELD_PRODUCTION, YIELD_SCIENCE, YIELD_CULTURE"
     parsed_result_amounts: dict[str, list[int]] = {}
@@ -774,6 +788,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_SEVERE_EXIT_X100",
         "ASAI_RELATIVE_SEVERE_CORE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
+        "ASAI_RELATIVE_SEVERE_WEAKEST_ENTER_X100",
+        "ASAI_RELATIVE_SEVERE_WEAKEST_EXIT_X100",
         "ASAI_SCALE_RECOVERY_START_STANDARD",
         "ASAI_SCALE_RECOVERY_ENTER_X100",
         "ASAI_SCALE_RECOVERY_EXIT_X100",
@@ -802,6 +818,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_MILITARY_DENSITY_START_STANDARD",
         "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_ENTER_X100",
         "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
+        "ASAI_MILITARY_QUEUE_TARGET_X100",
+        "ASAI_WAR_QUEUE_TARGET_X100",
         "ASAI_RELATIVE_SCIENCE_ENTER_X100",
         "ASAI_RELATIVE_SCIENCE_EXIT_X100",
         "ASAI_RELATIVE_CULTURE_ENTER_X100",
@@ -958,6 +976,11 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         )
     if trade_cities is not None and trade_cities <= 0:
         errors.append(f"trade cities per capacity must be positive: {trade_cities}")
+    if trade_cities != 2:
+        errors.append(
+            "trade-capacity target differs from the turn 101-115 review: "
+            f"{trade_cities} cities per route"
+        )
     for name in (
         "ASAI_WAR_FRONT_CITY_DISTANCE",
         "ASAI_WAR_RECENT_COMBAT_STANDARD",
@@ -1019,6 +1042,42 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             "relative severe core-collapse thresholds differ from the replayed "
             f"0.5.2 profile: {(severe_core_enter, severe_core_exit)}"
         )
+
+    severe_weakest_enter = parameters.get(
+        "ASAI_RELATIVE_SEVERE_WEAKEST_ENTER_X100"
+    )
+    severe_weakest_exit = parameters.get(
+        "ASAI_RELATIVE_SEVERE_WEAKEST_EXIT_X100"
+    )
+    if (
+        severe_weakest_enter is not None
+        and severe_weakest_exit is not None
+        and not 0 < severe_weakest_enter < severe_weakest_exit < 100
+    ):
+        errors.append(
+            "relative severe weakest-core thresholds are invalid: "
+            f"{(severe_weakest_enter, severe_weakest_exit)}"
+        )
+    if (severe_weakest_enter, severe_weakest_exit) != (70, 80):
+        errors.append(
+            "relative severe weakest-core thresholds differ from the turn "
+            "101-115 replay: "
+            f"{(severe_weakest_enter, severe_weakest_exit)}"
+        )
+
+    military_queue_target = parameters.get("ASAI_MILITARY_QUEUE_TARGET_X100")
+    war_queue_target = parameters.get("ASAI_WAR_QUEUE_TARGET_X100")
+    if None not in (military_queue_target, war_queue_target):
+        if not 0 < military_queue_target < war_queue_target <= 100:
+            errors.append(
+                "military queue targets are not ordered safely: "
+                f"{(military_queue_target, war_queue_target)}"
+            )
+        if (military_queue_target, war_queue_target) != (25, 45):
+            errors.append(
+                "military queue targets differ from the turn 101-115 replay: "
+                f"{(military_queue_target, war_queue_target)}"
+            )
 
     for pillar in ("SCIENCE", "CULTURE", "EMPIRE"):
         enter = parameters.get(f"ASAI_RELATIVE_{pillar}_ENTER_X100")
@@ -1295,11 +1354,30 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): 30,
         ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -30,
         ("ASAI_MilitaryReadinessPseudoYields", "PSEUDOYIELD_WONDER"): -45,
-        ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_RANGED"): 45,
+        ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_RANGED"): 55,
+        ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_SIEGE"): 35,
         ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_ANTI_CAVALRY"): 35,
+        ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_AIR_FIGHTER"): 30,
+        ("ASAI_MilitaryReadinessUnitBuilds", "PROMOTION_CLASS_AIR_BOMBER"): 35,
         ("ASAI_MilitaryReadinessYields", "YIELD_PRODUCTION"): 18,
         ("ASAI_MilitaryReadinessDistricts", "DISTRICT_ENCAMPMENT"): 30,
-        ("ASAI_MilitaryReadinessBuildings", "BUILDING_WALLS"): 60,
+        ("ASAI_MilitaryReadinessBuildings", "BUILDING_WALLS"): 35,
+        ("ASAI_MilitaryExecutionPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 70,
+        ("ASAI_MilitaryExecutionPseudoYields", "PSEUDOYIELD_UNIT_AIR_COMBAT"): 55,
+        ("ASAI_MilitaryExecutionPseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): 55,
+        ("ASAI_MilitaryExecutionPseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): 45,
+        ("ASAI_MilitaryExecutionPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -40,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_MELEE"): 35,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_RANGED"): 85,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_SIEGE"): 60,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_ANTI_CAVALRY"): 45,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_LIGHT_CAVALRY"): 25,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_HEAVY_CAVALRY"): 25,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_AIR_FIGHTER"): 60,
+        ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_AIR_BOMBER"): 70,
+        ("ASAI_MilitaryExecutionYields", "YIELD_PRODUCTION"): 25,
+        ("ASAI_MilitaryExecutionYields", "YIELD_GOLD"): 12,
+        ("ASAI_LateDistricts", "DISTRICT_AERODROME"): 50,
         ("ASAI_WarPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 60,
         ("ASAI_WarPseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): 30,
         ("ASAI_WarPseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): 55,
@@ -1335,7 +1413,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         )
 
     for list_type, expected in (
-        ("ASAI_MilitaryReadinessBuildings", 60),
+        ("ASAI_MilitaryReadinessBuildings", 35),
         ("ASAI_WarBuildings", 90),
     ):
         missing_defenses = [
@@ -1657,8 +1735,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 22:
-                    errors.append(f"expected 22 adaptive strategies, found {strategy_count}")
+                if strategy_count != 23:
+                    errors.append(f"expected 23 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -1679,7 +1757,10 @@ def main() -> int:
     print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
-    print("- adaptive strategies: 22 (including military readiness and scale recovery)")
+    print(
+        "- adaptive strategies: 23 "
+        "(including military readiness, military execution, and scale recovery)"
+    )
     print("- game cache was not modified")
     return 0
 

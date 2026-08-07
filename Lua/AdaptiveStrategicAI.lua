@@ -74,9 +74,9 @@ local RELATIVE_SEVERE_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_SEVERE_CHANGED_TURN
 local SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY = "ASAI_SEVERE_RESULT_YIELDS_ACTIVE";
 local SEVERE_RESULT_YIELDS_ON_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_ON";
 local SEVERE_RESULT_YIELDS_OFF_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_OFF";
-local SEVERE_RESULT_PRODUCTION_PERCENT = 20;
-local SEVERE_RESULT_SCIENCE_PERCENT = 15;
-local SEVERE_RESULT_CULTURE_PERCENT = 15;
+local SEVERE_RESULT_PRODUCTION_PERCENT = 40;
+local SEVERE_RESULT_SCIENCE_PERCENT = 30;
+local SEVERE_RESULT_CULTURE_PERCENT = 30;
 local MILITARY_READINESS_PROPERTY = "ASAI_MILITARY_READINESS";
 local MILITARY_READINESS_CANDIDATE_PROPERTY = "ASAI_MILITARY_READINESS_CANDIDATE";
 local MILITARY_READINESS_STREAK_PROPERTY = "ASAI_MILITARY_READINESS_STREAK";
@@ -1731,6 +1731,14 @@ local function GetSecondWeakestCorePillarScore(state)
         - math.max(science, culture, empire);
 end
 
+local function GetWeakestCorePillarScore(state)
+    return math.min(
+        state.Scores.Science,
+        state.Scores.Culture,
+        state.Scores.Empire
+    );
+end
+
 local function GetDesiredSevereCatchup(state)
     local enter = GetNumberParameter("ASAI_RELATIVE_SEVERE_ENTER_X100", 80) / 100;
     local exit = GetNumberParameter("ASAI_RELATIVE_SEVERE_EXIT_X100", 88) / 100;
@@ -1742,11 +1750,24 @@ local function GetDesiredSevereCatchup(state)
         "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
         86
     ) / 100;
+    local weakestEnter = GetNumberParameter(
+        "ASAI_RELATIVE_SEVERE_WEAKEST_ENTER_X100",
+        70
+    ) / 100;
+    local weakestExit = GetNumberParameter(
+        "ASAI_RELATIVE_SEVERE_WEAKEST_EXIT_X100",
+        80
+    ) / 100;
     local secondCore = GetSecondWeakestCorePillarScore(state);
+    local weakestCore = GetWeakestCorePillarScore(state);
     if state.SevereCatchup == 1 then
-        return (state.Scores.Overall < exit or secondCore < coreExit) and 1 or 0;
+        return (state.Scores.Overall < exit
+            or secondCore < coreExit
+            or weakestCore < weakestExit) and 1 or 0;
     end
-    return (state.Scores.Overall <= enter or secondCore <= coreEnter) and 1 or 0;
+    return (state.Scores.Overall <= enter
+        or secondCore <= coreEnter
+        or weakestCore <= weakestEnter) and 1 or 0;
 end
 
 local function GetDesiredScaleRecovery(state)
@@ -1796,7 +1817,7 @@ local function SyncSevereResultYields(playerID, player, state, turn)
     );
     local direction = desiredActive and 1 or -1;
     print(string.format(
-        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d active=%d action=%s production=%d science=%d culture=%d relative=%.3f second_core=%.3f",
+        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d active=%d action=%s production=%d science=%d culture=%d relative=%.3f second_core=%.3f weakest_core=%.3f",
         turn,
         GetStandardEquivalentTurn(turn),
         playerID,
@@ -1806,7 +1827,8 @@ local function SyncSevereResultYields(playerID, player, state, turn)
         direction * SEVERE_RESULT_SCIENCE_PERCENT,
         direction * SEVERE_RESULT_CULTURE_PERCENT,
         state.Scores.Overall,
-        GetSecondWeakestCorePillarScore(state)
+        GetSecondWeakestCorePillarScore(state),
+        GetWeakestCorePillarScore(state)
     ));
 end
 
@@ -2428,6 +2450,43 @@ function ASAI_IsMilitaryReadiness(playerID, threshold)
 end
 GameEvents.ASAI_IsMilitaryReadiness.Add(ASAI_IsMilitaryReadiness);
 
+local function GetMilitaryQueueTarget(snapshot)
+    local targetPercent = snapshot.ActiveMajorWars > 0
+        and GetNumberParameter("ASAI_WAR_QUEUE_TARGET_X100", 45)
+        or GetNumberParameter("ASAI_MILITARY_QUEUE_TARGET_X100", 25);
+    return snapshot.Cities > 0
+        and math.max(1, math.ceil(snapshot.Cities * targetPercent / 100))
+        or 0;
+end
+
+local function GetMilitaryExecutionStatus(playerID)
+    if not IsMajorAI(playerID) then
+        return false, 0;
+    end
+    local state = GetRelativeState(playerID);
+    local snapshot = GetSnapshot(playerID);
+    local target = GetMilitaryQueueTarget(snapshot);
+    if state.MilitaryReadiness ~= 1 or target <= 0 then
+        return false, target;
+    end
+    local economic = GetEconomicSnapshot(playerID);
+    return economic.QueueOk == 1 and economic.Queue.Combat < target, target;
+end
+
+local function IsMilitaryExecutionRecovery(playerID, threshold)
+    local active = GetMilitaryExecutionStatus(playerID);
+    return active;
+end
+function ASAI_IsMilitaryExecutionRecovery(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsMilitaryExecutionRecovery",
+        IsMilitaryExecutionRecovery,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsMilitaryExecutionRecovery.Add(ASAI_IsMilitaryExecutionRecovery);
+
 local function IsScaleRecovery(playerID, threshold)
     return GetRelativeState(playerID).ScaleRecovery == 1;
 end
@@ -2673,6 +2732,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         scaleExpansion
     ) and 1 or 0;
     local secondCore = GetSecondWeakestCorePillarScore(relativeState);
+    local weakestCore = GetWeakestCorePillarScore(relativeState);
     local handoffReady = relativeState.FocusHandoffReady and 1 or 0;
     local focusAge = relativeState.FocusStartedTurn >= 0
         and GetStandardEquivalentTurn(snapshot.Turn - relativeState.FocusStartedTurn)
@@ -2681,7 +2741,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d scale_recovery=%d scale_expansion=%d result_yields=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f weakest_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d scale_recovery=%d scale_expansion=%d result_yields=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2720,6 +2780,7 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.RawScores.Overall,
         relativeState.Scores.Overall,
         secondCore,
+        weakestCore,
         relativeState.RawScores.Science,
         relativeState.Scores.Science,
         relativeState.RawScores.Culture,
@@ -2863,8 +2924,9 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
         and strength.CombatUnits / snapshot.Cities or 0;
     local defenseCoverage = defenseSupported == 1 and defenses.Cities > 0
         and defenses.DefendedCities / defenses.Cities or -1;
+    local militaryExecution, militaryQueueTarget = GetMilitaryExecutionStatus(playerID);
     print(string.format(
-        "ASAI_MILITARY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d strength=%d combat_units=%d land_units=%d ranged_units=%d siege_units=%d mobile_units=%d naval_units=%d air_units=%d units_per_city=%.2f planned_cities=%d units_per_planned_city=%.2f queue_combat=%d queue_land=%d queue_ranged=%d queue_siege=%d queue_mobile=%d queue_naval=%d queue_air=%d defended_cities=%d defense_coverage=%.3f defense_supported=%d military_raw=%.3f military_ratio=%.3f military_readiness=%d active_major_wars=%d",
+        "ASAI_MILITARY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d strength=%d combat_units=%d land_units=%d ranged_units=%d siege_units=%d mobile_units=%d naval_units=%d air_units=%d units_per_city=%.2f planned_cities=%d units_per_planned_city=%.2f queue_combat=%d queue_target=%d military_execution=%d queue_land=%d queue_ranged=%d queue_siege=%d queue_mobile=%d queue_naval=%d queue_air=%d defended_cities=%d defense_coverage=%.3f defense_supported=%d military_raw=%.3f military_ratio=%.3f military_readiness=%d active_major_wars=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2881,6 +2943,8 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
         relativeState.MilitaryPlannedCities,
         relativeState.MilitaryUnitsPerPlannedCity,
         economic.Queue.Combat,
+        militaryQueueTarget,
+        militaryExecution and 1 or 0,
         economic.Queue.Land,
         economic.Queue.Ranged,
         economic.Queue.Siege,
