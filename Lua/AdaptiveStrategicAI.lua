@@ -71,6 +71,12 @@ local RELATIVE_SEVERE_PROPERTY = "ASAI_RELATIVE_SEVERE_CATCHUP";
 local RELATIVE_SEVERE_CANDIDATE_PROPERTY = "ASAI_RELATIVE_SEVERE_CANDIDATE";
 local RELATIVE_SEVERE_STREAK_PROPERTY = "ASAI_RELATIVE_SEVERE_STREAK";
 local RELATIVE_SEVERE_CHANGED_TURN_PROPERTY = "ASAI_RELATIVE_SEVERE_CHANGED_TURN";
+local MILD_RESULT_YIELDS_ACTIVE_PROPERTY = "ASAI_MILD_RESULT_YIELDS_ACTIVE";
+local MILD_RESULT_YIELDS_ON_MODIFIER = "ASAI_MILD_RESULT_YIELDS_ON";
+local MILD_RESULT_YIELDS_OFF_MODIFIER = "ASAI_MILD_RESULT_YIELDS_OFF";
+local MILD_RESULT_PRODUCTION_PERCENT = 20;
+local MILD_RESULT_SCIENCE_PERCENT = 15;
+local MILD_RESULT_CULTURE_PERCENT = 15;
 local SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY = "ASAI_SEVERE_RESULT_YIELDS_ACTIVE";
 local SEVERE_RESULT_YIELDS_ON_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_ON";
 local SEVERE_RESULT_YIELDS_OFF_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_OFF";
@@ -1275,6 +1281,16 @@ local function GetSupportName(state)
     return "none";
 end
 
+local function GetResultTierName(state)
+    if state.SevereResultYieldsActive == 1 then
+        return "strong";
+    end
+    if state.MildResultYieldsActive == 1 then
+        return "mild";
+    end
+    return "none";
+end
+
 local function SyncRecoveryFlags(state)
     state.Recovery.Science = state.Focus == RELATIVE_FOCUS_SCIENCE;
     state.Recovery.Culture = state.Focus == RELATIVE_FOCUS_CULTURE;
@@ -1316,6 +1332,7 @@ local function GetNeutralRelativeState()
         SevereCandidate = 0,
         SevereStreak = 0,
         SevereChangedTurn = -100000,
+        MildResultYieldsActive = 0,
         SevereResultYieldsActive = 0,
         MilitaryReadiness = 0,
         MilitaryReadinessCandidate = 0,
@@ -1457,6 +1474,11 @@ local function ReadRelativeState(player)
         RELATIVE_SEVERE_CHANGED_TURN_PROPERTY,
         -100000
     );
+    state.MildResultYieldsActive = GetStoredNumber(
+        player,
+        MILD_RESULT_YIELDS_ACTIVE_PROPERTY,
+        0
+    ) == 1 and 1 or 0;
     state.SevereResultYieldsActive = GetStoredNumber(
         player,
         SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY,
@@ -1581,6 +1603,10 @@ local function StoreRelativeState(player, state)
     player:SetProperty(RELATIVE_SEVERE_STREAK_PROPERTY, state.SevereStreak);
     player:SetProperty(RELATIVE_SEVERE_CHANGED_TURN_PROPERTY, state.SevereChangedTurn);
     player:SetProperty(
+        MILD_RESULT_YIELDS_ACTIVE_PROPERTY,
+        state.MildResultYieldsActive
+    );
+    player:SetProperty(
         SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY,
         state.SevereResultYieldsActive
     );
@@ -1699,20 +1725,34 @@ local function GetDesiredBand(state, thresholds)
         state.Scores.Culture,
         state.Scores.Empire
     );
+    local weakestEnter = GetNumberParameter(
+        "ASAI_RELATIVE_CATCHUP_WEAKEST_ENTER_X100",
+        85
+    ) / 100;
+    local weakestExit = GetNumberParameter(
+        "ASAI_RELATIVE_CATCHUP_WEAKEST_EXIT_X100",
+        95
+    ) / 100;
     if state.Band == RELATIVE_CATCHUP then
-        if state.Scores.Overall >= thresholds.TrailingExit then
+        if state.Scores.Overall >= thresholds.TrailingExit
+            and weakestCorePillar >= weakestExit then
             return RELATIVE_MATCHED;
         end
         return RELATIVE_CATCHUP;
     end
     if state.Band == RELATIVE_CONSOLIDATE then
+        if state.Scores.Overall <= thresholds.TrailingEnter
+            or weakestCorePillar <= weakestEnter then
+            return RELATIVE_CATCHUP;
+        end
         if state.Scores.Overall <= thresholds.LeadingExit
             or weakestCorePillar < thresholds.LeadingPillarMinimum then
             return RELATIVE_MATCHED;
         end
         return RELATIVE_CONSOLIDATE;
     end
-    if state.Scores.Overall <= thresholds.TrailingEnter then
+    if state.Scores.Overall <= thresholds.TrailingEnter
+        or weakestCorePillar <= weakestEnter then
         return RELATIVE_CATCHUP;
     end
     if state.Scores.Overall >= thresholds.LeadingEnter
@@ -1739,7 +1779,7 @@ local function GetWeakestCorePillarScore(state)
     );
 end
 
-local function GetDesiredSevereCatchup(state)
+local function GetDesiredSevereCatchup(state, snapshot)
     local enter = GetNumberParameter("ASAI_RELATIVE_SEVERE_ENTER_X100", 80) / 100;
     local exit = GetNumberParameter("ASAI_RELATIVE_SEVERE_EXIT_X100", 88) / 100;
     local coreEnter = GetNumberParameter(
@@ -1760,14 +1800,23 @@ local function GetDesiredSevereCatchup(state)
     ) / 100;
     local secondCore = GetSecondWeakestCorePillarScore(state);
     local weakestCore = GetWeakestCorePillarScore(state);
+    local warMilitaryEnter = GetNumberParameter(
+        "ASAI_RELATIVE_WAR_EMERGENCY_MILITARY_X100",
+        60
+    ) / 100;
+    local warEmergency = snapshot ~= nil
+        and snapshot.ActiveMajorWars > 0
+        and state.RawScores.Military <= warMilitaryEnter;
     if state.SevereCatchup == 1 then
         return (state.Scores.Overall < exit
             or secondCore < coreExit
-            or weakestCore < weakestExit) and 1 or 0;
+            or weakestCore < weakestExit
+            or warEmergency) and 1 or 0;
     end
     return (state.Scores.Overall <= enter
         or secondCore <= coreEnter
-        or weakestCore <= weakestEnter) and 1 or 0;
+        or weakestCore <= weakestEnter
+        or warEmergency) and 1 or 0;
 end
 
 local function GetDesiredScaleRecovery(state)
@@ -1777,6 +1826,61 @@ local function GetDesiredScaleRecovery(state)
         return state.Scores.Empire < exit and 1 or 0;
     end
     return state.Scores.Empire <= enter and 1 or 0;
+end
+
+local function SyncMildResultYields(playerID, player, state, turn)
+    local enabled = GetNumberParameter(
+        "ASAI_MILD_RESULT_YIELDS_ENABLED",
+        1
+    ) == 1;
+    local desiredActive = enabled
+        and state.Band == RELATIVE_CATCHUP
+        and state.SevereCatchup ~= 1;
+    local currentlyActive = state.MildResultYieldsActive == 1;
+    if desiredActive == currentlyActive then
+        return;
+    end
+
+    local modifierID = desiredActive and MILD_RESULT_YIELDS_ON_MODIFIER
+        or MILD_RESULT_YIELDS_OFF_MODIFIER;
+    local success, attachError = pcall(
+        function() player:AttachModifierByID(modifierID); end
+    );
+    if not success then
+        local errorKey = "ASAI_MildResultYields_" .. tostring(playerID)
+            .. "_" .. modifierID;
+        if m_ConditionErrors[errorKey] == nil then
+            print(string.format(
+                "ASAI_ERROR condition=ASAI_MildResultYields player=%d modifier=%s fallback=retry error=%s",
+                playerID,
+                modifierID,
+                tostring(attachError)
+            ));
+            m_ConditionErrors[errorKey] = true;
+        end
+        return;
+    end
+
+    state.MildResultYieldsActive = desiredActive and 1 or 0;
+    player:SetProperty(
+        MILD_RESULT_YIELDS_ACTIVE_PROPERTY,
+        state.MildResultYieldsActive
+    );
+    local direction = desiredActive and 1 or -1;
+    print(string.format(
+        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d tier=mild active=%d action=%s production=%d science=%d culture=%d relative=%.3f second_core=%.3f weakest_core=%.3f",
+        turn,
+        GetStandardEquivalentTurn(turn),
+        playerID,
+        state.MildResultYieldsActive,
+        desiredActive and "activate" or "deactivate",
+        direction * MILD_RESULT_PRODUCTION_PERCENT,
+        direction * MILD_RESULT_SCIENCE_PERCENT,
+        direction * MILD_RESULT_CULTURE_PERCENT,
+        state.Scores.Overall,
+        GetSecondWeakestCorePillarScore(state),
+        GetWeakestCorePillarScore(state)
+    ));
 end
 
 local function SyncSevereResultYields(playerID, player, state, turn)
@@ -1817,7 +1921,7 @@ local function SyncSevereResultYields(playerID, player, state, turn)
     );
     local direction = desiredActive and 1 or -1;
     print(string.format(
-        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d active=%d action=%s production=%d science=%d culture=%d relative=%.3f second_core=%.3f weakest_core=%.3f",
+        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d tier=strong active=%d action=%s production=%d science=%d culture=%d relative=%.3f second_core=%.3f weakest_core=%.3f",
         turn,
         GetStandardEquivalentTurn(turn),
         playerID,
@@ -1830,6 +1934,21 @@ local function SyncSevereResultYields(playerID, player, state, turn)
         GetSecondWeakestCorePillarScore(state),
         GetWeakestCorePillarScore(state)
     ));
+end
+
+local function SyncResultYields(playerID, player, state, turn)
+    if state.SevereCatchup == 1 then
+        SyncMildResultYields(playerID, player, state, turn);
+        if state.MildResultYieldsActive == 0 then
+            SyncSevereResultYields(playerID, player, state, turn);
+        end
+        return;
+    end
+
+    SyncSevereResultYields(playerID, player, state, turn);
+    if state.SevereResultYieldsActive == 0 then
+        SyncMildResultYields(playerID, player, state, turn);
+    end
 end
 
 local function UpdateScaleExpansionAvailability(state, snapshot)
@@ -2136,7 +2255,7 @@ local function EvaluateRelativeState(playerID)
             end
         end
 
-        local desiredSevere = GetDesiredSevereCatchup(state);
+        local desiredSevere = GetDesiredSevereCatchup(state, empireSnapshot);
         local canChangeSevere = turn - state.SevereChangedTurn >= minimumDwell;
         local severeChanged = false;
         state.SevereCatchup,
@@ -2401,7 +2520,7 @@ local function EvaluateRelativeState(playerID)
         end
     end
 
-    SyncSevereResultYields(playerID, player, state, turn);
+    SyncResultYields(playerID, player, state, turn);
     StoreRelativeState(player, state);
     m_RelativeRuntime[playerID] = state;
     return state;
@@ -2740,8 +2859,10 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local combatAge = snapshot.LastMajorCombatTurn > -100000
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
+    local resultYieldsActive = (relativeState.MildResultYieldsActive == 1
+        or relativeState.SevereResultYieldsActive == 1) and 1 or 0;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f weakest_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d scale_recovery=%d scale_expansion=%d result_yields=%d pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f weakest_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d scale_recovery=%d scale_expansion=%d result_yields=%d mild_result_yields=%d severe_result_yields=%d result_tier=%s pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -2792,7 +2913,10 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.MilitaryReadiness,
         relativeState.ScaleRecovery,
         relativeState.ScaleExpansionAllowed,
+        resultYieldsActive,
+        relativeState.MildResultYieldsActive,
         relativeState.SevereResultYieldsActive,
+        GetResultTierName(relativeState),
         GetBandName(relativeState.Band),
         GetSupportName(relativeState),
         GetFocusName(relativeState.Focus),

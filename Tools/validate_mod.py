@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.8.6"
-EXPECTED_MODINFO_VERSION = "19"
+EXPECTED_RELEASE = "0.9.0"
+EXPECTED_MODINFO_VERSION = "20"
 
 
 def default_database() -> Path:
@@ -278,9 +278,13 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         if fragment not in source:
             errors.append(f"single-focus recovery fragment is missing: {fragment}")
     support_fragments = (
+        "ASAI_RELATIVE_CATCHUP_WEAKEST_ENTER_X100",
+        "ASAI_RELATIVE_CATCHUP_WEAKEST_EXIT_X100",
+        "weakestCorePillar >= weakestExit",
+        "or weakestCorePillar <= weakestEnter",
         "local function GetSecondWeakestCorePillarScore(state)",
         "local function GetWeakestCorePillarScore(state)",
-        "local function GetDesiredSevereCatchup(state)",
+        "local function GetDesiredSevereCatchup(state, snapshot)",
         "ASAI_RELATIVE_SEVERE_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_EXIT_X100",
         "ASAI_RELATIVE_SEVERE_CORE_ENTER_X100",
@@ -291,6 +295,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "or secondCore < coreExit",
         "or weakestCore <= weakestEnter",
         "or weakestCore < weakestExit",
+        "ASAI_RELATIVE_WAR_EMERGENCY_MILITARY_X100",
+        "snapshot.ActiveMajorWars > 0",
+        "and state.RawScores.Military <= warMilitaryEnter",
+        "GetDesiredSevereCatchup(state, empireSnapshot)",
         "function ASAI_IsRelativeSevereCatchup(playerID, threshold)",
         "second_core=%.3f",
         "weakest_core=%.3f",
@@ -300,23 +308,42 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         if fragment not in source:
             errors.append(f"bounded support fragment is missing: {fragment}")
     severe_result_fragments = (
+        "MILD_RESULT_YIELDS_ACTIVE_PROPERTY",
+        'MILD_RESULT_YIELDS_ON_MODIFIER = "ASAI_MILD_RESULT_YIELDS_ON"',
+        'MILD_RESULT_YIELDS_OFF_MODIFIER = "ASAI_MILD_RESULT_YIELDS_OFF"',
+        "MILD_RESULT_PRODUCTION_PERCENT = 20",
+        "MILD_RESULT_SCIENCE_PERCENT = 15",
+        "MILD_RESULT_CULTURE_PERCENT = 15",
         "SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY",
         'SEVERE_RESULT_YIELDS_ON_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_ON"',
         'SEVERE_RESULT_YIELDS_OFF_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_OFF"',
         "SEVERE_RESULT_PRODUCTION_PERCENT = 40",
         "SEVERE_RESULT_SCIENCE_PERCENT = 30",
         "SEVERE_RESULT_CULTURE_PERCENT = 30",
+        "MildResultYieldsActive = 0",
         "SevereResultYieldsActive = 0",
+        "local function SyncMildResultYields(playerID, player, state, turn)",
+        "ASAI_MILD_RESULT_YIELDS_ENABLED",
+        "and state.Band == RELATIVE_CATCHUP",
+        "and state.SevereCatchup ~= 1",
         "local function SyncSevereResultYields(playerID, player, state, turn)",
         "ASAI_SEVERE_RESULT_YIELDS_ENABLED",
         "enabled and state.SevereCatchup == 1",
         "player:AttachModifierByID(modifierID)",
+        "state.MildResultYieldsActive = desiredActive and 1 or 0",
         "state.SevereResultYieldsActive = desiredActive and 1 or 0",
+        "local function SyncResultYields(playerID, player, state, turn)",
+        "if state.MildResultYieldsActive == 0 then",
+        "if state.SevereResultYieldsActive == 0 then",
+        "SyncResultYields(playerID, player, state, turn)",
         "state.SevereResultYieldsActive\n    )",
         "player:SetProperty(\n        SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY",
         "SyncSevereResultYields(playerID, player, state, turn)",
         "ASAI_RESULT turn=%d standard_turn=%.1f",
         "result_yields=%d",
+        "mild_result_yields=%d",
+        "severe_result_yields=%d",
+        "result_tier=%s",
     )
     for fragment in severe_result_fragments:
         if fragment not in source:
@@ -440,7 +467,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.8.6")
+        errors.append("diagnostic production must not enter the relative score in 0.9.0")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -550,22 +577,22 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
     yield_adjustments = {
         "OPENING": (-8, -30),
         "CLASSICAL": (3, 5),
-        "MEDIEVAL": (5, 7),
-        "RENAISSANCE": (6, 6),
-        "INDUSTRIAL": (6, 6),
-        "MODERN": (6, 6),
-        "ATOMIC": (5, 5),
-        "INFORMATION": (5, 5),
+        "MEDIEVAL": (5, 10),
+        "RENAISSANCE": (6, 10),
+        "INDUSTRIAL": (6, 10),
+        "MODERN": (6, 10),
+        "ATOMIC": (5, 10),
+        "INFORMATION": (5, 10),
     }
     expected_curve = {
         "OPENING": (24, 50),
         "CLASSICAL": (27, 55),
-        "MEDIEVAL": (32, 62),
-        "RENAISSANCE": (38, 68),
-        "INDUSTRIAL": (44, 74),
-        "MODERN": (50, 80),
-        "ATOMIC": (55, 85),
-        "INFORMATION": (60, 90),
+        "MEDIEVAL": (32, 65),
+        "RENAISSANCE": (38, 75),
+        "INDUSTRIAL": (44, 85),
+        "MODERN": (50, 95),
+        "ATOMIC": (55, 105),
+        "INFORMATION": (60, 115),
     }
     actual_science_total = 32
     actual_production_total = 80
@@ -606,7 +633,7 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
 
     expected_arguments = {
         ("ASAI_DEITY_OPENING_COMBAT", "Amount"): "-1",
-        ("ASAI_DEITY_MODERN_COMBAT", "Amount"): "1",
+        ("ASAI_DEITY_MEDIEVAL_COMBAT", "Amount"): "1",
         ("ASAI_DEITY_OPENING_XP", "Amount"): "-10",
         ("ASAI_DEITY_CLASSICAL_XP", "Amount"): "2",
         ("ASAI_DEITY_MEDIEVAL_XP", "Amount"): "2",
@@ -623,17 +650,28 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         if actual != expected:
             errors.append(f"modifier argument {key} expected {expected}, found {actual}")
 
-    result_enabled = connection.execute(
-        "SELECT Value FROM GlobalParameters "
-        "WHERE Name = 'ASAI_SEVERE_RESULT_YIELDS_ENABLED'"
-    ).fetchone()
-    if result_enabled is None or int(result_enabled[0]) != 1:
-        errors.append(
-            "severe result-yield layer must default enabled, found "
-            f"{None if result_enabled is None else result_enabled[0]}"
-        )
+    legacy_combat = connection.execute(
+        "SELECT COUNT(*) FROM Modifiers "
+        "WHERE ModifierId = 'ASAI_DEITY_MODERN_COMBAT'"
+    ).fetchone()[0]
+    if legacy_combat:
+        errors.append("legacy Modern combat modifier was not removed")
+
+    for result_tier in ("MILD", "SEVERE"):
+        parameter = f"ASAI_{result_tier}_RESULT_YIELDS_ENABLED"
+        result_enabled = connection.execute(
+            "SELECT Value FROM GlobalParameters WHERE Name = ?",
+            (parameter,),
+        ).fetchone()
+        if result_enabled is None or int(result_enabled[0]) != 1:
+            errors.append(
+                f"{result_tier.lower()} result-yield layer must default enabled, "
+                f"found {None if result_enabled is None else result_enabled[0]}"
+            )
 
     expected_result_amounts = {
+        "ASAI_MILD_RESULT_YIELDS_ON": "20, 15, 15",
+        "ASAI_MILD_RESULT_YIELDS_OFF": "-20, -15, -15",
         "ASAI_SEVERE_RESULT_YIELDS_ON": "40, 30, 30",
         "ASAI_SEVERE_RESULT_YIELDS_OFF": "-40, -30, -30",
     }
@@ -680,24 +718,30 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         except ValueError:
             errors.append(f"result modifier {modifier_id} has non-integer amounts")
 
-    positive = parsed_result_amounts.get("ASAI_SEVERE_RESULT_YIELDS_ON")
-    negative = parsed_result_amounts.get("ASAI_SEVERE_RESULT_YIELDS_OFF")
-    if positive is not None and negative is not None:
-        if len(positive) != 3 or len(negative) != 3:
-            errors.append("severe result-yield ledger must contain exactly three yields")
-        elif any(on + off != 0 for on, off in zip(positive, negative)):
-            errors.append(
-                f"severe result-yield ledger does not cancel exactly: {positive}/{negative}"
-            )
+    for result_tier in ("MILD", "SEVERE"):
+        positive = parsed_result_amounts.get(f"ASAI_{result_tier}_RESULT_YIELDS_ON")
+        negative = parsed_result_amounts.get(f"ASAI_{result_tier}_RESULT_YIELDS_OFF")
+        if positive is not None and negative is not None:
+            if len(positive) != 3 or len(negative) != 3:
+                errors.append(
+                    f"{result_tier.lower()} result-yield ledger must contain "
+                    "exactly three yields"
+                )
+            elif any(on + off != 0 for on, off in zip(positive, negative)):
+                errors.append(
+                    f"{result_tier.lower()} result-yield ledger does not cancel "
+                    f"exactly: {positive}/{negative}"
+                )
 
     statically_attached_results = connection.execute(
         "SELECT COUNT(*) FROM TraitModifiers "
         "WHERE ModifierId IN "
-        "('ASAI_SEVERE_RESULT_YIELDS_ON', 'ASAI_SEVERE_RESULT_YIELDS_OFF')"
+        "('ASAI_MILD_RESULT_YIELDS_ON', 'ASAI_MILD_RESULT_YIELDS_OFF', "
+        "'ASAI_SEVERE_RESULT_YIELDS_ON', 'ASAI_SEVERE_RESULT_YIELDS_OFF')"
     ).fetchone()[0]
     if statically_attached_results:
         errors.append(
-            "severe result modifiers must only be attached by the runtime state machine"
+            "result modifiers must only be attached by the runtime state machine"
         )
 
     unattached = connection.execute(
