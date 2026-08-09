@@ -3,6 +3,7 @@ print("Adaptive Strategic AI " .. tostring(GlobalParameters.ASAI_VERSION) .. " l
 local m_Snapshots = {};
 local m_StrengthSnapshots = {};
 local m_HumanReference = { Turn = -1, Value = nil };
+local m_WorldReference = { Turn = -1, Value = nil };
 local m_EconomicSnapshots = {};
 local m_HumanEconomicReference = { Turn = -1, Value = nil };
 local m_RelativeRuntime = {};
@@ -97,6 +98,48 @@ local SCALE_RECOVERY_STREAK_PROPERTY = "ASAI_SCALE_RECOVERY_STREAK";
 local SCALE_RECOVERY_CHANGED_TURN_PROPERTY = "ASAI_SCALE_RECOVERY_CHANGED_TURN";
 local SCALE_RECOVERY_COOLDOWN_PROPERTY = "ASAI_SCALE_RECOVERY_COOLDOWN_UNTIL";
 local SCALE_EXPANSION_ALLOWED_PROPERTY = "ASAI_SCALE_EXPANSION_ALLOWED";
+
+-- Keep coordinator state on one table to stay below Lua's 200-local chunk limit.
+local Strategic = {
+    DEVELOP = 1,
+    RECOVER = 2,
+    EXPAND = 3,
+    DEFEND = 4,
+    PRESSURE = 5,
+    WAR = 6,
+    PROPERTY = "ASAI_STRATEGIC_PLAN",
+    CANDIDATE_PROPERTY = "ASAI_STRATEGIC_PLAN_CANDIDATE",
+    STREAK_PROPERTY = "ASAI_STRATEGIC_PLAN_STREAK",
+    CHANGED_TURN_PROPERTY = "ASAI_STRATEGIC_PLAN_CHANGED_TURN",
+    STARTED_TURN_PROPERTY = "ASAI_STRATEGIC_PLAN_STARTED_TURN",
+    REVIEW_TURN_PROPERTY = "ASAI_STRATEGIC_PLAN_REVIEW_TURN",
+    BASELINE_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_X1000",
+    BASELINE_CITIES_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_CITIES",
+    BASELINE_COMBAT_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_COMBAT",
+    GAIN_PROPERTY = "ASAI_STRATEGIC_PLAN_GAIN_X1000",
+    RESULT_PROPERTY = "ASAI_STRATEGIC_PLAN_RESULT",
+    EXECUTION_PROPERTY = "ASAI_STRATEGIC_PLAN_EXECUTION",
+    STALL_COUNT_PROPERTY = "ASAI_STRATEGIC_PLAN_STALL_COUNT",
+    SCORE_PROPERTY = "ASAI_STRATEGIC_PLAN_SCORE_X100",
+    SUPPORT_PROPERTY = "ASAI_STRATEGIC_SUPPORT"
+};
+Strategic.COOLDOWN_PROPERTIES = {
+    [Strategic.DEVELOP] = "ASAI_PLAN_DEVELOP_COOLDOWN_UNTIL",
+    [Strategic.RECOVER] = "ASAI_PLAN_RECOVER_COOLDOWN_UNTIL",
+    [Strategic.EXPAND] = "ASAI_PLAN_EXPAND_COOLDOWN_UNTIL",
+    [Strategic.DEFEND] = "ASAI_PLAN_DEFEND_COOLDOWN_UNTIL",
+    [Strategic.PRESSURE] = "ASAI_PLAN_PRESSURE_COOLDOWN_UNTIL",
+    [Strategic.WAR] = "ASAI_PLAN_WAR_COOLDOWN_UNTIL"
+};
+local RELATIVE_TREND_PROPERTIES = {
+    Overall = "ASAI_RELATIVE_TREND_X1000",
+    Science = "ASAI_RELATIVE_SCIENCE_TREND_X1000",
+    Culture = "ASAI_RELATIVE_CULTURE_TREND_X1000",
+    Empire = "ASAI_RELATIVE_EMPIRE_TREND_X1000",
+    Military = "ASAI_RELATIVE_MILITARY_TREND_X1000"
+};
+
+local GetRelativeState;
 
 local RELATIVE_COMPONENTS = {
     { Key = "Techs", Parameter = "ASAI_RELATIVE_WEIGHT_TECHS", Weight = 20 },
@@ -884,7 +927,17 @@ local function IsOpeningExpansion(playerID, threshold)
         2,
         GetNumberParameter("ASAI_OPENING_EXPANSION_CITY_TARGET", 4)
     );
+    local coordinatorStart = ScaleStandardTurns(
+        GetNumberParameter("ASAI_RELATIVE_START_TURN_STANDARD", 35)
+    );
+    if snapshot.Turn >= coordinatorStart then
+        local state = GetRelativeState(playerID);
+        if state.StrategicPlan ~= Strategic.EXPAND then
+            return false;
+        end
+    end
     return snapshot.Turn < endTurn
+        and snapshot.ActiveMajorWars <= 0
         and snapshot.Cities > 0
         and snapshot.Cities < cityTarget;
 end
@@ -1016,7 +1069,13 @@ local function IsWarMobilization(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
-    return GetSnapshot(playerID).ActiveMajorWars > 0;
+    local snapshot = GetSnapshot(playerID);
+    local coordinatorStart = ScaleStandardTurns(
+        GetNumberParameter("ASAI_RELATIVE_START_TURN_STANDARD", 35)
+    );
+    return snapshot.ActiveMajorWars > 0
+        and (snapshot.Turn < coordinatorStart
+            or GetRelativeState(playerID).StrategicPlan == Strategic.WAR);
 end
 function ASAI_IsWarMobilization(playerID, threshold)
     return RunStrategyCondition(
@@ -1120,6 +1179,70 @@ local function GetStrengthSnapshot(playerID)
     };
     m_StrengthSnapshots[playerID] = snapshot;
     return snapshot;
+end
+
+function Strategic.GetPercentile(values, percentile)
+    if #values == 0 then
+        return 0;
+    end
+    table.sort(values);
+    local index = math.max(
+        1,
+        math.min(#values, math.ceil(#values * percentile))
+    );
+    return values[index];
+end
+
+function Strategic.GetWorldReference()
+    local turn = Game.GetCurrentGameTurn();
+    if m_WorldReference.Turn == turn then
+        return m_WorldReference.Value;
+    end
+
+    local samples = {};
+    for _, component in ipairs(RELATIVE_COMPONENTS) do
+        samples[component.Key] = {};
+    end
+    local eras = {};
+    for _, playerID in ipairs(PlayerManager.GetAliveMajorIDs()) do
+        local player = Players[playerID];
+        if player ~= nil then
+            local strength = GetStrengthSnapshot(playerID);
+            table.insert(eras, player:GetEra());
+            for _, component in ipairs(RELATIVE_COMPONENTS) do
+                table.insert(samples[component.Key], strength[component.Key]);
+            end
+        end
+    end
+
+    if #eras == 0 then
+        m_WorldReference = { Turn = turn, Value = nil };
+        return nil;
+    end
+
+    local reference = { Median = {}, Upper = {} };
+    for _, component in ipairs(RELATIVE_COMPONENTS) do
+        local key = component.Key;
+        reference.Median[key] = Strategic.GetPercentile(samples[key], 0.50);
+        reference.Upper[key] = Strategic.GetPercentile(samples[key], 0.75);
+    end
+    reference.Median.Era = Strategic.GetPercentile(eras, 0.50);
+    reference.Upper.Era = Strategic.GetPercentile(eras, 0.75);
+    m_WorldReference = { Turn = turn, Value = reference };
+    return reference;
+end
+
+function Strategic.GetCompetitiveReference(humanStrength, worldStrength)
+    local reference = { Era = humanStrength.Era };
+    for _, component in ipairs(RELATIVE_COMPONENTS) do
+        local key = component.Key;
+        reference[key] = math.max(
+            humanStrength[key] or 0,
+            worldStrength[key] or 0
+        );
+    end
+    reference.Era = math.max(humanStrength.Era or 0, worldStrength.Era or 0);
+    return reference;
 end
 
 local function GetHumanReference()
@@ -1284,6 +1407,29 @@ local function GetSupportName(state)
     return "none";
 end
 
+function Strategic.GetPlanName(plan)
+    if plan == Strategic.RECOVER then
+        return "recover";
+    end
+    if plan == Strategic.EXPAND then
+        return "expand";
+    end
+    if plan == Strategic.DEFEND then
+        return "defend";
+    end
+    if plan == Strategic.PRESSURE then
+        return "pressure";
+    end
+    if plan == Strategic.WAR then
+        return "war";
+    end
+    return "develop";
+end
+
+function Strategic.GetSupportName(support)
+    return GetFocusName(support);
+end
+
 local function GetResultTierName(state)
     if state.SevereResultYieldsActive == 1 then
         return "strong";
@@ -1295,9 +1441,9 @@ local function GetResultTierName(state)
 end
 
 local function SyncRecoveryFlags(state)
-    state.Recovery.Science = state.Focus == RELATIVE_FOCUS_SCIENCE;
-    state.Recovery.Culture = state.Focus == RELATIVE_FOCUS_CULTURE;
-    state.Recovery.Empire = state.Focus == RELATIVE_FOCUS_EMPIRE;
+    state.Recovery.Science = state.StrategicSupport == RELATIVE_FOCUS_SCIENCE;
+    state.Recovery.Culture = state.StrategicSupport == RELATIVE_FOCUS_CULTURE;
+    state.Recovery.Empire = state.StrategicSupport == RELATIVE_FOCUS_EMPIRE;
 end
 
 local function GetNeutralRelativeState()
@@ -1305,6 +1451,9 @@ local function GetNeutralRelativeState()
         Band = RELATIVE_MATCHED,
         Scores = { Overall = 1, Science = 1, Culture = 1, Empire = 1, Military = 1 },
         RawScores = { Overall = 1, Science = 1, Culture = 1, Empire = 1, Military = 1 },
+        CompetitiveScores = { Overall = 1, Science = 1, Culture = 1, Empire = 1, Military = 1 },
+        WorldUpperScores = { Overall = 1, Science = 1, Culture = 1, Empire = 1, Military = 1 },
+        Trends = { Overall = 0, Science = 0, Culture = 0, Empire = 0, Military = 0 },
         RawRatios = {},
         ControlledRatios = {},
         Focus = RELATIVE_FOCUS_NONE,
@@ -1351,6 +1500,30 @@ local function GetNeutralRelativeState()
         ScaleRecoveryChangedTurn = -100000,
         ScaleRecoveryCooldownUntil = -1,
         ScaleExpansionAllowed = 0,
+        StrategicPlan = Strategic.DEVELOP,
+        StrategicPlanCandidate = Strategic.DEVELOP,
+        StrategicPlanStreak = 0,
+        StrategicPlanChangedTurn = -100000,
+        StrategicPlanStartedTurn = -1,
+        StrategicPlanReviewTurn = -1,
+        StrategicPlanBaseline = 1,
+        StrategicPlanBaselineCities = 0,
+        StrategicPlanBaselineCombat = 0,
+        StrategicPlanGain = 0,
+        StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE,
+        StrategicPlanExecution = 0,
+        StrategicPlanStallCount = 0,
+        StrategicPlanScore = 0,
+        StrategicPlanScores = {},
+        StrategicPlanCooldownUntil = {
+            [Strategic.DEVELOP] = -1,
+            [Strategic.RECOVER] = -1,
+            [Strategic.EXPAND] = -1,
+            [Strategic.DEFEND] = -1,
+            [Strategic.PRESSURE] = -1,
+            [Strategic.WAR] = -1
+        },
+        StrategicSupport = RELATIVE_FOCUS_NONE,
         LastSampleTurn = -1,
         LastEvaluationTurn = -1,
         EvaluatedThisTurn = false,
@@ -1373,6 +1546,9 @@ local function ReadRelativeState(player)
             propertyName,
             math.floor(state.Scores[pillar] * 1000 + 0.5)
         ) / 1000;
+    end
+    for pillar, propertyName in pairs(RELATIVE_TREND_PROPERTIES) do
+        state.Trends[pillar] = GetStoredNumber(player, propertyName, 0) / 1000;
     end
     state.Focus = GetStoredNumber(player, RELATIVE_FOCUS_PROPERTY, RELATIVE_FOCUS_NONE);
     if state.Focus < RELATIVE_FOCUS_NONE or state.Focus > RELATIVE_FOCUS_EMPIRE then
@@ -1548,6 +1724,100 @@ local function ReadRelativeState(player)
         SCALE_EXPANSION_ALLOWED_PROPERTY,
         0
     ) == 1 and 1 or 0;
+    state.StrategicPlan = GetStoredNumber(
+        player,
+        Strategic.PROPERTY,
+        Strategic.DEVELOP
+    );
+    if state.StrategicPlan < Strategic.DEVELOP
+        or state.StrategicPlan > Strategic.WAR then
+        state.StrategicPlan = Strategic.DEVELOP;
+    end
+    state.StrategicPlanCandidate = GetStoredNumber(
+        player,
+        Strategic.CANDIDATE_PROPERTY,
+        state.StrategicPlan
+    );
+    state.StrategicPlanStreak = GetStoredNumber(
+        player,
+        Strategic.STREAK_PROPERTY,
+        0
+    );
+    state.StrategicPlanChangedTurn = GetStoredNumber(
+        player,
+        Strategic.CHANGED_TURN_PROPERTY,
+        -100000
+    );
+    state.StrategicPlanStartedTurn = GetStoredNumber(
+        player,
+        Strategic.STARTED_TURN_PROPERTY,
+        -1
+    );
+    state.StrategicPlanReviewTurn = GetStoredNumber(
+        player,
+        Strategic.REVIEW_TURN_PROPERTY,
+        state.StrategicPlanStartedTurn
+    );
+    state.StrategicPlanBaseline = GetStoredNumber(
+        player,
+        Strategic.BASELINE_PROPERTY,
+        1000
+    ) / 1000;
+    state.StrategicPlanBaselineCities = GetStoredNumber(
+        player,
+        Strategic.BASELINE_CITIES_PROPERTY,
+        0
+    );
+    state.StrategicPlanBaselineCombat = GetStoredNumber(
+        player,
+        Strategic.BASELINE_COMBAT_PROPERTY,
+        0
+    );
+    state.StrategicPlanGain = GetStoredNumber(
+        player,
+        Strategic.GAIN_PROPERTY,
+        0
+    ) / 1000;
+    state.StrategicPlanResult = GetStoredNumber(
+        player,
+        Strategic.RESULT_PROPERTY,
+        RELATIVE_FOCUS_RESULT_NONE
+    );
+    if state.StrategicPlanResult < RELATIVE_FOCUS_RESULT_NONE
+        or state.StrategicPlanResult > RELATIVE_FOCUS_RESULT_STALLED then
+        state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE;
+    end
+    state.StrategicPlanExecution = GetStoredNumber(
+        player,
+        Strategic.EXECUTION_PROPERTY,
+        0
+    );
+    state.StrategicPlanStallCount = GetStoredNumber(
+        player,
+        Strategic.STALL_COUNT_PROPERTY,
+        0
+    );
+    state.StrategicPlanScore = GetStoredNumber(
+        player,
+        Strategic.SCORE_PROPERTY,
+        0
+    ) / 100;
+    for plan, propertyName in pairs(Strategic.COOLDOWN_PROPERTIES) do
+        state.StrategicPlanCooldownUntil[plan] = GetStoredNumber(
+            player,
+            propertyName,
+            -1
+        );
+    end
+    state.StrategicSupport = GetStoredNumber(
+        player,
+        Strategic.SUPPORT_PROPERTY,
+        RELATIVE_FOCUS_NONE
+    );
+    if state.StrategicSupport < RELATIVE_FOCUS_NONE
+        or state.StrategicSupport > RELATIVE_FOCUS_EMPIRE then
+        state.StrategicSupport = RELATIVE_FOCUS_NONE;
+    end
     state.LastSampleTurn = GetStoredNumber(player, RELATIVE_SAMPLE_TURN_PROPERTY, -1);
     state.LastEvaluationTurn = GetStoredNumber(
         player,
@@ -1565,6 +1835,9 @@ local function StoreRelativeState(player, state)
     end
     for pillar, propertyName in pairs(RELATIVE_RAW_SCORE_PROPERTIES) do
         player:SetProperty(propertyName, math.floor(state.RawScores[pillar] * 1000 + 0.5));
+    end
+    for pillar, propertyName in pairs(RELATIVE_TREND_PROPERTIES) do
+        player:SetProperty(propertyName, math.floor(state.Trends[pillar] * 1000 + 0.5));
     end
     for pillar, propertyName in pairs(RELATIVE_RECOVERY_PROPERTIES) do
         player:SetProperty(propertyName, state.Recovery[pillar] and 1 or 0);
@@ -1655,6 +1928,57 @@ local function StoreRelativeState(player, state)
         SCALE_EXPANSION_ALLOWED_PROPERTY,
         state.ScaleExpansionAllowed
     );
+    player:SetProperty(Strategic.PROPERTY, state.StrategicPlan);
+    player:SetProperty(
+        Strategic.CANDIDATE_PROPERTY,
+        state.StrategicPlanCandidate
+    );
+    player:SetProperty(Strategic.STREAK_PROPERTY, state.StrategicPlanStreak);
+    player:SetProperty(
+        Strategic.CHANGED_TURN_PROPERTY,
+        state.StrategicPlanChangedTurn
+    );
+    player:SetProperty(
+        Strategic.STARTED_TURN_PROPERTY,
+        state.StrategicPlanStartedTurn
+    );
+    player:SetProperty(
+        Strategic.REVIEW_TURN_PROPERTY,
+        state.StrategicPlanReviewTurn
+    );
+    player:SetProperty(
+        Strategic.BASELINE_PROPERTY,
+        math.floor(state.StrategicPlanBaseline * 1000 + 0.5)
+    );
+    player:SetProperty(
+        Strategic.BASELINE_CITIES_PROPERTY,
+        state.StrategicPlanBaselineCities
+    );
+    player:SetProperty(
+        Strategic.BASELINE_COMBAT_PROPERTY,
+        state.StrategicPlanBaselineCombat
+    );
+    player:SetProperty(
+        Strategic.GAIN_PROPERTY,
+        math.floor(state.StrategicPlanGain * 1000 + 0.5)
+    );
+    player:SetProperty(Strategic.RESULT_PROPERTY, state.StrategicPlanResult);
+    player:SetProperty(
+        Strategic.EXECUTION_PROPERTY,
+        state.StrategicPlanExecution
+    );
+    player:SetProperty(
+        Strategic.STALL_COUNT_PROPERTY,
+        state.StrategicPlanStallCount
+    );
+    player:SetProperty(
+        Strategic.SCORE_PROPERTY,
+        math.floor(state.StrategicPlanScore * 100 + 0.5)
+    );
+    for plan, propertyName in pairs(Strategic.COOLDOWN_PROPERTIES) do
+        player:SetProperty(propertyName, state.StrategicPlanCooldownUntil[plan]);
+    end
+    player:SetProperty(Strategic.SUPPORT_PROPERTY, state.StrategicSupport);
     player:SetProperty(RELATIVE_SAMPLE_TURN_PROPERTY, state.LastSampleTurn);
     player:SetProperty(RELATIVE_EVALUATION_TURN_PROPERTY, state.LastEvaluationTurn);
 end
@@ -1832,10 +2156,14 @@ end
 local function GetDesiredScaleRecovery(state)
     local enter = GetNumberParameter("ASAI_SCALE_RECOVERY_ENTER_X100", 75) / 100;
     local exit = GetNumberParameter("ASAI_SCALE_RECOVERY_EXIT_X100", 88) / 100;
+    local empireScore = math.min(
+        state.Scores.Empire,
+        state.CompetitiveScores.Empire or state.Scores.Empire
+    );
     if state.ScaleRecovery == 1 then
-        return state.Scores.Empire < exit and 1 or 0;
+        return empireScore < exit and 1 or 0;
     end
-    return state.Scores.Empire <= enter and 1 or 0;
+    return empireScore <= enter and 1 or 0;
 end
 
 local function SyncMildResultYields(playerID, player, state, turn)
@@ -1968,7 +2296,8 @@ local function UpdateScaleExpansionAvailability(state, snapshot)
         "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
         225
     ) / 100;
-    state.ScaleExpansionAllowed = state.ScaleRecovery == 1
+    state.ScaleExpansionAllowed = state.StrategicPlan == Strategic.EXPAND
+        and state.ScaleRecovery == 1
         and snapshot.ActiveMajorWars <= 0
         and (state.MilitaryDominance == 1
             or state.MilitaryReadiness == 0
@@ -2017,14 +2346,37 @@ local function GetDesiredMilitaryReadiness(state, densityEnabled)
         "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
         225
     ) / 100;
+    local militaryScore = math.min(
+        state.Scores.Military,
+        state.CompetitiveScores.Military or state.Scores.Military
+    );
     if state.MilitaryReadiness == 1 then
-        return (state.Scores.Military < exit
+        return (militaryScore < exit
             or (densityEnabled and state.MilitaryUnitsPerPlannedCity < densityExit))
             and 1 or 0;
     end
-    return (state.Scores.Military <= enter
+    return (militaryScore <= enter
         or (densityEnabled and state.MilitaryUnitsPerPlannedCity <= densityEnter))
         and 1 or 0;
+end
+
+function Strategic.IsFocusCompatible(state, focus)
+    if focus == RELATIVE_FOCUS_NONE then
+        return false;
+    end
+    if (state.StrategicPlan == Strategic.WAR
+            or state.StrategicPlan == Strategic.DEFEND
+            or state.StrategicPlan == Strategic.EXPAND)
+        and focus == RELATIVE_FOCUS_EMPIRE then
+        return false;
+    end
+    return true;
+end
+
+function Strategic.GetRecoveryDecisionScore(state, key, raw)
+    local relativeScores = raw and state.RawScores or state.Scores;
+    local competitive = state.CompetitiveScores or relativeScores;
+    return math.min(relativeScores[key], competitive[key] or relativeScores[key]);
 end
 
 local function GetWorstEligibleFocus(state, recoveryThresholds, turn)
@@ -2036,9 +2388,10 @@ local function GetWorstEligibleFocus(state, recoveryThresholds, turn)
         RELATIVE_FOCUS_EMPIRE
     }) do
         local definition = recoveryThresholds[focus];
-        local score = state.Scores[definition.Key];
+        local score = Strategic.GetRecoveryDecisionScore(state, definition.Key, false);
         local cooldownUntil = state.FocusCooldownUntil[focus] or -1;
-        if turn >= cooldownUntil
+        if Strategic.IsFocusCompatible(state, focus)
+            and turn >= cooldownUntil
             and score <= definition.Enter
             and score < selectedScore then
             selected = focus;
@@ -2057,9 +2410,16 @@ local function GetDesiredFocus(state, recoveryThresholds, turn)
     if state.Focus == RELATIVE_FOCUS_NONE then
         return worstFocus;
     end
+    if not Strategic.IsFocusCompatible(state, state.Focus) then
+        return worstFocus;
+    end
 
     local currentDefinition = recoveryThresholds[state.Focus];
-    local currentScore = state.Scores[currentDefinition.Key];
+    local currentScore = Strategic.GetRecoveryDecisionScore(
+        state,
+        currentDefinition.Key,
+        false
+    );
     if currentScore >= currentDefinition.Exit then
         return worstFocus;
     end
@@ -2081,8 +2441,7 @@ local function GetFocusScore(state, focus, raw)
     if definition == nil then
         return 1;
     end
-    local scores = raw and state.RawScores or state.Scores;
-    return scores[definition.Key];
+    return Strategic.GetRecoveryDecisionScore(state, definition.Key, raw);
 end
 
 local function StartFocusReview(state, focus, turn)
@@ -2105,6 +2464,11 @@ end
 
 local function ReviewActiveFocus(playerID, state, turn)
     if state.Focus == RELATIVE_FOCUS_NONE then
+        return false;
+    end
+    if not Strategic.IsFocusCompatible(state, state.Focus) then
+        ResetFocusReviewBaseline(state, turn);
+        state.FocusExecution = 0;
         return false;
     end
     if state.FocusReviewTurn < 0 then
@@ -2170,7 +2534,14 @@ local function ReviewActiveFocus(playerID, state, turn)
     return retireFocus;
 end
 
-local function AdvanceConfirmedState(current, candidate, streak, desired, canChange)
+function Strategic.AdvanceConfirmedState(
+    current,
+    candidate,
+    streak,
+    desired,
+    canChange,
+    requiredSamples
+)
     if desired == current then
         return current, current, 0, false;
     end
@@ -2180,14 +2551,309 @@ local function AdvanceConfirmedState(current, candidate, streak, desired, canCha
         candidate = desired;
         streak = 1;
     end
-    local confirmSamples = math.max(
-        1,
-        GetNumberParameter("ASAI_RELATIVE_CONFIRM_SAMPLES", 2)
-    );
+    local confirmSamples = math.max(1, requiredSamples or GetNumberParameter(
+        "ASAI_RELATIVE_CONFIRM_SAMPLES",
+        2
+    ));
     if canChange and streak >= confirmSamples then
         return desired, desired, 0, true;
     end
     return current, candidate, streak, false;
+end
+
+function Strategic.GetPlanOutcomeScore(state, plan)
+    local competitive = state.CompetitiveScores or state.RawScores;
+    if plan == Strategic.RECOVER then
+        if state.StrategicSupport == RELATIVE_FOCUS_SCIENCE then
+            return competitive.Science;
+        end
+        if state.StrategicSupport == RELATIVE_FOCUS_CULTURE then
+            return competitive.Culture;
+        end
+        return math.min(competitive.Science, competitive.Culture);
+    end
+    if plan == Strategic.EXPAND then
+        return competitive.Empire;
+    end
+    if plan == Strategic.DEFEND then
+        return competitive.Military;
+    end
+    if plan == Strategic.PRESSURE or plan == Strategic.WAR then
+        return competitive.Overall * 0.65 + competitive.Military * 0.35;
+    end
+    return competitive.Overall;
+end
+
+function Strategic.GetPlanExecution(playerID, state, snapshot)
+    if state.StrategicPlan == Strategic.PRESSURE then
+        return snapshot.ActiveMajorWars > 0 and 1 or -1;
+    end
+
+    local economic = GetEconomicSnapshot(playerID);
+    if economic.QueueOk ~= 1 then
+        return -1;
+    end
+    local queue = economic.Queue;
+    if state.StrategicPlan == Strategic.WAR
+        or state.StrategicPlan == Strategic.DEFEND then
+        return queue.Combat;
+    end
+    if state.StrategicPlan == Strategic.EXPAND then
+        return queue.Empire;
+    end
+    if state.StrategicPlan == Strategic.RECOVER then
+        if state.StrategicSupport == RELATIVE_FOCUS_SCIENCE then
+            return queue.Science;
+        end
+        if state.StrategicSupport == RELATIVE_FOCUS_CULTURE then
+            return queue.Culture;
+        end
+        if state.StrategicSupport == RELATIVE_FOCUS_EMPIRE then
+            return queue.Empire;
+        end
+        return queue.Districts + queue.Buildings + queue.Projects;
+    end
+    return queue.Districts + queue.Buildings + queue.Projects + queue.Empire;
+end
+
+function Strategic.StartPlanReview(state, snapshot, strength, turn)
+    state.StrategicPlanStartedTurn = turn;
+    state.StrategicPlanReviewTurn = turn;
+    state.StrategicPlanBaseline = Strategic.GetPlanOutcomeScore(
+        state,
+        state.StrategicPlan
+    );
+    state.StrategicPlanBaselineCities = snapshot.Cities;
+    state.StrategicPlanBaselineCombat = strength.CombatUnits;
+    state.StrategicPlanGain = 0;
+    state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE;
+    state.StrategicPlanExecution = 0;
+    state.StrategicPlanStallCount = 0;
+end
+
+function Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn)
+    state.StrategicPlanReviewTurn = turn;
+    state.StrategicPlanBaseline = Strategic.GetPlanOutcomeScore(
+        state,
+        state.StrategicPlan
+    );
+    state.StrategicPlanBaselineCities = snapshot.Cities;
+    state.StrategicPlanBaselineCombat = strength.CombatUnits;
+end
+
+function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
+    if state.StrategicPlanStartedTurn < 0 then
+        Strategic.StartPlanReview(state, snapshot, strength, turn);
+        return false;
+    end
+
+    local reviewWindow = ScaleStandardTurns(
+        GetNumberParameter("ASAI_PLAN_REVIEW_STANDARD", 12)
+    );
+    if turn - state.StrategicPlanReviewTurn < reviewWindow then
+        return false;
+    end
+
+    state.StrategicPlanGain = Strategic.GetPlanOutcomeScore(
+        state,
+        state.StrategicPlan
+    ) - state.StrategicPlanBaseline;
+    state.StrategicPlanExecution = Strategic.GetPlanExecution(
+        playerID,
+        state,
+        snapshot
+    );
+    local cityGain = snapshot.Cities - state.StrategicPlanBaselineCities;
+    local combatGain = strength.CombatUnits - state.StrategicPlanBaselineCombat;
+    local minimumGain = GetNumberParameter("ASAI_PLAN_MIN_GAIN_X100", 2) / 100;
+    local improved = state.StrategicPlanGain >= minimumGain;
+    if state.StrategicPlan == Strategic.EXPAND then
+        improved = improved or cityGain > 0;
+    elseif state.StrategicPlan == Strategic.DEFEND then
+        improved = improved or combatGain > 0;
+    elseif state.StrategicPlan == Strategic.PRESSURE then
+        improved = improved or snapshot.ActiveMajorWars > 0 or cityGain > 0;
+    elseif state.StrategicPlan == Strategic.WAR then
+        improved = improved or cityGain > 0;
+    end
+
+    if improved then
+        state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_IMPROVING;
+        state.StrategicPlanStallCount = 0;
+    else
+        state.StrategicPlanStallCount = state.StrategicPlanStallCount + 1;
+        state.StrategicPlanResult = state.StrategicPlanExecution == 0
+            and RELATIVE_FOCUS_RESULT_STALLED
+            or RELATIVE_FOCUS_RESULT_EXECUTING;
+    end
+
+    print(string.format(
+        "ASAI_PLAN_REVIEW turn=%d standard_turn=%.1f player=%d plan=%s result=%s execution=%d stall_count=%d gain=%.3f city_gain=%d combat_gain=%d",
+        turn,
+        GetStandardEquivalentTurn(turn),
+        playerID,
+        Strategic.GetPlanName(state.StrategicPlan),
+        GetFocusResultName(state.StrategicPlanResult),
+        state.StrategicPlanExecution,
+        state.StrategicPlanStallCount,
+        state.StrategicPlanGain,
+        cityGain,
+        combatGain
+    ));
+
+    local stallLimit = math.max(
+        1,
+        GetNumberParameter("ASAI_PLAN_STALL_LIMIT", 2)
+    );
+    local retirePlan = state.StrategicPlan ~= Strategic.DEVELOP
+        and state.StrategicPlan ~= Strategic.WAR
+        and state.StrategicPlanResult ~= RELATIVE_FOCUS_RESULT_IMPROVING
+        and state.StrategicPlanStallCount >= stallLimit;
+    if not retirePlan then
+        Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn);
+    end
+    return retirePlan;
+end
+
+function Strategic.GetPlanScores(state, snapshot, turn)
+    local competitive = state.CompetitiveScores or state.RawScores;
+    local upper = state.WorldUpperScores or competitive;
+    local trends = state.Trends or {};
+    local knowledge = math.min(competitive.Science, competitive.Culture);
+    local knowledgeTrend = math.min(trends.Science or 0, trends.Culture or 0);
+    local overallGap = math.max(0, 1 - competitive.Overall);
+    local knowledgeGap = math.max(0, 1 - knowledge);
+    local empireGap = math.max(0, 1 - competitive.Empire);
+    local militaryGap = math.max(0, 1 - competitive.Military);
+    local scores = {};
+
+    scores[Strategic.DEVELOP] = 60
+        + math.max(0, competitive.Overall - 1) * 30
+        + math.max(0, upper.Overall - 0.9) * 20
+        + (state.Band == RELATIVE_CONSOLIDATE and 15 or 0);
+    scores[Strategic.RECOVER] = 25
+        + knowledgeGap * 180
+        + overallGap * 45
+        + math.max(0, -knowledgeTrend) * 120
+        + (state.SevereCatchup == 1 and 20
+            or (state.Band == RELATIVE_CATCHUP and 10 or 0));
+    scores[Strategic.EXPAND] = 25
+        + empireGap * 180
+        + (state.ScaleRecovery == 1 and 25 or 0);
+
+    local openingEnd = ScaleStandardTurns(
+        GetNumberParameter("ASAI_OPENING_EXPANSION_END_STANDARD", 70)
+    );
+    local openingTarget = math.max(
+        2,
+        GetNumberParameter("ASAI_OPENING_EXPANSION_CITY_TARGET", 4)
+    );
+    if turn < openingEnd and snapshot.Cities < openingTarget then
+        scores[Strategic.EXPAND] = scores[Strategic.EXPAND]
+            + 80 + (openingTarget - snapshot.Cities) * 20;
+    end
+    if snapshot.ActiveMajorWars > 0 then
+        scores[Strategic.EXPAND] = 0;
+    end
+
+    local densityStart = ScaleStandardTurns(
+        GetNumberParameter("ASAI_MILITARY_DENSITY_START_STANDARD", 50)
+    );
+    local densityTarget = GetNumberParameter(
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
+        225
+    ) / 100;
+    local densityGap = turn >= densityStart
+        and math.max(0, densityTarget - state.MilitaryUnitsPerPlannedCity) or 0;
+    scores[Strategic.DEFEND] = 20
+        + militaryGap * 180
+        + densityGap * 40
+        + (state.MilitaryReadiness == 1 and 35 or 0);
+    if state.MilitaryDominance == 1 then
+        scores[Strategic.DEFEND] = 0;
+    end
+
+    scores[Strategic.PRESSURE] = 0;
+    local pressureStart = ScaleStandardTurns(
+        GetNumberParameter("ASAI_PLAN_PRESSURE_START_STANDARD", 55)
+    );
+    local pressureReady = turn >= pressureStart
+        and snapshot.ActiveMajorWars <= 0
+        and competitive.Military >= 1.25
+        and upper.Military >= 0.85;
+    if state.MilitaryDominance == 1 or pressureReady then
+        scores[Strategic.PRESSURE] = 85
+            + math.max(0, competitive.Military - 1.2) * 80
+            + (state.MilitaryDominance == 1 and 20 or 0)
+            - (knowledgeGap + empireGap) * 35;
+    end
+    scores[Strategic.WAR] = snapshot.ActiveMajorWars > 0
+        and 1000 + militaryGap * 100 or 0;
+
+    local currentPlan = state.StrategicPlan;
+    if currentPlan ~= nil and state.StrategicPlanStallCount > 0 then
+        scores[currentPlan] = math.max(
+            0,
+            (scores[currentPlan] or 0) - state.StrategicPlanStallCount * 15
+        );
+    end
+    for plan, cooldownUntil in pairs(state.StrategicPlanCooldownUntil) do
+        if turn < cooldownUntil
+            and plan ~= Strategic.WAR
+            and plan ~= Strategic.DEFEND then
+            scores[plan] = 0;
+        end
+    end
+    return scores;
+end
+
+function Strategic.SelectPlan(state, snapshot, scores)
+    if snapshot.ActiveMajorWars > 0 then
+        return Strategic.WAR, "active_major_war";
+    end
+    local emergency = GetNumberParameter(
+        "ASAI_MILITARY_READINESS_EMERGENCY_X100",
+        60
+    ) / 100;
+    local militaryScore = math.min(
+        state.RawScores.Military,
+        state.CompetitiveScores.Military or state.RawScores.Military
+    );
+    if militaryScore <= emergency then
+        return Strategic.DEFEND, "military_emergency";
+    end
+
+    local selected = Strategic.DEVELOP;
+    local selectedScore = scores[selected] or 0;
+    for _, plan in ipairs({
+        Strategic.WAR,
+        Strategic.DEFEND,
+        Strategic.PRESSURE,
+        Strategic.EXPAND,
+        Strategic.RECOVER,
+        Strategic.DEVELOP
+    }) do
+        local score = scores[plan] or 0;
+        if score > selectedScore then
+            selected = plan;
+            selectedScore = score;
+        end
+    end
+
+    local currentScore = scores[state.StrategicPlan] or 0;
+    local switchMargin = GetNumberParameter("ASAI_PLAN_SWITCH_MARGIN", 15);
+    if selected ~= state.StrategicPlan
+        and currentScore > 0
+        and selectedScore < currentScore + switchMargin then
+        return state.StrategicPlan, "switch_cost";
+    end
+    return selected, "highest_score";
+end
+
+function Strategic.UpdateSupport(state)
+    state.StrategicSupport = Strategic.IsFocusCompatible(state, state.Focus)
+        and state.Focus or RELATIVE_FOCUS_NONE;
+    SyncRecoveryFlags(state);
 end
 
 local function EvaluateRelativeState(playerID)
@@ -2227,14 +2893,38 @@ local function EvaluateRelativeState(playerID)
 
     local strengthSnapshot = GetStrengthSnapshot(playerID);
     local measurements = GetRelativeMeasurements(strengthSnapshot, humanStrength);
+    local worldReference = Strategic.GetWorldReference();
+    local competitiveReference = worldReference ~= nil
+        and Strategic.GetCompetitiveReference(humanStrength, worldReference.Median)
+        or humanStrength;
+    local upperReference = worldReference ~= nil
+        and worldReference.Upper or humanStrength;
+    local competitiveMeasurements = GetRelativeMeasurements(
+        strengthSnapshot,
+        competitiveReference
+    );
+    local upperMeasurements = GetRelativeMeasurements(
+        strengthSnapshot,
+        upperReference
+    );
     local initialized = state.LastSampleTurn >= 0;
+    local smoothingAlpha = GetSmoothingAlpha();
+    for _, key in ipairs({ "Overall", "Science", "Culture", "Empire", "Military" }) do
+        local sampleTrend = initialized
+            and measurements.Raw[key] - state.RawScores[key] or 0;
+        state.Trends[key] = initialized
+            and state.Trends[key] + smoothingAlpha * (sampleTrend - state.Trends[key])
+            or 0;
+    end
     state.RawScores = measurements.Raw;
+    state.CompetitiveScores = competitiveMeasurements.Raw;
+    state.WorldUpperScores = upperMeasurements.Raw;
     state.RawRatios = measurements.RawRatios;
     state.ControlledRatios = measurements.ControlledRatios;
     state.Scores = SmoothScores(
         state.Scores,
         measurements.Controlled,
-        GetSmoothingAlpha(),
+        smoothingAlpha,
         initialized
     );
     local empireSnapshot = GetSnapshot(playerID);
@@ -2274,6 +2964,10 @@ local function EvaluateRelativeState(playerID)
         local previousMilitaryDominance = state.MilitaryDominance;
         local militaryDominanceChanged = false;
         local previousScaleRecovery = state.ScaleRecovery;
+        local previousStrategicPlan = state.StrategicPlan;
+        local previousStrategicSupport = state.StrategicSupport;
+        local strategicPlanChanged = false;
+        local strategicPlanReason = "unchanged";
         local previousSupport = previousSevere == 1 and "strong"
             or (previousBand == RELATIVE_CATCHUP and "mild" or "none");
         local minimumDwell = ScaleStandardTurns(
@@ -2292,7 +2986,7 @@ local function EvaluateRelativeState(playerID)
         state.Band,
         state.BandCandidate,
         state.BandStreak,
-        bandChanged = AdvanceConfirmedState(
+        bandChanged = Strategic.AdvanceConfirmedState(
             state.Band,
             state.BandCandidate,
             state.BandStreak,
@@ -2312,7 +3006,7 @@ local function EvaluateRelativeState(playerID)
         state.SevereCatchup,
         state.SevereCandidate,
         state.SevereStreak,
-        severeChanged = AdvanceConfirmedState(
+        severeChanged = Strategic.AdvanceConfirmedState(
             state.SevereCatchup,
             state.SevereCandidate,
             state.SevereStreak,
@@ -2333,8 +3027,12 @@ local function EvaluateRelativeState(playerID)
             "ASAI_SCALE_RECOVERY_EMERGENCY_X100",
             60
         ) / 100;
+        local scaleEmergencyScore = math.min(
+            state.RawScores.Empire,
+            state.CompetitiveScores.Empire or state.RawScores.Empire
+        );
         local scaleEmergency = scaleEnabled
-            and state.RawScores.Empire <= scaleEmergencyThreshold;
+            and scaleEmergencyScore <= scaleEmergencyThreshold;
         local canChangeScaleRecovery = turn - state.ScaleRecoveryChangedTurn
             >= minimumDwell;
         if state.ScaleRecovery == 0
@@ -2351,7 +3049,7 @@ local function EvaluateRelativeState(playerID)
             state.ScaleRecovery,
             state.ScaleRecoveryCandidate,
             state.ScaleRecoveryStreak,
-            scaleRecoveryChanged = AdvanceConfirmedState(
+            scaleRecoveryChanged = Strategic.AdvanceConfirmedState(
                 state.ScaleRecovery,
                 state.ScaleRecoveryCandidate,
                 state.ScaleRecoveryStreak,
@@ -2392,7 +3090,11 @@ local function EvaluateRelativeState(playerID)
             "ASAI_MILITARY_READINESS_EMERGENCY_X100",
             60
         ) / 100;
-        local militaryEmergency = state.RawScores.Military <= emergencyThreshold;
+        local militaryEmergencyScore = math.min(
+            state.RawScores.Military,
+            state.CompetitiveScores.Military or state.RawScores.Military
+        );
+        local militaryEmergency = militaryEmergencyScore <= emergencyThreshold;
         local canChangeMilitaryReadiness = turn - state.MilitaryReadinessChangedTurn
             >= minimumDwell;
         if state.MilitaryReadiness == 0
@@ -2415,7 +3117,7 @@ local function EvaluateRelativeState(playerID)
             state.MilitaryReadiness,
             state.MilitaryReadinessCandidate,
             state.MilitaryReadinessStreak,
-            militaryReadinessChanged = AdvanceConfirmedState(
+            militaryReadinessChanged = Strategic.AdvanceConfirmedState(
                 state.MilitaryReadiness,
                 state.MilitaryReadinessCandidate,
                 state.MilitaryReadinessStreak,
@@ -2429,6 +3131,69 @@ local function EvaluateRelativeState(playerID)
                 state.MilitaryReadinessCooldownUntil = turn + cooldown;
             end
         end
+        UpdateScaleExpansionAvailability(state, empireSnapshot);
+
+        local strategicPlanRetired = Strategic.ReviewPlan(
+            playerID,
+            state,
+            empireSnapshot,
+            strengthSnapshot,
+            turn
+        );
+        if strategicPlanRetired then
+            local stalledPlanCooldown = ScaleStandardTurns(
+                GetNumberParameter("ASAI_PLAN_STALL_COOLDOWN_STANDARD", 16)
+            );
+            state.StrategicPlanCooldownUntil[state.StrategicPlan] = math.max(
+                state.StrategicPlanCooldownUntil[state.StrategicPlan] or -1,
+                turn + stalledPlanCooldown
+            );
+        end
+        state.StrategicPlanScores = Strategic.GetPlanScores(
+            state,
+            empireSnapshot,
+            turn
+        );
+        local desiredStrategicPlan;
+        desiredStrategicPlan, strategicPlanReason = Strategic.SelectPlan(
+            state,
+            empireSnapshot,
+            state.StrategicPlanScores
+        );
+        local strategicPlanMinimumDwell = ScaleStandardTurns(
+            GetNumberParameter("ASAI_PLAN_MIN_DWELL_STANDARD", 12)
+        );
+        local forcedStrategicPlan = strategicPlanReason == "active_major_war"
+            or strategicPlanReason == "military_emergency";
+        if desiredStrategicPlan ~= state.StrategicPlan
+            and (strategicPlanRetired or forcedStrategicPlan) then
+            state.StrategicPlan = desiredStrategicPlan;
+            state.StrategicPlanCandidate = desiredStrategicPlan;
+            state.StrategicPlanStreak = 0;
+            strategicPlanChanged = true;
+        else
+            local canChangeStrategicPlan = turn - state.StrategicPlanChangedTurn
+                >= strategicPlanMinimumDwell;
+            if state.StrategicPlan == Strategic.WAR
+                and empireSnapshot.ActiveMajorWars <= 0 then
+                canChangeStrategicPlan = true;
+            end
+            state.StrategicPlan,
+            state.StrategicPlanCandidate,
+            state.StrategicPlanStreak,
+            strategicPlanChanged = Strategic.AdvanceConfirmedState(
+                state.StrategicPlan,
+                state.StrategicPlanCandidate,
+                state.StrategicPlanStreak,
+                desiredStrategicPlan,
+                canChangeStrategicPlan,
+                math.max(1, GetNumberParameter("ASAI_PLAN_CONFIRM_SAMPLES", 2))
+            );
+        end
+        if strategicPlanChanged then
+            state.StrategicPlanChangedTurn = turn;
+        end
+        state.StrategicPlanScore = state.StrategicPlanScores[state.StrategicPlan] or 0;
         UpdateScaleExpansionAvailability(state, empireSnapshot);
 
         if state.FocusHandoffReady
@@ -2461,7 +3226,7 @@ local function EvaluateRelativeState(playerID)
             state.Focus,
             state.FocusCandidate,
             state.FocusStreak,
-            handoffChanged = AdvanceConfirmedState(
+            handoffChanged = Strategic.AdvanceConfirmedState(
                 state.Focus,
                 state.FocusCandidate,
                 state.FocusStreak,
@@ -2474,11 +3239,12 @@ local function EvaluateRelativeState(playerID)
         else
             local desiredFocus = GetDesiredFocus(state, recoveryThresholds, turn);
             local canChangeFocus = state.FocusHandoffReady
-                or turn - state.FocusChangedTurn >= minimumDwell;
+                or turn - state.FocusChangedTurn >= minimumDwell
+                or not Strategic.IsFocusCompatible(state, state.Focus);
             state.Focus,
             state.FocusCandidate,
             state.FocusStreak,
-            focusChanged = AdvanceConfirmedState(
+            focusChanged = Strategic.AdvanceConfirmedState(
                 state.Focus,
                 state.FocusCandidate,
                 state.FocusStreak,
@@ -2500,7 +3266,17 @@ local function EvaluateRelativeState(playerID)
             end
         end
 
-        SyncRecoveryFlags(state);
+        Strategic.UpdateSupport(state);
+        if strategicPlanChanged then
+            Strategic.StartPlanReview(state, empireSnapshot, strengthSnapshot, turn);
+        elseif previousStrategicSupport ~= state.StrategicSupport then
+            Strategic.ResetPlanReviewBaseline(
+                state,
+                empireSnapshot,
+                strengthSnapshot,
+                turn
+            );
+        end
         state.LastEvaluationTurn = turn;
         state.EvaluatedThisTurn = true;
 
@@ -2579,6 +3355,27 @@ local function EvaluateRelativeState(playerID)
                 readinessReason
             ));
         end
+        if strategicPlanChanged or previousStrategicSupport ~= state.StrategicSupport then
+            print(string.format(
+                "ASAI_PLAN turn=%d standard_turn=%.1f player=%d from=%s to=%s support_from=%s support_to=%s reason=%s score=%.1f develop=%.1f recover=%.1f expand=%.1f defend=%.1f pressure=%.1f war=%.1f result=%s",
+                turn,
+                GetStandardEquivalentTurn(turn),
+                playerID,
+                Strategic.GetPlanName(previousStrategicPlan),
+                Strategic.GetPlanName(state.StrategicPlan),
+                Strategic.GetSupportName(previousStrategicSupport),
+                Strategic.GetSupportName(state.StrategicSupport),
+                strategicPlanReason,
+                state.StrategicPlanScore,
+                state.StrategicPlanScores[Strategic.DEVELOP] or 0,
+                state.StrategicPlanScores[Strategic.RECOVER] or 0,
+                state.StrategicPlanScores[Strategic.EXPAND] or 0,
+                state.StrategicPlanScores[Strategic.DEFEND] or 0,
+                state.StrategicPlanScores[Strategic.PRESSURE] or 0,
+                state.StrategicPlanScores[Strategic.WAR] or 0,
+                GetFocusResultName(state.StrategicPlanResult)
+            ));
+        end
         if focusChanged then
             print(string.format(
                 "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s result=%s handoff_ready=%d gain=%.3f raw_gain=%.3f",
@@ -2607,12 +3404,14 @@ local function EvaluateRelativeState(playerID)
     return state;
 end
 
-local function GetRelativeState(playerID)
+GetRelativeState = function(playerID)
     return EvaluateRelativeState(playerID);
 end
 
 local function IsRelativeCatchup(playerID, threshold)
-    return GetRelativeState(playerID).Band == RELATIVE_CATCHUP;
+    local state = GetRelativeState(playerID);
+    return state.StrategicPlan == Strategic.RECOVER
+        and state.SevereCatchup ~= 1;
 end
 function ASAI_IsRelativeCatchup(playerID, threshold)
     return RunStrategyCondition(
@@ -2625,7 +3424,9 @@ end
 GameEvents.ASAI_IsRelativeCatchup.Add(ASAI_IsRelativeCatchup);
 
 local function IsRelativeSevereCatchup(playerID, threshold)
-    return GetRelativeState(playerID).SevereCatchup == 1;
+    local state = GetRelativeState(playerID);
+    return state.StrategicPlan == Strategic.RECOVER
+        and state.SevereCatchup == 1;
 end
 function ASAI_IsRelativeSevereCatchup(playerID, threshold)
     return RunStrategyCondition(
@@ -2638,7 +3439,8 @@ end
 GameEvents.ASAI_IsRelativeSevereCatchup.Add(ASAI_IsRelativeSevereCatchup);
 
 local function IsMilitaryReadiness(playerID, threshold)
-    return GetRelativeState(playerID).MilitaryReadiness == 1;
+    local state = GetRelativeState(playerID);
+    return state.StrategicPlan == Strategic.DEFEND;
 end
 function ASAI_IsMilitaryReadiness(playerID, threshold)
     return RunStrategyCondition(
@@ -2651,7 +3453,8 @@ end
 GameEvents.ASAI_IsMilitaryReadiness.Add(ASAI_IsMilitaryReadiness);
 
 local function IsMilitaryDominance(playerID, threshold)
-    return GetRelativeState(playerID).MilitaryDominance == 1;
+    local state = GetRelativeState(playerID);
+    return state.StrategicPlan == Strategic.PRESSURE;
 end
 function ASAI_IsMilitaryDominance(playerID, threshold)
     return RunStrategyCondition(
@@ -2679,7 +3482,7 @@ local function GetMilitaryExecutionStatus(playerID)
     local state = GetRelativeState(playerID);
     local snapshot = GetSnapshot(playerID);
     local target = GetMilitaryQueueTarget(snapshot);
-    if state.MilitaryReadiness ~= 1 or target <= 0 then
+    if state.StrategicPlan ~= Strategic.DEFEND or target <= 0 then
         return false, target;
     end
     local economic = GetEconomicSnapshot(playerID);
@@ -2701,7 +3504,9 @@ end
 GameEvents.ASAI_IsMilitaryExecutionRecovery.Add(ASAI_IsMilitaryExecutionRecovery);
 
 local function IsScaleRecovery(playerID, threshold)
-    return GetRelativeState(playerID).ScaleRecovery == 1;
+    local state = GetRelativeState(playerID);
+    return state.StrategicPlan == Strategic.EXPAND
+        and state.ScaleRecovery == 1;
 end
 function ASAI_IsScaleRecovery(playerID, threshold)
     return RunStrategyCondition(
@@ -2714,7 +3519,9 @@ end
 GameEvents.ASAI_IsScaleRecovery.Add(ASAI_IsScaleRecovery);
 
 local function IsRelativeConsolidate(playerID, threshold)
-    return GetRelativeState(playerID).Band == RELATIVE_CONSOLIDATE;
+    local state = GetRelativeState(playerID);
+    return state.StrategicPlan == Strategic.DEVELOP
+        and state.Band == RELATIVE_CONSOLIDATE;
 end
 function ASAI_IsRelativeConsolidate(playerID, threshold)
     return RunStrategyCondition(
@@ -2725,6 +3532,26 @@ function ASAI_IsRelativeConsolidate(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsRelativeConsolidate.Add(ASAI_IsRelativeConsolidate);
+
+function Strategic.IsDevelopmentPlan(playerID, threshold)
+    if not IsMajorAI(playerID) then
+        return false;
+    end
+    local startTurn = ScaleStandardTurns(
+        GetNumberParameter("ASAI_RELATIVE_START_TURN_STANDARD", 35)
+    );
+    return Game.GetCurrentGameTurn() >= startTurn
+        and GetRelativeState(playerID).StrategicPlan == Strategic.DEVELOP;
+end
+function ASAI_IsDevelopmentPlan(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsDevelopmentPlan",
+        Strategic.IsDevelopmentPlan,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsDevelopmentPlan.Add(ASAI_IsDevelopmentPlan);
 
 local function IsScienceRecovery(playerID, threshold)
     return GetRelativeState(playerID).Recovery.Science;
@@ -2768,6 +3595,7 @@ GameEvents.ASAI_IsEmpireRecovery.Add(ASAI_IsEmpireRecovery);
 local function IsFocusExecutionRecovery(playerID, focus)
     local state = GetRelativeState(playerID);
     return state.Focus == focus
+        and state.StrategicSupport == focus
         and (state.FocusResult == RELATIVE_FOCUS_RESULT_STALLED
             or state.FocusResult == RELATIVE_FOCUS_RESULT_EXECUTING);
 end
@@ -2813,6 +3641,9 @@ GameEvents.ASAI_IsEmpireExecutionRecovery.Add(ASAI_IsEmpireExecutionRecovery);
 
 local function IsExpansionRecovery(playerID, threshold)
     local state = GetRelativeState(playerID);
+    if state.StrategicPlan ~= Strategic.EXPAND then
+        return false;
+    end
     if state.ScaleRecovery == 1 and state.ScaleExpansionAllowed ~= 1 then
         return false;
     end
@@ -2950,13 +3781,17 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local focusAge = relativeState.FocusStartedTurn >= 0
         and GetStandardEquivalentTurn(snapshot.Turn - relativeState.FocusStartedTurn)
         or 0;
+    local strategicPlanAge = relativeState.StrategicPlanStartedTurn >= 0
+        and GetStandardEquivalentTurn(
+            snapshot.Turn - relativeState.StrategicPlanStartedTurn
+        ) or 0;
     local combatAge = snapshot.LastMajorCombatTurn > -100000
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
     local resultYieldsActive = (relativeState.MildResultYieldsActive == 1
         or relativeState.SevereResultYieldsActive == 1) and 1 or 0;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f weakest_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d scale_recovery=%d scale_expansion=%d result_yields=%d mild_result_yields=%d severe_result_yields=%d result_tier=%s pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f weakest_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d scale_recovery=%d scale_expansion=%d result_yields=%d mild_result_yields=%d severe_result_yields=%d result_tier=%s pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d plan=%s plan_support=%s plan_result=%s plan_score=%.1f plan_gain=%.3f plan_execution=%d plan_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -3021,7 +3856,14 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.FocusRawGain,
         focusAge,
         relativeState.FocusExecution,
-        relativeState.FocusStallCount
+        relativeState.FocusStallCount,
+        Strategic.GetPlanName(relativeState.StrategicPlan),
+        Strategic.GetSupportName(relativeState.StrategicSupport),
+        GetFocusResultName(relativeState.StrategicPlanResult),
+        relativeState.StrategicPlanScore,
+        relativeState.StrategicPlanGain,
+        relativeState.StrategicPlanExecution,
+        relativeState.StrategicPlanStallCount
     ));
     print(string.format(
         "ASAI_COMPONENTS turn=%d player=%d tech_raw=%.3f tech_controlled=%.3f civics_raw=%.3f civics_controlled=%.3f science_raw=%.3f science_controlled=%.3f culture_raw=%.3f culture_controlled=%.3f cities_raw=%.3f cities_controlled=%.3f pop_raw=%.3f pop_controlled=%.3f military_raw=%.3f military_controlled=%.3f",
@@ -3041,6 +3883,37 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         relativeState.ControlledRatios.Population,
         relativeState.RawRatios.Military,
         relativeState.ControlledRatios.Military
+    ));
+    print(string.format(
+        "ASAI_STRATEGY_INPUT turn=%d player=%d plan=%s plan_candidate=%s plan_candidate_streak=%d plan_support=%s plan_age=%.1f competitive=%.3f competitive_science=%.3f competitive_culture=%.3f competitive_empire=%.3f competitive_military=%.3f upper=%.3f upper_science=%.3f upper_culture=%.3f upper_empire=%.3f upper_military=%.3f trend=%.4f trend_science=%.4f trend_culture=%.4f trend_empire=%.4f trend_military=%.4f score_develop=%.1f score_recover=%.1f score_expand=%.1f score_defend=%.1f score_pressure=%.1f score_war=%.1f",
+        snapshot.Turn,
+        playerID,
+        Strategic.GetPlanName(relativeState.StrategicPlan),
+        Strategic.GetPlanName(relativeState.StrategicPlanCandidate),
+        relativeState.StrategicPlanStreak,
+        Strategic.GetSupportName(relativeState.StrategicSupport),
+        strategicPlanAge,
+        relativeState.CompetitiveScores.Overall,
+        relativeState.CompetitiveScores.Science,
+        relativeState.CompetitiveScores.Culture,
+        relativeState.CompetitiveScores.Empire,
+        relativeState.CompetitiveScores.Military,
+        relativeState.WorldUpperScores.Overall,
+        relativeState.WorldUpperScores.Science,
+        relativeState.WorldUpperScores.Culture,
+        relativeState.WorldUpperScores.Empire,
+        relativeState.WorldUpperScores.Military,
+        relativeState.Trends.Overall,
+        relativeState.Trends.Science,
+        relativeState.Trends.Culture,
+        relativeState.Trends.Empire,
+        relativeState.Trends.Military,
+        relativeState.StrategicPlanScores[Strategic.DEVELOP] or 0,
+        relativeState.StrategicPlanScores[Strategic.RECOVER] or 0,
+        relativeState.StrategicPlanScores[Strategic.EXPAND] or 0,
+        relativeState.StrategicPlanScores[Strategic.DEFEND] or 0,
+        relativeState.StrategicPlanScores[Strategic.PRESSURE] or 0,
+        relativeState.StrategicPlanScores[Strategic.WAR] or 0
     ));
 end
 

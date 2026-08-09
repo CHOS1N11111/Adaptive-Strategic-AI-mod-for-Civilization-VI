@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.10.0"
-EXPECTED_MODINFO_VERSION = "21"
+EXPECTED_RELEASE = "0.11.0"
+EXPECTED_MODINFO_VERSION = "22"
 
 
 def default_database() -> Path:
@@ -202,9 +202,12 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_SCALE turn=",
         "ASAI_READINESS",
         "ASAI_DOMINANCE",
+        "ASAI_PLAN turn=",
+        "ASAI_PLAN_REVIEW",
         "ASAI_RECOVERY",
         "ASAI_METRIC",
         "ASAI_COMPONENTS",
+        "ASAI_STRATEGY_INPUT",
         "ASAI_ECONOMY",
         "ASAI_CONVERSION",
         "ASAI_MILITARY turn=",
@@ -232,7 +235,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_LAST_MAJOR_COMBAT_TURN",
         "and #majorOpponents > 0",
         "pcall(\n        RecordUnitDamage",
-        "return GetSnapshot(playerID).ActiveMajorWars > 0",
+        "return snapshot.ActiveMajorWars > 0",
         "Events.UnitDamageChanged.Add(OnUnitDamageChanged)",
         "active_major_wars=%d",
     )
@@ -366,7 +369,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "state.MilitaryUnitsPerPlannedCity",
         "local densityEnabled = turn >= densityStartTurn",
         "local militaryDensityGap = densityEnabled",
-        "state.RawScores.Military <= emergencyThreshold",
+        "militaryEmergencyScore <= emergencyThreshold",
         "elseif state.MilitaryReadiness == 0\n            and militaryEmergency then",
         "state.MilitaryReadinessCooldownUntil",
         "MILITARY_READINESS_PROPERTY",
@@ -415,7 +418,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_SCALE_RECOVERY_ENTER_X100",
         "ASAI_SCALE_RECOVERY_EXIT_X100",
         "ASAI_SCALE_RECOVERY_EMERGENCY_X100",
-        "state.RawScores.Empire <= scaleEmergencyThreshold",
+        "scaleEmergencyScore <= scaleEmergencyThreshold",
         "state.ScaleRecoveryCooldownUntil",
         "SCALE_RECOVERY_PROPERTY",
         "player:SetProperty(SCALE_RECOVERY_PROPERTY, state.ScaleRecovery)",
@@ -431,6 +434,39 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in scale_recovery_fragments:
         if fragment not in source:
             errors.append(f"scale recovery fragment is missing: {fragment}")
+    strategic_plan_fragments = (
+        'PROPERTY = "ASAI_STRATEGIC_PLAN"',
+        "function Strategic.GetWorldReference()",
+        "function Strategic.GetCompetitiveReference(humanStrength, worldStrength)",
+        "RELATIVE_TREND_PROPERTIES",
+        "function Strategic.GetPlanScores(state, snapshot, turn)",
+        "function Strategic.SelectPlan(state, snapshot, scores)",
+        "function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)",
+        "function Strategic.UpdateSupport(state)",
+        "ASAI_PLAN_MIN_DWELL_STANDARD",
+        "ASAI_PLAN_CONFIRM_SAMPLES",
+        "ASAI_PLAN_SWITCH_MARGIN",
+        "ASAI_PLAN_REVIEW_STANDARD",
+        "ASAI_PLAN_STALL_LIMIT",
+        "state.StrategicPlan == Strategic.RECOVER",
+        "state.StrategicPlan == Strategic.EXPAND",
+        "state.StrategicPlan == Strategic.DEFEND",
+        "state.StrategicPlan == Strategic.PRESSURE",
+        "state.StrategicPlan == Strategic.WAR",
+        "snapshot.Turn < coordinatorStart",
+        "and state.SevereCatchup ~= 1",
+        "state.StrategicSupport == focus",
+        "function ASAI_IsDevelopmentPlan(playerID, threshold)",
+        "plan_support=%s",
+        "plan_candidate=%s",
+        "plan_candidate_streak=%d",
+        "score_develop=%.1f",
+        "score_war=%.1f",
+        "competitive=%.3f",
+    )
+    for fragment in strategic_plan_fragments:
+        if fragment not in source:
+            errors.append(f"strategic coordinator fragment is missing: {fragment}")
     diagnostic_fragments = (
         "local function TryDiagnosticSensor(sensorName, collector)",
         "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
@@ -494,7 +530,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.10.0")
+        errors.append("diagnostic production must not enter the relative score")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -1317,6 +1353,41 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 f"found {actual}"
             )
 
+    development_condition = connection.execute(
+        "SELECT COUNT(*) FROM StrategyConditions "
+        "WHERE StrategyType = 'ASAI_STRATEGY_DEVELOPMENT' "
+        "AND ConditionFunction = 'Call Lua Function' "
+        "AND StringValue = 'ASAI_IsDevelopmentPlan'"
+    ).fetchone()[0]
+    if development_condition != 1:
+        errors.append(
+            "development strategy must have exactly one ASAI_IsDevelopmentPlan condition"
+        )
+
+    expected_development_values = {
+        ("ASAI_DevelopmentPseudoYields", "PSEUDOYIELD_IMPROVEMENT"): 18,
+        ("ASAI_DevelopmentPseudoYields", "PSEUDOYIELD_UNIT_TRADE"): 18,
+        ("ASAI_DevelopmentPseudoYields", "PSEUDOYIELD_DISTRICT"): 12,
+        ("ASAI_DevelopmentDistricts", "DISTRICT_INDUSTRIAL_ZONE"): 25,
+        ("ASAI_DevelopmentDistricts", "DISTRICT_COMMERCIAL_HUB"): 18,
+        ("ASAI_DevelopmentDistricts", "DISTRICT_HARBOR"): 18,
+        ("ASAI_DevelopmentDistricts", "DISTRICT_CAMPUS"): 10,
+        ("ASAI_DevelopmentDistricts", "DISTRICT_THEATER"): 10,
+        ("ASAI_DevelopmentYields", "YIELD_PRODUCTION"): 12,
+        ("ASAI_DevelopmentYields", "YIELD_GOLD"): 8,
+    }
+    for (list_type, item), expected in expected_development_values.items():
+        row = connection.execute(
+            "SELECT Value FROM AiFavoredItems WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        actual = None if row is None else row[0]
+        if actual != expected:
+            errors.append(
+                f"development plan {list_type}/{item} expected {expected}, "
+                f"found {actual}"
+            )
+
     expected_recovery_strategies = {
         "ASAI_STRATEGY_SCIENCE_RECOVERY",
         "ASAI_STRATEGY_CULTURE_RECOVERY",
@@ -1985,8 +2056,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 24:
-                    errors.append(f"expected 24 adaptive strategies, found {strategy_count}")
+                if strategy_count != 25:
+                    errors.append(f"expected 25 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -2012,8 +2083,9 @@ def main() -> int:
         "+50% Production/Gold, +24% Science/Culture/Faith, +3 combat, +30% XP"
     )
     print(
-        "- adaptive strategies: 24 "
-        "(including readiness, military dominance, execution, and scale recovery)"
+        "- adaptive strategies: 25 "
+        "(including the rolling development plan and coordinated recovery, "
+        "expansion, defense, pressure, and war plans)"
     )
     print(
         "- reversible result tiers: mild +20/+15/+15/+10 and "
