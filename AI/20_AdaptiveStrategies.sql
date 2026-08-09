@@ -22,6 +22,7 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_GOLD_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY'),
@@ -49,6 +50,7 @@ VALUES
     ('ASAI_STRATEGY_GOLD_RECOVERY', 1),
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 1),
     ('ASAI_STRATEGY_MILITARY_READINESS', 1),
+    ('ASAI_STRATEGY_MILITARY_DOMINANCE', 1),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 1),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 1),
     ('ASAI_STRATEGY_LATE_GAME', 1),
@@ -86,6 +88,8 @@ VALUES
     ('ASAI_STRATEGY_WAR_MOBILIZATION', 'Call Lua Function', 'ASAI_IsWarMobilization', 0, 0),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'Call Lua Function', 'ASAI_IsMilitaryReadiness', 0, 0),
+    ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'Call Lua Function', 'ASAI_IsMilitaryDominance', 0, 0),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'Call Lua Function', 'ASAI_IsMilitaryExecutionRecovery', 0, 0),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'Is Not Major', NULL, 0, 1),
@@ -147,6 +151,9 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_MilitaryReadinessYields'),
     ('ASAI_MilitaryReadinessDistricts'),
     ('ASAI_MilitaryReadinessBuildings'),
+    ('ASAI_MilitaryDominancePseudoYields'),
+    ('ASAI_MilitaryDominanceOperations'),
+    ('ASAI_MilitaryDominanceDiplomacy'),
     ('ASAI_MilitaryExecutionPseudoYields'),
     ('ASAI_MilitaryExecutionUnitBuilds'),
     ('ASAI_MilitaryExecutionYields'),
@@ -222,6 +229,9 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_MilitaryReadinessYields', 'Yields'),
     ('ASAI_MilitaryReadinessDistricts', 'Districts'),
     ('ASAI_MilitaryReadinessBuildings', 'Buildings'),
+    ('ASAI_MilitaryDominancePseudoYields', 'PseudoYields'),
+    ('ASAI_MilitaryDominanceOperations', 'AiOperationTypes'),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DiplomaticActions'),
     ('ASAI_MilitaryExecutionPseudoYields', 'PseudoYields'),
     ('ASAI_MilitaryExecutionUnitBuilds', 'UnitPromotionClasses'),
     ('ASAI_MilitaryExecutionYields', 'Yields'),
@@ -297,6 +307,9 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessYields'),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessDistricts'),
     ('ASAI_STRATEGY_MILITARY_READINESS', 'ASAI_MilitaryReadinessBuildings'),
+    ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'ASAI_MilitaryDominancePseudoYields'),
+    ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'ASAI_MilitaryDominanceOperations'),
+    ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'ASAI_MilitaryDominanceDiplomacy'),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'ASAI_MilitaryExecutionPseudoYields'),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'ASAI_MilitaryExecutionUnitBuilds'),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'ASAI_MilitaryExecutionYields'),
@@ -398,6 +411,28 @@ VALUES
     ('ASAI_MilitaryReadinessYields', 'YIELD_PRODUCTION', 1, 18),
     ('ASAI_MilitaryReadinessYields', 'YIELD_GOLD', 1, 10),
     ('ASAI_MilitaryReadinessDistricts', 'DISTRICT_ENCAMPMENT', 1, 30),
+    -- A peaceful army already far stronger than the human is a resource to use,
+    -- not a reason to keep every marginal production slot in readiness mode.
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_CITY_BASE', 1, 100),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_CITY_DEFENDING_UNITS', 1, -25),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_CITY_DEFENSES', 1, -25),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, -50),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_STANDING_ARMY_NUMBER', 1, -30),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, -40),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 30),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_IMPROVEMENT', 1, 25),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 20),
+    ('ASAI_MilitaryDominancePseudoYields', 'PSEUDOYIELD_DISTRICT', 1, 15),
+    ('ASAI_MilitaryDominanceOperations', 'CITY_ASSAULT', 1, 1),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_DENOUNCE', 1, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_DECLARE_FORMAL_WAR', 1, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_DECLARE_FRIENDSHIP', 0, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_RENEW_ALLIANCE', 0, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_ALLIANCE_CULTURAL', 0, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_ALLIANCE_ECONOMIC', 0, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_ALLIANCE_MILITARY', 0, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_ALLIANCE_RELIGIOUS', 0, 0),
+    ('ASAI_MilitaryDominanceDiplomacy', 'DIPLOACTION_ALLIANCE_RESEARCH', 0, 0),
     ('ASAI_MilitaryExecutionPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 70),
     ('ASAI_MilitaryExecutionPseudoYields', 'PSEUDOYIELD_UNIT_AIR_COMBAT', 1, 55),
     ('ASAI_MilitaryExecutionPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_NUMBER', 1, 55),
@@ -456,6 +491,8 @@ VALUES
     ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 30),
     ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 20),
     ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_HARBOR', 1, 20),
+    ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_AQUEDUCT', 1, 35),
+    ('ASAI_ScaleRecoveryDistricts', 'DISTRICT_NEIGHBORHOOD', 1, 35),
     ('ASAI_RelativeLeadPseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 4),
     ('ASAI_RelativeLeadYields', 'YIELD_GOLD', 1, 3),
     ('ASAI_ScienceRecoveryDistricts', 'DISTRICT_CAMPUS', 1, 50),
@@ -545,11 +582,14 @@ INSERT OR IGNORE INTO AiFavoredItems
 SELECT 'ASAI_ScaleRecoveryDistricts', CivUniqueDistrictType, 1,
     CASE ReplacesDistrictType
         WHEN 'DISTRICT_INDUSTRIAL_ZONE' THEN 30
+        WHEN 'DISTRICT_AQUEDUCT' THEN 35
+        WHEN 'DISTRICT_NEIGHBORHOOD' THEN 35
         ELSE 20
     END
 FROM DistrictReplaces
 WHERE ReplacesDistrictType IN
-    ('DISTRICT_INDUSTRIAL_ZONE', 'DISTRICT_COMMERCIAL_HUB', 'DISTRICT_HARBOR');
+    ('DISTRICT_INDUSTRIAL_ZONE', 'DISTRICT_COMMERCIAL_HUB', 'DISTRICT_HARBOR',
+     'DISTRICT_AQUEDUCT', 'DISTRICT_NEIGHBORHOOD');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -641,20 +681,27 @@ INSERT OR IGNORE INTO AiFavoredItems
 SELECT 'ASAI_EmpireExecutionBuildings', BuildingType, 1,
     CASE
         WHEN BuildingType = 'BUILDING_GRANARY' THEN 60
+        WHEN BuildingType = 'BUILDING_SEWER' THEN 50
         WHEN BuildingType = 'BUILDING_WATER_MILL' THEN 40
         WHEN BuildingType IN (
             SELECT CivUniqueBuildingType
             FROM BuildingReplaces
             WHERE ReplacesBuildingType = 'BUILDING_GRANARY'
         ) THEN 60
+        WHEN BuildingType IN (
+            SELECT CivUniqueBuildingType
+            FROM BuildingReplaces
+            WHERE ReplacesBuildingType = 'BUILDING_SEWER'
+        ) THEN 50
         ELSE 40
     END
 FROM Buildings
-WHERE BuildingType IN ('BUILDING_GRANARY', 'BUILDING_WATER_MILL')
+WHERE BuildingType IN ('BUILDING_GRANARY', 'BUILDING_WATER_MILL', 'BUILDING_SEWER')
    OR BuildingType IN (
         SELECT CivUniqueBuildingType
         FROM BuildingReplaces
-        WHERE ReplacesBuildingType IN ('BUILDING_GRANARY', 'BUILDING_WATER_MILL')
+        WHERE ReplacesBuildingType IN
+            ('BUILDING_GRANARY', 'BUILDING_WATER_MILL', 'BUILDING_SEWER')
    );
 
 -- Scale recovery converts existing cities into population, production, and

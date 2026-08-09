@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.9.0"
-EXPECTED_MODINFO_VERSION = "20"
+EXPECTED_RELEASE = "0.10.0"
+EXPECTED_MODINFO_VERSION = "21"
 
 
 def default_database() -> Path:
@@ -201,6 +201,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_RESULT turn=",
         "ASAI_SCALE turn=",
         "ASAI_READINESS",
+        "ASAI_DOMINANCE",
         "ASAI_RECOVERY",
         "ASAI_METRIC",
         "ASAI_COMPONENTS",
@@ -314,12 +315,14 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "MILD_RESULT_PRODUCTION_PERCENT = 20",
         "MILD_RESULT_SCIENCE_PERCENT = 15",
         "MILD_RESULT_CULTURE_PERCENT = 15",
+        "MILD_RESULT_FOOD_PERCENT = 10",
         "SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY",
         'SEVERE_RESULT_YIELDS_ON_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_ON"',
         'SEVERE_RESULT_YIELDS_OFF_MODIFIER = "ASAI_SEVERE_RESULT_YIELDS_OFF"',
         "SEVERE_RESULT_PRODUCTION_PERCENT = 40",
         "SEVERE_RESULT_SCIENCE_PERCENT = 30",
         "SEVERE_RESULT_CULTURE_PERCENT = 30",
+        "SEVERE_RESULT_FOOD_PERCENT = 20",
         "MildResultYieldsActive = 0",
         "SevereResultYieldsActive = 0",
         "local function SyncMildResultYields(playerID, player, state, turn)",
@@ -344,6 +347,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "mild_result_yields=%d",
         "severe_result_yields=%d",
         "result_tier=%s",
+        "food=%d",
     )
     for fragment in severe_result_fragments:
         if fragment not in source:
@@ -363,7 +367,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "local densityEnabled = turn >= densityStartTurn",
         "local militaryDensityGap = densityEnabled",
         "state.RawScores.Military <= emergencyThreshold",
-        "if state.MilitaryReadiness == 0\n            and militaryEmergency then",
+        "elseif state.MilitaryReadiness == 0\n            and militaryEmergency then",
         "state.MilitaryReadinessCooldownUntil",
         "MILITARY_READINESS_PROPERTY",
         "function ASAI_IsMilitaryReadiness(playerID, threshold)",
@@ -382,6 +386,29 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in military_readiness_fragments:
         if fragment not in source:
             errors.append(f"military readiness fragment is missing: {fragment}")
+    military_dominance_fragments = (
+        'MILITARY_DOMINANCE_PROPERTY = "ASAI_MILITARY_DOMINANCE"',
+        "MilitaryDominance = 0",
+        "local function GetDesiredMilitaryDominance(state, snapshot, turn)",
+        "ASAI_MILITARY_DOMINANCE_START_STANDARD",
+        "ASAI_MILITARY_DOMINANCE_ENTER_X100",
+        "ASAI_MILITARY_DOMINANCE_EXIT_X100",
+        "state.RawScores.Military >= exit",
+        "state.RawScores.Military >= enter",
+        "state.MilitaryDominance == 1 and empireSnapshot.ActiveMajorWars > 0",
+        "player:SetProperty(MILITARY_DOMINANCE_PROPERTY, 0)",
+        "state.MilitaryDominance = GetDesiredMilitaryDominance(",
+        "if state.MilitaryDominance == 1 then\n            state.MilitaryReadiness = 0",
+        "state.MilitaryDominance == 1\n            or state.MilitaryReadiness == 0",
+        "player:SetProperty(MILITARY_DOMINANCE_PROPERTY, state.MilitaryDominance)",
+        "function ASAI_IsMilitaryDominance(playerID, threshold)",
+        "ASAI_DOMINANCE turn=%d standard_turn=%.1f",
+        "reason=active_major_war",
+        "military_dominance=%d",
+    )
+    for fragment in military_dominance_fragments:
+        if fragment not in source:
+            errors.append(f"military dominance fragment is missing: {fragment}")
     scale_recovery_fragments = (
         "local function GetDesiredScaleRecovery(state)",
         "ASAI_SCALE_RECOVERY_START_STANDARD",
@@ -467,7 +494,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     elif 'Key = "Production"' in component_block.group(1):
         errors.append("diagnostic production entered the relative component table")
     if "ASAI_RELATIVE_WEIGHT_PRODUCTION" in source:
-        errors.append("diagnostic production must not enter the relative score in 0.9.0")
+        errors.append("diagnostic production must not enter the relative score in 0.10.0")
     infrastructure_fragments = (
         "local function IsOpeningExpansion(playerID, threshold)",
         'ASAI_OPENING_EXPANSION_END_STANDARD", 70',
@@ -670,12 +697,12 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
             )
 
     expected_result_amounts = {
-        "ASAI_MILD_RESULT_YIELDS_ON": "20, 15, 15",
-        "ASAI_MILD_RESULT_YIELDS_OFF": "-20, -15, -15",
-        "ASAI_SEVERE_RESULT_YIELDS_ON": "40, 30, 30",
-        "ASAI_SEVERE_RESULT_YIELDS_OFF": "-40, -30, -30",
+        "ASAI_MILD_RESULT_YIELDS_ON": "20, 15, 15, 10",
+        "ASAI_MILD_RESULT_YIELDS_OFF": "-20, -15, -15, -10",
+        "ASAI_SEVERE_RESULT_YIELDS_ON": "40, 30, 30, 20",
+        "ASAI_SEVERE_RESULT_YIELDS_OFF": "-40, -30, -30, -20",
     }
-    yield_types = "YIELD_PRODUCTION, YIELD_SCIENCE, YIELD_CULTURE"
+    yield_types = "YIELD_PRODUCTION, YIELD_SCIENCE, YIELD_CULTURE, YIELD_FOOD"
     parsed_result_amounts: dict[str, list[int]] = {}
     for modifier_id, expected_amount in expected_result_amounts.items():
         definition = connection.execute(
@@ -722,10 +749,10 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         positive = parsed_result_amounts.get(f"ASAI_{result_tier}_RESULT_YIELDS_ON")
         negative = parsed_result_amounts.get(f"ASAI_{result_tier}_RESULT_YIELDS_OFF")
         if positive is not None and negative is not None:
-            if len(positive) != 3 or len(negative) != 3:
+            if len(positive) != 4 or len(negative) != 4:
                 errors.append(
                     f"{result_tier.lower()} result-yield ledger must contain "
-                    "exactly three yields"
+                    "exactly four yields"
                 )
             elif any(on + off != 0 for on, off in zip(positive, negative)):
                 errors.append(
@@ -946,6 +973,9 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_MILITARY_DENSITY_START_STANDARD",
         "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_ENTER_X100",
         "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
+        "ASAI_MILITARY_DOMINANCE_START_STANDARD",
+        "ASAI_MILITARY_DOMINANCE_ENTER_X100",
+        "ASAI_MILITARY_DOMINANCE_EXIT_X100",
         "ASAI_MILITARY_QUEUE_TARGET_X100",
         "ASAI_WAR_QUEUE_TARGET_X100",
         "ASAI_RELATIVE_SCIENCE_ENTER_X100",
@@ -1048,6 +1078,20 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 f"{(density_start, density_enter, density_exit)}"
             )
 
+    dominance_start = parameters.get("ASAI_MILITARY_DOMINANCE_START_STANDARD")
+    dominance_enter = parameters.get("ASAI_MILITARY_DOMINANCE_ENTER_X100")
+    dominance_exit = parameters.get("ASAI_MILITARY_DOMINANCE_EXIT_X100")
+    if None not in (dominance_start, dominance_enter, dominance_exit):
+        if dominance_start <= 0 or not 100 < dominance_exit < dominance_enter:
+            errors.append(
+                "military-dominance thresholds are not ordered safely: "
+                f"{(dominance_start, dominance_exit, dominance_enter)}"
+            )
+        if (dominance_start, dominance_enter, dominance_exit) != (70, 175, 140):
+            errors.append(
+                "military-dominance thresholds differ from the turn 1-110 review: "
+                f"{(dominance_start, dominance_enter, dominance_exit)}"
+            )
     scale_start = parameters.get("ASAI_SCALE_RECOVERY_START_STANDARD")
     scale_enter = parameters.get("ASAI_SCALE_RECOVERY_ENTER_X100")
     scale_exit = parameters.get("ASAI_SCALE_RECOVERY_EXIT_X100")
@@ -1366,6 +1410,73 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             f"expected one military-readiness strategy, found {readiness_strategy}"
         )
 
+    dominance_strategy = connection.execute(
+        "SELECT COUNT(*) FROM Strategies "
+        "WHERE StrategyType = 'ASAI_STRATEGY_MILITARY_DOMINANCE'"
+    ).fetchone()[0]
+    if dominance_strategy != 1:
+        errors.append(
+            f"expected one military-dominance strategy, found {dominance_strategy}"
+        )
+    expected_dominance_lists = {
+        "ASAI_MilitaryDominancePseudoYields",
+        "ASAI_MilitaryDominanceOperations",
+        "ASAI_MilitaryDominanceDiplomacy",
+    }
+    actual_dominance_lists = {
+        row[0]
+        for row in connection.execute(
+            "SELECT ListType FROM Strategy_Priorities "
+            "WHERE StrategyType = 'ASAI_STRATEGY_MILITARY_DOMINANCE'"
+        )
+    }
+    if actual_dominance_lists != expected_dominance_lists:
+        errors.append(
+            "military-dominance priority lists differ: "
+            f"expected {sorted(expected_dominance_lists)}, "
+            f"found {sorted(actual_dominance_lists)}"
+        )
+    expected_dominance_values = {
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_CITY_BASE"): (1, 100),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_CITY_DEFENDING_UNITS"): (1, -25),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_CITY_DEFENSES"): (1, -25),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): (1, -50),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): (1, -30),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): (1, -40),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): (1, 30),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_IMPROVEMENT"): (1, 25),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_UNIT_TRADE"): (1, 20),
+        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_DISTRICT"): (1, 15),
+        ("ASAI_MilitaryDominanceOperations", "CITY_ASSAULT"): (1, 1),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_DENOUNCE"): (1, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_DECLARE_FORMAL_WAR"): (1, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_DECLARE_FRIENDSHIP"): (0, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_RENEW_ALLIANCE"): (0, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_ALLIANCE_CULTURAL"): (0, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_ALLIANCE_ECONOMIC"): (0, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_ALLIANCE_MILITARY"): (0, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_ALLIANCE_RELIGIOUS"): (0, 0),
+        ("ASAI_MilitaryDominanceDiplomacy", "DIPLOACTION_ALLIANCE_RESEARCH"): (0, 0),
+    }
+    for (list_type, item), expected in expected_dominance_values.items():
+        row = connection.execute(
+            "SELECT Favored, Value FROM AiFavoredItems "
+            "WHERE ListType = ? AND Item = ?",
+            (list_type, item),
+        ).fetchone()
+        if row != expected:
+            errors.append(
+                f"military dominance {list_type}/{item} expected {expected}, "
+                f"found {row}"
+            )
+    surprise_war = connection.execute(
+        "SELECT COUNT(*) FROM AiFavoredItems "
+        "WHERE ListType = 'ASAI_MilitaryDominanceDiplomacy' "
+        "AND Item = 'DIPLOACTION_DECLARE_SURPRISE_WAR'"
+    ).fetchone()[0]
+    if surprise_war:
+        errors.append("military dominance must not explicitly favor surprise war")
+
     scale_strategy = connection.execute(
         "SELECT COUNT(*) FROM Strategies "
         "WHERE StrategyType = 'ASAI_STRATEGY_SCALE_RECOVERY'"
@@ -1401,7 +1512,10 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_ScaleRecoveryDistricts", "DISTRICT_INDUSTRIAL_ZONE"): 30,
         ("ASAI_ScaleRecoveryDistricts", "DISTRICT_COMMERCIAL_HUB"): 20,
         ("ASAI_ScaleRecoveryDistricts", "DISTRICT_HARBOR"): 20,
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_AQUEDUCT"): 35,
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_NEIGHBORHOOD"): 35,
         ("ASAI_ScaleRecoveryBuildings", "BUILDING_GRANARY"): 55,
+        ("ASAI_ScaleRecoveryBuildings", "BUILDING_SEWER"): 35,
         ("ASAI_ScaleRecoveryBuildings", "BUILDING_MONUMENT"): 45,
         ("ASAI_ScaleRecoveryBuildings", "BUILDING_MARKET"): 45,
         ("ASAI_ScaleRecoveryBuildings", "BUILDING_LIGHTHOUSE"): 45,
@@ -1612,6 +1726,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_CultureExecutionBuildings", "BUILDING_MONUMENT"): 100,
         ("ASAI_EmpireExecutionBuildings", "BUILDING_GRANARY"): 60,
         ("ASAI_EmpireExecutionBuildings", "BUILDING_WATER_MILL"): 40,
+        ("ASAI_EmpireExecutionBuildings", "BUILDING_SEWER"): 50,
     }
     for (list_type, item), expected in expected_execution_values.items():
         row = connection.execute(
@@ -1635,6 +1750,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_ScaleRecoveryDistricts", "DISTRICT_INDUSTRIAL_ZONE", 30),
         ("ASAI_ScaleRecoveryDistricts", "DISTRICT_COMMERCIAL_HUB", 20),
         ("ASAI_ScaleRecoveryDistricts", "DISTRICT_HARBOR", 20),
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_AQUEDUCT", 35),
+        ("ASAI_ScaleRecoveryDistricts", "DISTRICT_NEIGHBORHOOD", 35),
     )
     for list_type, base_district, expected in district_replacement_expectations:
         missing = [
@@ -1868,8 +1985,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 23:
-                    errors.append(f"expected 23 adaptive strategies, found {strategy_count}")
+                if strategy_count != 24:
+                    errors.append(f"expected 24 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -1895,8 +2012,12 @@ def main() -> int:
         "+50% Production/Gold, +24% Science/Culture/Faith, +3 combat, +30% XP"
     )
     print(
-        "- adaptive strategies: 23 "
-        "(including military readiness, military execution, and scale recovery)"
+        "- adaptive strategies: 24 "
+        "(including readiness, military dominance, execution, and scale recovery)"
+    )
+    print(
+        "- reversible result tiers: mild +20/+15/+15/+10 and "
+        "strong +40/+30/+30/+20 (Production/Science/Culture/Food)"
     )
     print("- game cache was not modified")
     return 0
