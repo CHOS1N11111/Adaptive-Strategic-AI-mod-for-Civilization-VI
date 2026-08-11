@@ -121,7 +121,9 @@ local Strategic = {
     EXECUTION_PROPERTY = "ASAI_STRATEGIC_PLAN_EXECUTION",
     STALL_COUNT_PROPERTY = "ASAI_STRATEGIC_PLAN_STALL_COUNT",
     SCORE_PROPERTY = "ASAI_STRATEGIC_PLAN_SCORE_X100",
-    SUPPORT_PROPERTY = "ASAI_STRATEGIC_SUPPORT"
+    SUPPORT_PROPERTY = "ASAI_STRATEGIC_SUPPORT",
+    OUTCOME_SCHEMA = 1,
+    OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"
 };
 Strategic.COOLDOWN_PROPERTIES = {
     [Strategic.DEVELOP] = "ASAI_PLAN_DEVELOP_COOLDOWN_UNTIL",
@@ -1514,6 +1516,7 @@ local function GetNeutralRelativeState()
         StrategicPlanExecution = 0,
         StrategicPlanStallCount = 0,
         StrategicPlanScore = 0,
+        StrategicPlanOutcomeSchema = Strategic.OUTCOME_SCHEMA,
         StrategicPlanScores = {},
         StrategicPlanCooldownUntil = {
             [Strategic.DEVELOP] = -1,
@@ -1753,6 +1756,15 @@ local function ReadRelativeState(player)
         Strategic.STARTED_TURN_PROPERTY,
         -1
     );
+    local rawOutcomeSchema = player:GetProperty(
+        Strategic.OUTCOME_SCHEMA_PROPERTY
+    );
+    local storedOutcomeSchema = tonumber(rawOutcomeSchema);
+    if storedOutcomeSchema ~= nil then
+        state.StrategicPlanOutcomeSchema = math.floor(storedOutcomeSchema);
+    elseif player:GetProperty(Strategic.STARTED_TURN_PROPERTY) ~= nil then
+        state.StrategicPlanOutcomeSchema = 0;
+    end
     state.StrategicPlanReviewTurn = GetStoredNumber(
         player,
         Strategic.REVIEW_TURN_PROPERTY,
@@ -1974,6 +1986,10 @@ local function StoreRelativeState(player, state)
     player:SetProperty(
         Strategic.SCORE_PROPERTY,
         math.floor(state.StrategicPlanScore * 100 + 0.5)
+    );
+    player:SetProperty(
+        Strategic.OUTCOME_SCHEMA_PROPERTY,
+        state.StrategicPlanOutcomeSchema
     );
     for plan, propertyName in pairs(Strategic.COOLDOWN_PROPERTIES) do
         player:SetProperty(propertyName, state.StrategicPlanCooldownUntil[plan]);
@@ -2578,7 +2594,10 @@ function Strategic.GetPlanOutcomeScore(state, plan)
     if plan == Strategic.DEFEND then
         return competitive.Military;
     end
-    if plan == Strategic.PRESSURE or plan == Strategic.WAR then
+    if plan == Strategic.PRESSURE then
+        return competitive.Empire;
+    end
+    if plan == Strategic.WAR then
         return competitive.Overall * 0.65 + competitive.Military * 0.35;
     end
     return competitive.Overall;
@@ -2682,13 +2701,13 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         state.StrategicPlanStallCount = 0;
     else
         state.StrategicPlanStallCount = state.StrategicPlanStallCount + 1;
-        state.StrategicPlanResult = state.StrategicPlanExecution == 0
-            and RELATIVE_FOCUS_RESULT_STALLED
-            or RELATIVE_FOCUS_RESULT_EXECUTING;
+        state.StrategicPlanResult = state.StrategicPlanExecution > 0
+            and RELATIVE_FOCUS_RESULT_EXECUTING
+            or RELATIVE_FOCUS_RESULT_STALLED;
     end
 
     print(string.format(
-        "ASAI_PLAN_REVIEW turn=%d standard_turn=%.1f player=%d plan=%s result=%s execution=%d stall_count=%d gain=%.3f city_gain=%d combat_gain=%d",
+        "ASAI_PLAN_REVIEW turn=%d standard_turn=%.1f player=%d plan=%s result=%s execution=%d stall_count=%d gain=%.3f city_gain=%d combat_gain=%d active_major_wars=%d",
         turn,
         GetStandardEquivalentTurn(turn),
         playerID,
@@ -2698,7 +2717,8 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         state.StrategicPlanStallCount,
         state.StrategicPlanGain,
         cityGain,
-        combatGain
+        combatGain,
+        snapshot.ActiveMajorWars
     ));
 
     local stallLimit = math.max(
@@ -3132,6 +3152,36 @@ local function EvaluateRelativeState(playerID)
             end
         end
         UpdateScaleExpansionAvailability(state, empireSnapshot);
+
+        if state.StrategicPlanOutcomeSchema < Strategic.OUTCOME_SCHEMA then
+            local previousOutcomeSchema = state.StrategicPlanOutcomeSchema;
+            local resetPressureBaseline = 0;
+            if state.StrategicPlan == Strategic.PRESSURE
+                and state.StrategicPlanStartedTurn >= 0 then
+                Strategic.ResetPlanReviewBaseline(
+                    state,
+                    empireSnapshot,
+                    strengthSnapshot,
+                    turn
+                );
+                state.StrategicPlanGain = 0;
+                state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE;
+                state.StrategicPlanExecution = 0;
+                state.StrategicPlanStallCount = 0;
+                resetPressureBaseline = 1;
+            end
+            state.StrategicPlanOutcomeSchema = Strategic.OUTCOME_SCHEMA;
+            print(string.format(
+                "ASAI_PLAN_MIGRATION turn=%d standard_turn=%.1f player=%d plan=%s from_schema=%d to_schema=%d reset_pressure_baseline=%d",
+                turn,
+                GetStandardEquivalentTurn(turn),
+                playerID,
+                Strategic.GetPlanName(state.StrategicPlan),
+                previousOutcomeSchema,
+                state.StrategicPlanOutcomeSchema,
+                resetPressureBaseline
+            ));
+        end
 
         local strategicPlanRetired = Strategic.ReviewPlan(
             playerID,

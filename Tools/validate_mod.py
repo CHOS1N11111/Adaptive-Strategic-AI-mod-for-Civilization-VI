@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.0"
-EXPECTED_MODINFO_VERSION = "22"
+EXPECTED_RELEASE = "0.11.1"
+EXPECTED_MODINFO_VERSION = "23"
 
 
 def default_database() -> Path:
@@ -204,6 +204,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_DOMINANCE",
         "ASAI_PLAN turn=",
         "ASAI_PLAN_REVIEW",
+        "ASAI_PLAN_MIGRATION",
         "ASAI_RECOVERY",
         "ASAI_METRIC",
         "ASAI_COMPONENTS",
@@ -442,6 +443,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "function Strategic.GetPlanScores(state, snapshot, turn)",
         "function Strategic.SelectPlan(state, snapshot, scores)",
         "function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)",
+        "if plan == Strategic.PRESSURE then\n        return competitive.Empire;",
+        "state.StrategicPlanExecution > 0",
+        'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
+        "reset_pressure_baseline=%d",
         "function Strategic.UpdateSupport(state)",
         "ASAI_PLAN_MIN_DWELL_STANDARD",
         "ASAI_PLAN_CONFIRM_SAMPLES",
@@ -463,6 +468,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "score_develop=%.1f",
         "score_war=%.1f",
         "competitive=%.3f",
+        "combat_gain=%d active_major_wars=%d",
     )
     for fragment in strategic_plan_fragments:
         if fragment not in source:
