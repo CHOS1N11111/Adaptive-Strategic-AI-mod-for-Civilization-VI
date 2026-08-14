@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.1"
-EXPECTED_MODINFO_VERSION = "23"
+EXPECTED_RELEASE = "0.11.2"
+EXPECTED_MODINFO_VERSION = "24"
 
 
 def default_database() -> Path:
@@ -379,6 +379,9 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_MILITARY_QUEUE_TARGET_X100",
         "ASAI_WAR_QUEUE_TARGET_X100",
         "local function GetMilitaryExecutionStatus(playerID)",
+        "local failedWarReview = state.StrategicPlan == Strategic.WAR",
+        "state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_EXECUTING",
+        "state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_STALLED",
         "economic.Queue.Combat < target",
         "function ASAI_IsMilitaryExecutionRecovery(playerID, threshold)",
         "ASAI_READINESS turn=%d standard_turn=%.1f",
@@ -444,9 +447,15 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "function Strategic.SelectPlan(state, snapshot, scores)",
         "function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)",
         "if plan == Strategic.PRESSURE then\n        return competitive.Empire;",
+        "if plan == Strategic.WAR then\n        return competitive.Overall;",
+        'BASELINE_CAPTURED_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_CAPTURED"',
+        "CapturedCities = capturedCities",
+        "city:GetOriginalOwner() ~= playerID",
+        "improved = improved or capturedGain > 0",
         "state.StrategicPlanExecution > 0",
         'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
         "reset_pressure_baseline=%d",
+        "reset_war_baseline=%d",
         "function Strategic.UpdateSupport(state)",
         "ASAI_PLAN_MIN_DWELL_STANDARD",
         "ASAI_PLAN_CONFIRM_SAMPLES",
@@ -468,7 +477,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "score_develop=%.1f",
         "score_war=%.1f",
         "competitive=%.3f",
-        "combat_gain=%d active_major_wars=%d",
+        "capture_gain=%d combat_gain=%d active_major_wars=%d",
     )
     for fragment in strategic_plan_fragments:
         if fragment not in source:
@@ -1214,6 +1223,11 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     focus_margin = parameters.get("ASAI_RELATIVE_FOCUS_SWITCH_MARGIN_X100")
     if focus_margin is not None and not 0 <= focus_margin <= 100:
         errors.append(f"relative focus switch margin is invalid: {focus_margin}")
+    if focus_margin != 5:
+        errors.append(
+            "relative focus switch margin differs from the 0.11.x cross-session "
+            f"replay: {focus_margin}"
+        )
     focus_review = parameters.get("ASAI_RELATIVE_FOCUS_REVIEW_STANDARD")
     focus_minimum_gain = parameters.get("ASAI_RELATIVE_FOCUS_MIN_GAIN_X100")
     focus_raw_minimum_gain = parameters.get("ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100")
