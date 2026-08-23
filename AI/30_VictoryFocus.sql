@@ -162,13 +162,23 @@ SELECT 'ASAI_ScienceProjects', ProjectType, 1, 100
 FROM Projects
 WHERE SpaceRace = 1;
 
+-- Each value follows the direct unlock order of the Gathering Storm space
+-- projects. Completed technologies leave the chooser naturally; the list is
+-- attached only to the native science-victory strategy.
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
-SELECT 'ASAI_ScienceTechs', TechnologyType, 1, 35
+SELECT 'ASAI_ScienceTechs', TechnologyType, 1,
+    CASE TechnologyType
+        WHEN 'TECH_ROCKETRY' THEN 45
+        WHEN 'TECH_SATELLITES' THEN 60
+        WHEN 'TECH_NANOTECHNOLOGY' THEN 80
+        WHEN 'TECH_SMART_MATERIALS' THEN 100
+        WHEN 'TECH_OFFWORLD_MISSION' THEN 115
+    END
 FROM Technologies
 WHERE TechnologyType IN
-    ('TECH_ROCKETRY', 'TECH_SATELLITES', 'TECH_ROBOTICS',
-     'TECH_NANOTECHNOLOGY', 'TECH_SMART_MATERIALS', 'TECH_OFFWORLD_MISSION');
+    ('TECH_ROCKETRY', 'TECH_SATELLITES', 'TECH_NANOTECHNOLOGY',
+     'TECH_SMART_MATERIALS', 'TECH_OFFWORLD_MISSION');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)

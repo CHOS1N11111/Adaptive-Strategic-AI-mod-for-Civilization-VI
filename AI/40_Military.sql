@@ -62,7 +62,10 @@ WHERE TeamName = 'Simple City Attack Force'
   AND AiType = 'UNITTYPE_RANGED';
 
 UPDATE OpTeamRequirements
-SET MinNumber = 1,
+-- UNITTYPE_SIEGE_ALL already keeps one wall-breaking slot mandatory. Requiring
+-- a second, strict siege-class slot prevents modern air/GDR-heavy armies from
+-- assembling even when they otherwise satisfy the operation.
+SET MinNumber = 0,
     MaxNumber = 3
 WHERE TeamName = 'City Attack Force'
   AND AiType = 'UNITTYPE_SIEGE';

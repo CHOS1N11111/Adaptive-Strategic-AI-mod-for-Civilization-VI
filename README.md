@@ -1,8 +1,8 @@
 **English** | [简体中文](README.zh-CN.md)
 
-# Adaptive Strategic AI 0.11.3
+# Adaptive Strategic AI 0.11.4
 
-Adaptive Strategic AI reshapes Civilization VI: Gathering Storm AI behavior around expansion, economic development, military readiness, and competitive pacing. Version 0.11.3 limits broad result bonuses to broad deficits and requires a genuinely sustainable army before an AI treats its military as surplus.
+Adaptive Strategic AI reshapes Civilization VI: Gathering Storm AI behavior around expansion, economic development, military readiness, and competitive pacing. Version 0.11.4 removes a duplicated siege requirement that blocked modern city assaults and gives an active science-victory strategy a progressively stronger path through the technologies that unlock each space-race project.
 
 ## What This Release Does
 
@@ -26,8 +26,8 @@ Adaptive Strategic AI reshapes Civilization VI: Gathering Storm AI behavior arou
 - Builder, Trader, and Settler budgets include active units and the item each city is currently producing. Once a budget is full, reverse pressure reduces duplicate orders across cities.
 - The controller tracks total and per-city production, specialty district capacity, trade capacity, improvement coverage, current construction, and gold reserves. These signals distinguish expansion shortages from cities that are not converting production into useful assets.
 - When a science, culture, or empire focus fails to improve, the controller checks actual city production and temporarily strengthens the relevant execution weights. Theater Squares, their buildings, Monuments, and civilization-specific replacements receive the corresponding culture signal. The extra weights are removed after recovery.
-- Science, culture, domination, religious, and diplomatic victory plans receive distinct preferences for districts, buildings, units, technologies, civics, and projects.
-- City attack operations use shorter assembly distances, practical launch thresholds, and more balanced ranged, siege, and air compositions. Wartime mobilization avoids splitting scarce defensive units across unnecessary assaults.
+- Science, culture, domination, religious, and diplomatic victory plans receive distinct preferences for districts, buildings, units, technologies, civics, and projects. While the native science-victory strategy is active, the direct project gates now rise from Rocketry through Satellites, Nanotechnology, Smart Materials, and Offworld Mission; Robotics keeps only the base game's normal science-victory preference instead of competing at the same extra weight.
+- City attack operations use shorter assembly distances, practical launch thresholds, and more balanced ranged, siege, and air compositions. Walled-city teams still require one broad wall-breaking unit, but the overlapping strict siege-class slot is optional so late air/GDR-heavy armies are not blocked solely by the absence of a second conventional siege unit. Wartime mobilization avoids splitting scarce defensive units across unnecessary assaults.
 - A trailing AI reduces wonder preference to preserve production for expansion, improvements, trade, and key districts. Severe support increases that opportunity cost and removes it after recovery. Military weakness and active major-civilization wars apply stronger, temporary opportunity costs.
 - The mod does not spawn units or grant technologies, civics, resources, cities, or accumulated progress. Its player-relative result modifiers affect only future Production, Science/Culture, and Food rates on Deity; they do not affect Gold, Faith, combat strength, or matched/leading AIs.
 

@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.3"
-EXPECTED_MODINFO_VERSION = "25"
+EXPECTED_RELEASE = "0.11.4"
+EXPECTED_MODINFO_VERSION = "26"
 
 
 def default_database() -> Path:
@@ -871,6 +871,76 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
     ).fetchone()
     if walled != (7, 10):
         errors.append(f"walled-city operation expected (7, 10), found {walled}")
+
+    expected_city_attack_requirements = {
+        "UNITTYPE_SIEGE": (0, 3),
+        "UNITTYPE_SIEGE_ALL": (1, 4),
+        "UNITTYPE_RANGED": (2, 5),
+        "UNITTYPE_AIR": (0, 3),
+        "UNITTYPE_AIR_SIEGE": (0, 2),
+    }
+    actual_city_attack_requirements = {
+        ai_type: (minimum, maximum)
+        for ai_type, minimum, maximum in connection.execute(
+            "SELECT AiType, MinNumber, MaxNumber FROM OpTeamRequirements "
+            "WHERE TeamName = 'City Attack Force'"
+        )
+        if ai_type in expected_city_attack_requirements
+    }
+    if actual_city_attack_requirements != expected_city_attack_requirements:
+        errors.append(
+            "city-attack composition differs: "
+            f"expected {expected_city_attack_requirements}, "
+            f"found {actual_city_attack_requirements}"
+        )
+
+    expected_science_path = {
+        "TECH_ROCKETRY": 45,
+        "TECH_SATELLITES": 60,
+        "TECH_NANOTECHNOLOGY": 80,
+        "TECH_SMART_MATERIALS": 100,
+        "TECH_OFFWORLD_MISSION": 115,
+    }
+    actual_science_path = dict(
+        connection.execute(
+            "SELECT Item, Value FROM AiFavoredItems "
+            "WHERE ListType = 'ASAI_ScienceTechs'"
+        )
+    )
+    if actual_science_path != expected_science_path:
+        errors.append(
+            "science-victory critical path differs: "
+            f"expected {expected_science_path}, found {actual_science_path}"
+        )
+    science_path_owners = {
+        row[0]
+        for row in connection.execute(
+            "SELECT StrategyType FROM Strategy_Priorities "
+            "WHERE ListType = 'ASAI_ScienceTechs'"
+        )
+    }
+    if science_path_owners != {"VICTORY_STRATEGY_SCIENCE_VICTORY"}:
+        errors.append(
+            "science-victory critical path must belong only to the native "
+            f"science strategy, found {sorted(science_path_owners)}"
+        )
+    project_gate_techs = {
+        row[0]
+        for row in connection.execute(
+            "SELECT DISTINCT PrereqTech FROM Projects "
+            "WHERE ProjectType IN "
+            "('PROJECT_LAUNCH_EARTH_SATELLITE', "
+            "'PROJECT_LAUNCH_MOON_LANDING', 'PROJECT_LAUNCH_MARS_BASE', "
+            "'PROJECT_LAUNCH_EXOPLANET_EXPEDITION', "
+            "'PROJECT_ORBITAL_LASER', 'PROJECT_TERRESTRIAL_LASER')"
+        )
+    }
+    if project_gate_techs != set(expected_science_path):
+        errors.append(
+            "science-victory priorities no longer match direct project gates: "
+            f"expected {sorted(expected_science_path)}, "
+            f"found {sorted(project_gate_techs)}"
+        )
 
     expected_settlement_items = {
         ("Nearest Friendly City", None): -8,
