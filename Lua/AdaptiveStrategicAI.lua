@@ -2198,15 +2198,41 @@ local function GetDesiredScaleRecovery(state)
     return empireScore <= enter and 1 or 0;
 end
 
+local function HasBroadMildResultGap(state, currentlyActive)
+    local overallEnter = GetNumberParameter(
+        "ASAI_MILD_RESULT_OVERALL_ENTER_X100",
+        92
+    ) / 100;
+    local overallExit = GetNumberParameter(
+        "ASAI_MILD_RESULT_OVERALL_EXIT_X100",
+        100
+    ) / 100;
+    local coreEnter = GetNumberParameter(
+        "ASAI_MILD_RESULT_CORE_ENTER_X100",
+        90
+    ) / 100;
+    local coreExit = GetNumberParameter(
+        "ASAI_MILD_RESULT_CORE_EXIT_X100",
+        98
+    ) / 100;
+    local secondCore = GetSecondWeakestCorePillarScore(state);
+    if currentlyActive then
+        return state.Scores.Overall < overallExit or secondCore < coreExit;
+    end
+    return state.Scores.Overall <= overallEnter or secondCore <= coreEnter;
+end
+
 local function SyncMildResultYields(playerID, player, state, turn)
     local enabled = GetNumberParameter(
         "ASAI_MILD_RESULT_YIELDS_ENABLED",
         1
     ) == 1;
+    local currentlyActive = state.MildResultYieldsActive == 1;
+    local broadEligible = HasBroadMildResultGap(state, currentlyActive);
     local desiredActive = enabled
         and state.Band == RELATIVE_CATCHUP
-        and state.SevereCatchup ~= 1;
-    local currentlyActive = state.MildResultYieldsActive == 1;
+        and state.SevereCatchup ~= 1
+        and broadEligible;
     if desiredActive == currentlyActive then
         return;
     end
@@ -2238,7 +2264,7 @@ local function SyncMildResultYields(playerID, player, state, turn)
     );
     local direction = desiredActive and 1 or -1;
     print(string.format(
-        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d tier=mild active=%d action=%s production=%d science=%d culture=%d food=%d relative=%.3f second_core=%.3f weakest_core=%.3f",
+        "ASAI_RESULT turn=%d standard_turn=%.1f player=%d tier=mild active=%d action=%s production=%d science=%d culture=%d food=%d relative=%.3f second_core=%.3f weakest_core=%.3f broad_gap=%d",
         turn,
         GetStandardEquivalentTurn(turn),
         playerID,
@@ -2250,7 +2276,8 @@ local function SyncMildResultYields(playerID, player, state, turn)
         direction * MILD_RESULT_FOOD_PERCENT,
         state.Scores.Overall,
         GetSecondWeakestCorePillarScore(state),
-        GetWeakestCorePillarScore(state)
+        GetWeakestCorePillarScore(state),
+        broadEligible and 1 or 0
     ));
 end
 
@@ -2352,10 +2379,32 @@ local function GetDesiredMilitaryDominance(state, snapshot, turn)
         "ASAI_MILITARY_DOMINANCE_EXIT_X100",
         140
     ) / 100;
+    local competitiveEnter = GetNumberParameter(
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_ENTER_X100",
+        90
+    ) / 100;
+    local competitiveExit = GetNumberParameter(
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_EXIT_X100",
+        80
+    ) / 100;
+    local densityEnter = GetNumberParameter(
+        "ASAI_MILITARY_DOMINANCE_DENSITY_ENTER_X100",
+        175
+    ) / 100;
+    local densityExit = GetNumberParameter(
+        "ASAI_MILITARY_DOMINANCE_DENSITY_EXIT_X100",
+        150
+    ) / 100;
+    local rawMilitary = state.RawScores.Military;
+    local competitiveMilitary = state.CompetitiveScores.Military or rawMilitary;
     if state.MilitaryDominance == 1 then
-        return state.RawScores.Military >= exit and 1 or 0;
+        return (rawMilitary >= exit
+            and competitiveMilitary >= competitiveExit
+            and state.MilitaryUnitsPerPlannedCity >= densityExit) and 1 or 0;
     end
-    return state.RawScores.Military >= enter and 1 or 0;
+    return (rawMilitary >= enter
+        and competitiveMilitary >= competitiveEnter
+        and state.MilitaryUnitsPerPlannedCity >= densityEnter) and 1 or 0;
 end
 
 local function GetDesiredMilitaryReadiness(state, densityEnabled)
@@ -2978,12 +3027,15 @@ local function EvaluateRelativeState(playerID)
         state.MilitaryDominance = 0;
         player:SetProperty(MILITARY_DOMINANCE_PROPERTY, 0);
         print(string.format(
-            "ASAI_DOMINANCE turn=%d standard_turn=%.1f player=%d raw_military=%.3f military=%.3f from=on to=off reason=active_major_war",
+            "ASAI_DOMINANCE turn=%d standard_turn=%.1f player=%d raw_military=%.3f competitive_military=%.3f military=%.3f planned_cities=%d units_per_planned_city=%.2f from=on to=off reason=active_major_war",
             turn,
             GetStandardEquivalentTurn(turn),
             playerID,
             state.RawScores.Military,
-            state.Scores.Military
+            state.CompetitiveScores.Military or state.RawScores.Military,
+            state.Scores.Military,
+            state.MilitaryPlannedCities,
+            state.MilitaryUnitsPerPlannedCity
         ));
     end
     UpdateScaleExpansionAvailability(state, empireSnapshot);
@@ -3405,12 +3457,15 @@ local function EvaluateRelativeState(playerID)
             local dominanceReason = state.MilitaryDominance == 1
                 and "military_surplus" or "advantage_spent";
             print(string.format(
-                "ASAI_DOMINANCE turn=%d standard_turn=%.1f player=%d raw_military=%.3f military=%.3f from=%s to=%s reason=%s",
+                "ASAI_DOMINANCE turn=%d standard_turn=%.1f player=%d raw_military=%.3f competitive_military=%.3f military=%.3f planned_cities=%d units_per_planned_city=%.2f from=%s to=%s reason=%s",
                 turn,
                 GetStandardEquivalentTurn(turn),
                 playerID,
                 state.RawScores.Military,
+                state.CompetitiveScores.Military or state.RawScores.Military,
                 state.Scores.Military,
+                state.MilitaryPlannedCities,
+                state.MilitaryUnitsPerPlannedCity,
                 previousMilitaryDominance == 1 and "on" or "off",
                 state.MilitaryDominance == 1 and "on" or "off",
                 dominanceReason

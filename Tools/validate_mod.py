@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.2"
-EXPECTED_MODINFO_VERSION = "24"
+EXPECTED_RELEASE = "0.11.3"
+EXPECTED_MODINFO_VERSION = "25"
 
 
 def default_database() -> Path:
@@ -329,10 +329,17 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "SEVERE_RESULT_FOOD_PERCENT = 20",
         "MildResultYieldsActive = 0",
         "SevereResultYieldsActive = 0",
+        "local function HasBroadMildResultGap(state, currentlyActive)",
+        "ASAI_MILD_RESULT_OVERALL_ENTER_X100",
+        "ASAI_MILD_RESULT_OVERALL_EXIT_X100",
+        "ASAI_MILD_RESULT_CORE_ENTER_X100",
+        "ASAI_MILD_RESULT_CORE_EXIT_X100",
+        "local broadEligible = HasBroadMildResultGap(state, currentlyActive)",
         "local function SyncMildResultYields(playerID, player, state, turn)",
         "ASAI_MILD_RESULT_YIELDS_ENABLED",
         "and state.Band == RELATIVE_CATCHUP",
         "and state.SevereCatchup ~= 1",
+        "and broadEligible",
         "local function SyncSevereResultYields(playerID, player, state, turn)",
         "ASAI_SEVERE_RESULT_YIELDS_ENABLED",
         "enabled and state.SevereCatchup == 1",
@@ -351,6 +358,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "mild_result_yields=%d",
         "severe_result_yields=%d",
         "result_tier=%s",
+        "broad_gap=%d",
         "food=%d",
     )
     for fragment in severe_result_fragments:
@@ -400,8 +408,14 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_MILITARY_DOMINANCE_START_STANDARD",
         "ASAI_MILITARY_DOMINANCE_ENTER_X100",
         "ASAI_MILITARY_DOMINANCE_EXIT_X100",
-        "state.RawScores.Military >= exit",
-        "state.RawScores.Military >= enter",
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_ENTER_X100",
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_EXIT_X100",
+        "ASAI_MILITARY_DOMINANCE_DENSITY_ENTER_X100",
+        "ASAI_MILITARY_DOMINANCE_DENSITY_EXIT_X100",
+        "competitiveMilitary >= competitiveExit",
+        "competitiveMilitary >= competitiveEnter",
+        "state.MilitaryUnitsPerPlannedCity >= densityExit",
+        "state.MilitaryUnitsPerPlannedCity >= densityEnter",
         "state.MilitaryDominance == 1 and empireSnapshot.ActiveMajorWars > 0",
         "player:SetProperty(MILITARY_DOMINANCE_PROPERTY, 0)",
         "state.MilitaryDominance = GetDesiredMilitaryDominance(",
@@ -410,6 +424,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "player:SetProperty(MILITARY_DOMINANCE_PROPERTY, state.MilitaryDominance)",
         "function ASAI_IsMilitaryDominance(playerID, threshold)",
         "ASAI_DOMINANCE turn=%d standard_turn=%.1f",
+        "competitive_military=%.3f",
         "reason=active_major_war",
         "military_dominance=%d",
     )
@@ -996,6 +1011,10 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_SEVERE_CORE_EXIT_X100",
         "ASAI_RELATIVE_SEVERE_WEAKEST_ENTER_X100",
         "ASAI_RELATIVE_SEVERE_WEAKEST_EXIT_X100",
+        "ASAI_MILD_RESULT_OVERALL_ENTER_X100",
+        "ASAI_MILD_RESULT_OVERALL_EXIT_X100",
+        "ASAI_MILD_RESULT_CORE_ENTER_X100",
+        "ASAI_MILD_RESULT_CORE_EXIT_X100",
         "ASAI_SCALE_RECOVERY_START_STANDARD",
         "ASAI_SCALE_RECOVERY_ENTER_X100",
         "ASAI_SCALE_RECOVERY_EXIT_X100",
@@ -1027,6 +1046,10 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_MILITARY_DOMINANCE_START_STANDARD",
         "ASAI_MILITARY_DOMINANCE_ENTER_X100",
         "ASAI_MILITARY_DOMINANCE_EXIT_X100",
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_ENTER_X100",
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_EXIT_X100",
+        "ASAI_MILITARY_DOMINANCE_DENSITY_ENTER_X100",
+        "ASAI_MILITARY_DOMINANCE_DENSITY_EXIT_X100",
         "ASAI_MILITARY_QUEUE_TARGET_X100",
         "ASAI_WAR_QUEUE_TARGET_X100",
         "ASAI_RELATIVE_SCIENCE_ENTER_X100",
@@ -1132,16 +1155,42 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     dominance_start = parameters.get("ASAI_MILITARY_DOMINANCE_START_STANDARD")
     dominance_enter = parameters.get("ASAI_MILITARY_DOMINANCE_ENTER_X100")
     dominance_exit = parameters.get("ASAI_MILITARY_DOMINANCE_EXIT_X100")
-    if None not in (dominance_start, dominance_enter, dominance_exit):
-        if dominance_start <= 0 or not 100 < dominance_exit < dominance_enter:
+    dominance_competitive_enter = parameters.get(
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_ENTER_X100"
+    )
+    dominance_competitive_exit = parameters.get(
+        "ASAI_MILITARY_DOMINANCE_COMPETITIVE_EXIT_X100"
+    )
+    dominance_density_enter = parameters.get(
+        "ASAI_MILITARY_DOMINANCE_DENSITY_ENTER_X100"
+    )
+    dominance_density_exit = parameters.get(
+        "ASAI_MILITARY_DOMINANCE_DENSITY_EXIT_X100"
+    )
+    dominance_values = (
+        dominance_start,
+        dominance_enter,
+        dominance_exit,
+        dominance_competitive_enter,
+        dominance_competitive_exit,
+        dominance_density_enter,
+        dominance_density_exit,
+    )
+    if None not in dominance_values:
+        if (
+            dominance_start <= 0
+            or not 100 < dominance_exit < dominance_enter
+            or not 0 < dominance_competitive_exit < dominance_competitive_enter <= 100
+            or not 0 < dominance_density_exit < dominance_density_enter
+        ):
             errors.append(
                 "military-dominance thresholds are not ordered safely: "
-                f"{(dominance_start, dominance_exit, dominance_enter)}"
+                f"{dominance_values}"
             )
-        if (dominance_start, dominance_enter, dominance_exit) != (70, 175, 140):
+        if dominance_values != (70, 175, 140, 90, 80, 175, 150):
             errors.append(
-                "military-dominance thresholds differ from the turn 1-110 review: "
-                f"{(dominance_start, dominance_enter, dominance_exit)}"
+                "military-dominance thresholds differ from the turn 1-108 review: "
+                f"{dominance_values}"
             )
     scale_start = parameters.get("ASAI_SCALE_RECOVERY_START_STANDARD")
     scale_enter = parameters.get("ASAI_SCALE_RECOVERY_ENTER_X100")
@@ -1259,6 +1308,29 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(
             f"relative severe-support thresholds are invalid: {(severe_enter, severe_exit)}"
         )
+    mild_overall_enter = parameters.get("ASAI_MILD_RESULT_OVERALL_ENTER_X100")
+    mild_overall_exit = parameters.get("ASAI_MILD_RESULT_OVERALL_EXIT_X100")
+    mild_core_enter = parameters.get("ASAI_MILD_RESULT_CORE_ENTER_X100")
+    mild_core_exit = parameters.get("ASAI_MILD_RESULT_CORE_EXIT_X100")
+    mild_thresholds = (
+        mild_overall_enter,
+        mild_overall_exit,
+        mild_core_enter,
+        mild_core_exit,
+    )
+    if None not in mild_thresholds:
+        if not (
+            0 < mild_overall_enter < mild_overall_exit <= 100
+            and 0 < mild_core_enter < mild_core_exit < 100
+        ):
+            errors.append(
+                f"mild result-yield thresholds are invalid: {mild_thresholds}"
+            )
+        if mild_thresholds != (92, 100, 90, 98):
+            errors.append(
+                "mild result-yield thresholds differ from the turn 1-108 review: "
+                f"{mild_thresholds}"
+            )
     severe_core_enter = parameters.get("ASAI_RELATIVE_SEVERE_CORE_ENTER_X100")
     severe_core_exit = parameters.get("ASAI_RELATIVE_SEVERE_CORE_EXIT_X100")
     if (
