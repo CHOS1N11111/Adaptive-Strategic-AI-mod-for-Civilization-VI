@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.5"
-EXPECTED_MODINFO_VERSION = "27"
+EXPECTED_RELEASE = "0.11.6"
+EXPECTED_MODINFO_VERSION = "28"
 
 
 def default_database() -> Path:
@@ -207,6 +207,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_PLAN turn=",
         "ASAI_PLAN_REVIEW",
         "ASAI_PLAN_MIGRATION",
+        "ASAI_WAR_STOP_LOSS",
         "ASAI_RECOVERY",
         "ASAI_METRIC",
         "ASAI_COMPONENTS",
@@ -241,6 +242,11 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "pcall(\n        RecordUnitDamage",
         "return snapshot.ActiveMajorWars > 0",
         "Events.UnitDamageChanged.Add(OnUnitDamageChanged)",
+        "GameEvents.CityConquered.Add(Strategic.OnCityConquered)",
+        "GameEvents.OnPillage.Add(Strategic.OnPillage)",
+        "ASAI_MAJOR_COMBAT_EVENTS",
+        "ASAI_MAJOR_CAPTURE_EVENTS",
+        "ASAI_MAJOR_PILLAGE_EVENTS",
         "active_major_wars=%d",
     )
     for fragment in war_fragments:
@@ -270,6 +276,13 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         'ASAI_RELATIVE_FOCUS_REVIEW_STANDARD", 12',
         "queue_response=%d",
         "stall_count=%d",
+        "function Strategic.GetFocusOwnMetrics(strength, focus)",
+        "local smoothedClosure = state.FocusGain >= minimumGain",
+        "local rawClosure = state.FocusRawGain >= minimumRawGain",
+        "local ownGrowth = state.FocusOwnYieldGain >= minimumOwnYieldGain",
+        "if not (smoothedClosure and rawClosure and ownGrowth) then",
+        "smoothed_closure=%.3f raw_closure=%.3f",
+        "own_yield_gain=%.3f own_progress_gain=%d",
         "local function IsFocusExecutionRecovery(playerID, focus)",
         "state.FocusResult == RELATIVE_FOCUS_RESULT_STALLED",
         "or state.FocusResult == RELATIVE_FOCUS_RESULT_EXECUTING",
@@ -285,6 +298,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in focus_fragments:
         if fragment not in source:
             errors.append(f"single-focus recovery fragment is missing: {fragment}")
+    if "if state.FocusGain < minimumGain and state.FocusRawGain" in source:
+        errors.append(
+            "focus success still accepts either relative-gain signal independently"
+        )
     support_fragments = (
         "ASAI_RELATIVE_CATCHUP_WEAKEST_ENTER_X100",
         "ASAI_RELATIVE_CATCHUP_WEAKEST_EXIT_X100",
@@ -386,7 +403,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "state.MilitaryReadinessCooldownUntil",
         "MILITARY_READINESS_PROPERTY",
         "function ASAI_IsMilitaryReadiness(playerID, threshold)",
-        "local function GetMilitaryQueueTarget(snapshot)",
+        "local function GetMilitaryQueueTarget(snapshot, state)",
         "ASAI_MILITARY_QUEUE_TARGET_X100",
         "ASAI_WAR_QUEUE_TARGET_X100",
         "local function GetMilitaryExecutionStatus(playerID)",
@@ -469,7 +486,19 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         'BASELINE_CAPTURED_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_CAPTURED"',
         "CapturedCities = capturedCities",
         "city:GetOriginalOwner() ~= playerID",
-        "improved = improved or capturedGain > 0",
+        "function Strategic.GetWarOpponentMilitary(snapshot)",
+        "local strategicProgress = false",
+        "improved = strategicProgress",
+        "captureEvents > 0",
+        "enemyLossRatio >= minimumEnemyLoss",
+        "pillageEvents >= minimumPillages",
+        "war_stop_loss_reallocate",
+        "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
+        "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
+        "local retirePlan = state.StrategicPlan ~= Strategic.DEVELOP\n"
+        "        and state.StrategicPlanResult",
+        "snapshot.ActiveMajorWars > 0 and not warStopLoss",
+        "snapshot.Turn < warCooldownUntil",
         "state.StrategicPlanExecution > 0",
         'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
         "reset_pressure_baseline=%d",
@@ -495,11 +524,14 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "score_develop=%.1f",
         "score_war=%.1f",
         "competitive=%.3f",
-        "capture_gain=%d combat_gain=%d active_major_wars=%d",
+        "capture_gain=%d territory_gain=%d combat_unit_gain=%d",
+        "strategic_progress=%d active_major_wars=%d",
     )
     for fragment in strategic_plan_fragments:
         if fragment not in source:
             errors.append(f"strategic coordinator fragment is missing: {fragment}")
+    if "and state.StrategicPlan ~= Strategic.WAR" in source:
+        errors.append("WAR plans are still excluded from stalled-plan retirement")
     diagnostic_fragments = (
         "local function TryDiagnosticSensor(sensorName, collector)",
         "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
@@ -902,10 +934,22 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
     if walled != (7, 10):
         errors.append(f"walled-city operation expected (7, 10), found {walled}")
 
+    wartime_walled = connection.execute(
+        """
+        SELECT MustHaveUnits, MaxTargetDistInArea
+        FROM AiOperationDefs WHERE OperationName = 'Wartime Attack Walled City'
+        """
+    ).fetchone()
+    if wartime_walled != (5, 12):
+        errors.append(
+            "wartime walled-city operation expected flexible floor (5, 12), "
+            f"found {wartime_walled}"
+        )
+
     expected_city_attack_requirements = {
         "UNITTYPE_SIEGE": (0, 3),
         "UNITTYPE_SIEGE_ALL": (1, 4),
-        "UNITTYPE_RANGED": (2, 5),
+        "UNITTYPE_RANGED": (1, 5),
         "UNITTYPE_AIR": (0, 3),
         "UNITTYPE_AIR_SIEGE": (0, 2),
     }
@@ -1270,6 +1314,10 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_WAR_FRONT_CITY_DISTANCE",
         "ASAI_WAR_RECENT_COMBAT_STANDARD",
         "ASAI_WAR_COMBAT_ATTRIBUTION_DISTANCE",
+        "ASAI_WAR_ENEMY_MILITARY_LOSS_X100",
+        "ASAI_WAR_PILLAGE_PROGRESS_MIN",
+        "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
+        "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
         "ASAI_RELATIVE_START_TURN_STANDARD",
         "ASAI_RELATIVE_CHECK_INTERVAL_STANDARD",
         "ASAI_RELATIVE_MIN_DWELL_STANDARD",
@@ -1280,6 +1328,7 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_RELATIVE_FOCUS_REVIEW_STANDARD",
         "ASAI_RELATIVE_FOCUS_MIN_GAIN_X100",
         "ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100",
+        "ASAI_RELATIVE_FOCUS_OWN_YIELD_MIN_GAIN_X100",
         "ASAI_RELATIVE_FOCUS_STALL_LIMIT",
         "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD",
         "ASAI_RELATIVE_SEVERE_ENTER_X100",
@@ -1545,10 +1594,33 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_WAR_FRONT_CITY_DISTANCE",
         "ASAI_WAR_RECENT_COMBAT_STANDARD",
         "ASAI_WAR_COMBAT_ATTRIBUTION_DISTANCE",
+        "ASAI_WAR_PILLAGE_PROGRESS_MIN",
+        "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
     ):
         value = parameters.get(name)
         if value is not None and value <= 0:
             errors.append(f"active-war parameter must be positive: {name}={value}")
+    enemy_loss = parameters.get("ASAI_WAR_ENEMY_MILITARY_LOSS_X100")
+    if enemy_loss is not None and not 1 <= enemy_loss <= 50:
+        errors.append(f"war enemy-loss threshold is invalid: {enemy_loss}")
+    extra_war_cooldown = parameters.get(
+        "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD"
+    )
+    if extra_war_cooldown is not None and extra_war_cooldown < 0:
+        errors.append(
+            f"extra-war stop-loss cooldown cannot be negative: {extra_war_cooldown}"
+        )
+    war_stop_loss_profile = (
+        enemy_loss,
+        parameters.get("ASAI_WAR_PILLAGE_PROGRESS_MIN"),
+        parameters.get("ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD"),
+        extra_war_cooldown,
+    )
+    if war_stop_loss_profile != (12, 2, 20, 8):
+        errors.append(
+            "war stop-loss profile differs from the turn 1-137 review: "
+            f"{war_stop_loss_profile}"
+        )
     ema_alpha = parameters.get("ASAI_RELATIVE_EMA_ALPHA_X100")
     if ema_alpha is not None and not 0 < ema_alpha <= 100:
         errors.append(f"relative EMA alpha is invalid: {ema_alpha}")
@@ -1563,6 +1635,9 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     focus_review = parameters.get("ASAI_RELATIVE_FOCUS_REVIEW_STANDARD")
     focus_minimum_gain = parameters.get("ASAI_RELATIVE_FOCUS_MIN_GAIN_X100")
     focus_raw_minimum_gain = parameters.get("ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100")
+    focus_own_minimum_gain = parameters.get(
+        "ASAI_RELATIVE_FOCUS_OWN_YIELD_MIN_GAIN_X100"
+    )
     focus_stall_cooldown = parameters.get(
         "ASAI_RELATIVE_FOCUS_STALL_COOLDOWN_STANDARD"
     )
@@ -1572,9 +1647,19 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     for name, value in (
         ("smoothed", focus_minimum_gain),
         ("raw", focus_raw_minimum_gain),
+        ("own-yield", focus_own_minimum_gain),
     ):
         if value is not None and not 0 <= value <= 25:
             errors.append(f"relative focus {name} minimum gain is invalid: {value}")
+    if (
+        focus_minimum_gain,
+        focus_raw_minimum_gain,
+        focus_own_minimum_gain,
+    ) != (3, 1, 1):
+        errors.append(
+            "focus outcome thresholds differ from the turn 1-137 review: "
+            f"{(focus_minimum_gain, focus_raw_minimum_gain, focus_own_minimum_gain)}"
+        )
     if focus_stall_cooldown is not None and focus_stall_cooldown < 0:
         errors.append(
             f"relative focus stall cooldown cannot be negative: {focus_stall_cooldown}"

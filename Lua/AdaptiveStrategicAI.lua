@@ -117,14 +117,36 @@ local Strategic = {
     BASELINE_CITIES_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_CITIES",
     BASELINE_CAPTURED_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_CAPTURED",
     BASELINE_COMBAT_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_COMBAT",
+    BASELINE_OWNED_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_OWNED",
+    BASELINE_MILITARY_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_MILITARY",
+    BASELINE_ENEMY_MILITARY_PROPERTY =
+        "ASAI_STRATEGIC_PLAN_BASELINE_ENEMY_MILITARY",
+    BASELINE_MAJOR_WARS_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_MAJOR_WARS",
+    BASELINE_COMBAT_EVENTS_PROPERTY =
+        "ASAI_STRATEGIC_PLAN_BASELINE_COMBAT_EVENTS",
+    BASELINE_CAPTURE_EVENTS_PROPERTY =
+        "ASAI_STRATEGIC_PLAN_BASELINE_CAPTURE_EVENTS",
+    BASELINE_PILLAGE_EVENTS_PROPERTY =
+        "ASAI_STRATEGIC_PLAN_BASELINE_PILLAGE_EVENTS",
     GAIN_PROPERTY = "ASAI_STRATEGIC_PLAN_GAIN_X1000",
     RESULT_PROPERTY = "ASAI_STRATEGIC_PLAN_RESULT",
     EXECUTION_PROPERTY = "ASAI_STRATEGIC_PLAN_EXECUTION",
     STALL_COUNT_PROPERTY = "ASAI_STRATEGIC_PLAN_STALL_COUNT",
     SCORE_PROPERTY = "ASAI_STRATEGIC_PLAN_SCORE_X100",
     SUPPORT_PROPERTY = "ASAI_STRATEGIC_SUPPORT",
-    OUTCOME_SCHEMA = 2,
-    OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"
+    OUTCOME_SCHEMA = 3,
+    OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA",
+    MAJOR_COMBAT_EVENTS_PROPERTY = "ASAI_MAJOR_COMBAT_EVENTS",
+    MAJOR_CAPTURE_EVENTS_PROPERTY = "ASAI_MAJOR_CAPTURE_EVENTS",
+    MAJOR_PILLAGE_EVENTS_PROPERTY = "ASAI_MAJOR_PILLAGE_EVENTS",
+    FOCUS_OWN_YIELD_BASELINE_PROPERTY =
+        "ASAI_RELATIVE_FOCUS_OWN_YIELD_BASELINE_X100",
+    FOCUS_OWN_PROGRESS_BASELINE_PROPERTY =
+        "ASAI_RELATIVE_FOCUS_OWN_PROGRESS_BASELINE",
+    FOCUS_OWN_YIELD_GAIN_PROPERTY =
+        "ASAI_RELATIVE_FOCUS_OWN_YIELD_GAIN_X1000",
+    FOCUS_OWN_PROGRESS_GAIN_PROPERTY =
+        "ASAI_RELATIVE_FOCUS_OWN_PROGRESS_GAIN"
 };
 Strategic.COOLDOWN_PROPERTIES = {
     [Strategic.DEVELOP] = "ASAI_PLAN_DEVELOP_COOLDOWN_UNTIL",
@@ -195,6 +217,19 @@ local function GetNumberParameter(name, fallback)
         return fallback;
     end
     return value;
+end
+
+function Strategic.GetRuntimeCounter(player, propertyName)
+    local rawValue = player:GetProperty(propertyName);
+    local value = tonumber(rawValue);
+    return value ~= nil and math.max(0, math.floor(value)) or 0;
+end
+
+function Strategic.IncrementRuntimeCounter(player, propertyName)
+    player:SetProperty(
+        propertyName,
+        Strategic.GetRuntimeCounter(player, propertyName) + 1
+    );
 end
 
 local function GetGameSpeedMultiplier()
@@ -722,8 +757,21 @@ local function GetSnapshot(playerID)
         NetGold = treasury:GetGoldYield() - treasury:GetTotalMaintenance(),
         Wars = majorWars + minorWars,
         MajorWars = majorWars,
+        MajorOpponents = majorOpponents,
         ActiveMajorWars = activeMajorWars,
         LastMajorCombatTurn = lastMajorCombatTurn,
+        MajorCombatEvents = Strategic.GetRuntimeCounter(
+            player,
+            Strategic.MAJOR_COMBAT_EVENTS_PROPERTY
+        ),
+        MajorCaptureEvents = Strategic.GetRuntimeCounter(
+            player,
+            Strategic.MAJOR_CAPTURE_EVENTS_PROPERTY
+        ),
+        MajorPillageEvents = Strategic.GetRuntimeCounter(
+            player,
+            Strategic.MAJOR_PILLAGE_EVENTS_PROPERTY
+        ),
         MinorWars = minorWars,
         Era = player:GetEra()
     };
@@ -1784,6 +1832,10 @@ local function GetNeutralRelativeState()
         FocusRawBaseline = 1,
         FocusGain = 0,
         FocusRawGain = 0,
+        FocusOwnYieldBaseline = -1,
+        FocusOwnProgressBaseline = -1,
+        FocusOwnYieldGain = 0,
+        FocusOwnProgressGain = 0,
         FocusResult = RELATIVE_FOCUS_RESULT_NONE,
         FocusExecution = 0,
         FocusStallCount = 0,
@@ -1817,6 +1869,13 @@ local function GetNeutralRelativeState()
         StrategicPlanBaselineCities = 0,
         StrategicPlanBaselineCaptured = 0,
         StrategicPlanBaselineCombat = 0,
+        StrategicPlanBaselineOwned = 0,
+        StrategicPlanBaselineMilitary = 0,
+        StrategicPlanBaselineEnemyMilitary = 0,
+        StrategicPlanBaselineMajorWars = 0,
+        StrategicPlanBaselineCombatEvents = 0,
+        StrategicPlanBaselineCaptureEvents = 0,
+        StrategicPlanBaselinePillageEvents = 0,
         StrategicPlanGain = 0,
         StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE,
         StrategicPlanExecution = 0,
@@ -1932,6 +1991,26 @@ local function ReadRelativeState(player)
         RELATIVE_FOCUS_RAW_GAIN_PROPERTY,
         0
     ) / 1000;
+    state.FocusOwnYieldBaseline = GetStoredNumber(
+        player,
+        Strategic.FOCUS_OWN_YIELD_BASELINE_PROPERTY,
+        -100
+    ) / 100;
+    state.FocusOwnProgressBaseline = GetStoredNumber(
+        player,
+        Strategic.FOCUS_OWN_PROGRESS_BASELINE_PROPERTY,
+        -1
+    );
+    state.FocusOwnYieldGain = GetStoredNumber(
+        player,
+        Strategic.FOCUS_OWN_YIELD_GAIN_PROPERTY,
+        0
+    ) / 1000;
+    state.FocusOwnProgressGain = GetStoredNumber(
+        player,
+        Strategic.FOCUS_OWN_PROGRESS_GAIN_PROPERTY,
+        0
+    );
     state.FocusResult = GetStoredNumber(
         player,
         RELATIVE_FOCUS_RESULT_PROPERTY,
@@ -2096,6 +2175,41 @@ local function ReadRelativeState(player)
         Strategic.BASELINE_COMBAT_PROPERTY,
         0
     );
+    state.StrategicPlanBaselineOwned = GetStoredNumber(
+        player,
+        Strategic.BASELINE_OWNED_PROPERTY,
+        0
+    );
+    state.StrategicPlanBaselineMilitary = GetStoredNumber(
+        player,
+        Strategic.BASELINE_MILITARY_PROPERTY,
+        0
+    );
+    state.StrategicPlanBaselineEnemyMilitary = GetStoredNumber(
+        player,
+        Strategic.BASELINE_ENEMY_MILITARY_PROPERTY,
+        0
+    );
+    state.StrategicPlanBaselineMajorWars = GetStoredNumber(
+        player,
+        Strategic.BASELINE_MAJOR_WARS_PROPERTY,
+        0
+    );
+    state.StrategicPlanBaselineCombatEvents = GetStoredNumber(
+        player,
+        Strategic.BASELINE_COMBAT_EVENTS_PROPERTY,
+        0
+    );
+    state.StrategicPlanBaselineCaptureEvents = GetStoredNumber(
+        player,
+        Strategic.BASELINE_CAPTURE_EVENTS_PROPERTY,
+        0
+    );
+    state.StrategicPlanBaselinePillageEvents = GetStoredNumber(
+        player,
+        Strategic.BASELINE_PILLAGE_EVENTS_PROPERTY,
+        0
+    );
     state.StrategicPlanGain = GetStoredNumber(
         player,
         Strategic.GAIN_PROPERTY,
@@ -2200,6 +2314,22 @@ local function StoreRelativeState(player, state)
         RELATIVE_FOCUS_RAW_GAIN_PROPERTY,
         math.floor(state.FocusRawGain * 1000 + 0.5)
     );
+    player:SetProperty(
+        Strategic.FOCUS_OWN_YIELD_BASELINE_PROPERTY,
+        math.floor(state.FocusOwnYieldBaseline * 100 + 0.5)
+    );
+    player:SetProperty(
+        Strategic.FOCUS_OWN_PROGRESS_BASELINE_PROPERTY,
+        state.FocusOwnProgressBaseline
+    );
+    player:SetProperty(
+        Strategic.FOCUS_OWN_YIELD_GAIN_PROPERTY,
+        math.floor(state.FocusOwnYieldGain * 1000 + 0.5)
+    );
+    player:SetProperty(
+        Strategic.FOCUS_OWN_PROGRESS_GAIN_PROPERTY,
+        state.FocusOwnProgressGain
+    );
     player:SetProperty(RELATIVE_FOCUS_RESULT_PROPERTY, state.FocusResult);
     player:SetProperty(RELATIVE_FOCUS_EXECUTION_PROPERTY, state.FocusExecution);
     player:SetProperty(RELATIVE_FOCUS_STALL_COUNT_PROPERTY, state.FocusStallCount);
@@ -2284,6 +2414,34 @@ local function StoreRelativeState(player, state)
     player:SetProperty(
         Strategic.BASELINE_COMBAT_PROPERTY,
         state.StrategicPlanBaselineCombat
+    );
+    player:SetProperty(
+        Strategic.BASELINE_OWNED_PROPERTY,
+        state.StrategicPlanBaselineOwned
+    );
+    player:SetProperty(
+        Strategic.BASELINE_MILITARY_PROPERTY,
+        state.StrategicPlanBaselineMilitary
+    );
+    player:SetProperty(
+        Strategic.BASELINE_ENEMY_MILITARY_PROPERTY,
+        state.StrategicPlanBaselineEnemyMilitary
+    );
+    player:SetProperty(
+        Strategic.BASELINE_MAJOR_WARS_PROPERTY,
+        state.StrategicPlanBaselineMajorWars
+    );
+    player:SetProperty(
+        Strategic.BASELINE_COMBAT_EVENTS_PROPERTY,
+        state.StrategicPlanBaselineCombatEvents
+    );
+    player:SetProperty(
+        Strategic.BASELINE_CAPTURE_EVENTS_PROPERTY,
+        state.StrategicPlanBaselineCaptureEvents
+    );
+    player:SetProperty(
+        Strategic.BASELINE_PILLAGE_EVENTS_PROPERTY,
+        state.StrategicPlanBaselinePillageEvents
     );
     player:SetProperty(
         Strategic.GAIN_PROPERTY,
@@ -2824,35 +2982,62 @@ local function GetFocusScore(state, focus, raw)
     return Strategic.GetRecoveryDecisionScore(state, definition.Key, raw);
 end
 
-local function StartFocusReview(state, focus, turn)
+function Strategic.GetFocusOwnMetrics(strength, focus)
+    if focus == RELATIVE_FOCUS_SCIENCE then
+        return strength.Science, strength.Techs;
+    end
+    if focus == RELATIVE_FOCUS_CULTURE then
+        return strength.Culture, strength.Civics;
+    end
+    if focus == RELATIVE_FOCUS_EMPIRE then
+        return strength.Population, strength.Cities;
+    end
+    return 0, 0;
+end
+
+local function StartFocusReview(state, focus, turn, strength)
+    local ownYield, ownProgress = Strategic.GetFocusOwnMetrics(strength, focus);
     state.FocusStartedTurn = turn;
     state.FocusReviewTurn = turn;
     state.FocusBaseline = GetFocusScore(state, focus, false);
     state.FocusRawBaseline = GetFocusScore(state, focus, true);
     state.FocusGain = 0;
     state.FocusRawGain = 0;
+    state.FocusOwnYieldBaseline = ownYield;
+    state.FocusOwnProgressBaseline = ownProgress;
+    state.FocusOwnYieldGain = 0;
+    state.FocusOwnProgressGain = 0;
     state.FocusResult = RELATIVE_FOCUS_RESULT_NONE;
     state.FocusExecution = 0;
     state.FocusStallCount = 0;
 end
 
-local function ResetFocusReviewBaseline(state, turn)
+local function ResetFocusReviewBaseline(state, turn, strength)
+    local ownYield, ownProgress = Strategic.GetFocusOwnMetrics(
+        strength,
+        state.Focus
+    );
     state.FocusReviewTurn = turn;
     state.FocusBaseline = GetFocusScore(state, state.Focus, false);
     state.FocusRawBaseline = GetFocusScore(state, state.Focus, true);
+    state.FocusOwnYieldBaseline = ownYield;
+    state.FocusOwnProgressBaseline = ownProgress;
 end
 
 local function ReviewActiveFocus(playerID, state, turn)
     if state.Focus == RELATIVE_FOCUS_NONE then
         return false;
     end
+    local strength = GetStrengthSnapshot(playerID);
     if not Strategic.IsFocusCompatible(state, state.Focus) then
-        ResetFocusReviewBaseline(state, turn);
+        ResetFocusReviewBaseline(state, turn, strength);
         state.FocusExecution = 0;
         return false;
     end
-    if state.FocusReviewTurn < 0 then
-        StartFocusReview(state, state.Focus, turn);
+    if state.FocusReviewTurn < 0
+        or state.FocusOwnYieldBaseline < 0
+        or state.FocusOwnProgressBaseline < 0 then
+        StartFocusReview(state, state.Focus, turn, strength);
         return false;
     end
 
@@ -2866,6 +3051,15 @@ local function ReviewActiveFocus(playerID, state, turn)
     state.FocusGain = GetFocusScore(state, state.Focus, false) - state.FocusBaseline;
     state.FocusRawGain = GetFocusScore(state, state.Focus, true)
         - state.FocusRawBaseline;
+    local ownYield, ownProgress = Strategic.GetFocusOwnMetrics(
+        strength,
+        state.Focus
+    );
+    state.FocusOwnYieldGain = state.FocusOwnYieldBaseline > 0
+        and ownYield / state.FocusOwnYieldBaseline - 1
+        or (ownYield > state.FocusOwnYieldBaseline and 1 or 0);
+    state.FocusOwnProgressGain = ownProgress
+        - state.FocusOwnProgressBaseline;
     local focusExecution, focusExecutionOk = TryDiagnosticSensor(
         "focus_production_" .. tostring(playerID),
         function() return CountFocusProduction(Players[playerID], state.Focus); end
@@ -2879,7 +3073,15 @@ local function ReviewActiveFocus(playerID, state, turn)
         "ASAI_RELATIVE_FOCUS_RAW_MIN_GAIN_X100",
         1
     ) / 100;
-    if state.FocusGain < minimumGain and state.FocusRawGain < minimumRawGain then
+    local minimumOwnYieldGain = GetNumberParameter(
+        "ASAI_RELATIVE_FOCUS_OWN_YIELD_MIN_GAIN_X100",
+        1
+    ) / 100;
+    local smoothedClosure = state.FocusGain >= minimumGain;
+    local rawClosure = state.FocusRawGain >= minimumRawGain;
+    local ownGrowth = state.FocusOwnYieldGain >= minimumOwnYieldGain
+        or state.FocusOwnProgressGain > 0;
+    if not (smoothedClosure and rawClosure and ownGrowth) then
         state.FocusStallCount = state.FocusStallCount + 1;
         state.FocusResult = state.FocusExecution == 0
             and RELATIVE_FOCUS_RESULT_STALLED
@@ -2890,7 +3092,7 @@ local function ReviewActiveFocus(playerID, state, turn)
     end
 
     print(string.format(
-        "ASAI_FOCUS turn=%d standard_turn=%.1f player=%d focus=%s result=%s queue_response=%d stall_count=%d gain=%.3f raw_gain=%.3f",
+        "ASAI_FOCUS turn=%d standard_turn=%.1f player=%d focus=%s result=%s queue_response=%d stall_count=%d smoothed_closure=%.3f raw_closure=%.3f own_yield_gain=%.3f own_progress_gain=%d smoothed_ok=%d raw_ok=%d own_ok=%d",
         turn,
         GetStandardEquivalentTurn(turn),
         playerID,
@@ -2899,7 +3101,12 @@ local function ReviewActiveFocus(playerID, state, turn)
         state.FocusExecution,
         state.FocusStallCount,
         state.FocusGain,
-        state.FocusRawGain
+        state.FocusRawGain,
+        state.FocusOwnYieldGain,
+        state.FocusOwnProgressGain,
+        smoothedClosure and 1 or 0,
+        rawClosure and 1 or 0,
+        ownGrowth and 1 or 0
     ));
 
     local stallLimit = math.max(
@@ -2909,7 +3116,7 @@ local function ReviewActiveFocus(playerID, state, turn)
     local retireFocus = state.FocusResult ~= RELATIVE_FOCUS_RESULT_IMPROVING
         and state.FocusStallCount >= stallLimit;
     if not retireFocus then
-        ResetFocusReviewBaseline(state, turn);
+        ResetFocusReviewBaseline(state, turn, strength);
     end
     return retireFocus;
 end
@@ -2999,6 +3206,16 @@ function Strategic.GetPlanExecution(playerID, state, snapshot)
     return queue.Districts + queue.Buildings + queue.Projects + queue.Empire;
 end
 
+function Strategic.GetWarOpponentMilitary(snapshot)
+    local total = 0;
+    for _, opponentID in ipairs(snapshot.MajorOpponents or {}) do
+        if PlayerManager.IsAlive(opponentID) then
+            total = total + GetStrengthSnapshot(opponentID).Military;
+        end
+    end
+    return total;
+end
+
 function Strategic.StartPlanReview(state, snapshot, strength, turn)
     state.StrategicPlanStartedTurn = turn;
     state.StrategicPlanReviewTurn = turn;
@@ -3009,6 +3226,14 @@ function Strategic.StartPlanReview(state, snapshot, strength, turn)
     state.StrategicPlanBaselineCities = snapshot.Cities;
     state.StrategicPlanBaselineCaptured = snapshot.CapturedCities;
     state.StrategicPlanBaselineCombat = strength.CombatUnits;
+    state.StrategicPlanBaselineOwned = snapshot.OwnedPlots;
+    state.StrategicPlanBaselineMilitary = strength.Military;
+    state.StrategicPlanBaselineEnemyMilitary =
+        Strategic.GetWarOpponentMilitary(snapshot);
+    state.StrategicPlanBaselineMajorWars = snapshot.MajorWars;
+    state.StrategicPlanBaselineCombatEvents = snapshot.MajorCombatEvents;
+    state.StrategicPlanBaselineCaptureEvents = snapshot.MajorCaptureEvents;
+    state.StrategicPlanBaselinePillageEvents = snapshot.MajorPillageEvents;
     state.StrategicPlanGain = 0;
     state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE;
     state.StrategicPlanExecution = 0;
@@ -3024,6 +3249,14 @@ function Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn)
     state.StrategicPlanBaselineCities = snapshot.Cities;
     state.StrategicPlanBaselineCaptured = snapshot.CapturedCities;
     state.StrategicPlanBaselineCombat = strength.CombatUnits;
+    state.StrategicPlanBaselineOwned = snapshot.OwnedPlots;
+    state.StrategicPlanBaselineMilitary = strength.Military;
+    state.StrategicPlanBaselineEnemyMilitary =
+        Strategic.GetWarOpponentMilitary(snapshot);
+    state.StrategicPlanBaselineMajorWars = snapshot.MajorWars;
+    state.StrategicPlanBaselineCombatEvents = snapshot.MajorCombatEvents;
+    state.StrategicPlanBaselineCaptureEvents = snapshot.MajorCaptureEvents;
+    state.StrategicPlanBaselinePillageEvents = snapshot.MajorPillageEvents;
 end
 
 function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
@@ -3052,8 +3285,39 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     local capturedGain = snapshot.CapturedCities
         - state.StrategicPlanBaselineCaptured;
     local combatGain = strength.CombatUnits - state.StrategicPlanBaselineCombat;
+    local territoryGain = snapshot.OwnedPlots
+        - state.StrategicPlanBaselineOwned;
+    local combatEvents = math.max(
+        0,
+        snapshot.MajorCombatEvents
+            - state.StrategicPlanBaselineCombatEvents
+    );
+    local captureEvents = math.max(
+        0,
+        snapshot.MajorCaptureEvents
+            - state.StrategicPlanBaselineCaptureEvents
+    );
+    local pillageEvents = math.max(
+        0,
+        snapshot.MajorPillageEvents
+            - state.StrategicPlanBaselinePillageEvents
+    );
+    local enemyMilitary = Strategic.GetWarOpponentMilitary(snapshot);
+    local enemyMilitaryChange = enemyMilitary
+        - state.StrategicPlanBaselineEnemyMilitary;
+    local ownMilitaryChange = strength.Military
+        - state.StrategicPlanBaselineMilitary;
+    local enemyLossRatio = state.StrategicPlanBaselineEnemyMilitary > 0
+        and math.max(0, -enemyMilitaryChange)
+            / state.StrategicPlanBaselineEnemyMilitary
+        or 0;
+    local ownLossRatio = state.StrategicPlanBaselineMilitary > 0
+        and math.max(0, -ownMilitaryChange)
+            / state.StrategicPlanBaselineMilitary
+        or 0;
     local minimumGain = GetNumberParameter("ASAI_PLAN_MIN_GAIN_X100", 2) / 100;
     local improved = state.StrategicPlanGain >= minimumGain;
+    local strategicProgress = false;
     if state.StrategicPlan == Strategic.EXPAND then
         improved = improved or cityGain > 0;
     elseif state.StrategicPlan == Strategic.DEFEND then
@@ -3061,7 +3325,26 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     elseif state.StrategicPlan == Strategic.PRESSURE then
         improved = improved or snapshot.ActiveMajorWars > 0 or cityGain > 0;
     elseif state.StrategicPlan == Strategic.WAR then
-        improved = improved or capturedGain > 0;
+        local minimumEnemyLoss = GetNumberParameter(
+            "ASAI_WAR_ENEMY_MILITARY_LOSS_X100",
+            12
+        ) / 100;
+        local minimumPillages = math.max(
+            1,
+            GetNumberParameter("ASAI_WAR_PILLAGE_PROGRESS_MIN", 2)
+        );
+        local stableWarSet = snapshot.MajorWars
+            == state.StrategicPlanBaselineMajorWars;
+        local favorableExchange = stableWarSet
+            and enemyLossRatio >= minimumEnemyLoss
+            and enemyLossRatio >= ownLossRatio;
+        strategicProgress = captureEvents > 0
+            or capturedGain > 0
+            or favorableExchange
+            or pillageEvents >= minimumPillages;
+        -- Generic score growth and combat activity do not prove that an
+        -- offensive war is advancing.
+        improved = strategicProgress;
     end
 
     if improved then
@@ -3075,7 +3358,7 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     end
 
     print(string.format(
-        "ASAI_PLAN_REVIEW turn=%d standard_turn=%.1f player=%d plan=%s result=%s execution=%d stall_count=%d gain=%.3f city_gain=%d capture_gain=%d combat_gain=%d active_major_wars=%d",
+        "ASAI_PLAN_REVIEW turn=%d standard_turn=%.1f player=%d plan=%s result=%s execution=%d stall_count=%d gain=%.3f city_gain=%d capture_gain=%d territory_gain=%d combat_unit_gain=%d combat_events=%d capture_events=%d pillage_events=%d own_military_change=%d enemy_military_change=%d enemy_loss_ratio=%.3f own_loss_ratio=%.3f strategic_progress=%d active_major_wars=%d major_wars=%d",
         turn,
         GetStandardEquivalentTurn(turn),
         playerID,
@@ -3086,8 +3369,18 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         state.StrategicPlanGain,
         cityGain,
         capturedGain,
+        territoryGain,
         combatGain,
-        snapshot.ActiveMajorWars
+        combatEvents,
+        captureEvents,
+        pillageEvents,
+        ownMilitaryChange,
+        enemyMilitaryChange,
+        enemyLossRatio,
+        ownLossRatio,
+        strategicProgress and 1 or 0,
+        snapshot.ActiveMajorWars,
+        snapshot.MajorWars
     ));
 
     local stallLimit = math.max(
@@ -3095,7 +3388,6 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         GetNumberParameter("ASAI_PLAN_STALL_LIMIT", 2)
     );
     local retirePlan = state.StrategicPlan ~= Strategic.DEVELOP
-        and state.StrategicPlan ~= Strategic.WAR
         and state.StrategicPlanResult ~= RELATIVE_FOCUS_RESULT_IMPROVING
         and state.StrategicPlanStallCount >= stallLimit;
     if not retirePlan then
@@ -3176,7 +3468,10 @@ function Strategic.GetPlanScores(state, snapshot, turn)
             + (state.MilitaryDominance == 1 and 20 or 0)
             - (knowledgeGap + empireGap) * 35;
     end
+    local warStopLoss = snapshot.ActiveMajorWars > 0
+        and turn < (state.StrategicPlanCooldownUntil[Strategic.WAR] or -1);
     scores[Strategic.WAR] = snapshot.ActiveMajorWars > 0
+        and not warStopLoss
         and 1000 + militaryGap * 100 or 0;
 
     local currentPlan = state.StrategicPlan;
@@ -3188,7 +3483,6 @@ function Strategic.GetPlanScores(state, snapshot, turn)
     end
     for plan, cooldownUntil in pairs(state.StrategicPlanCooldownUntil) do
         if turn < cooldownUntil
-            and plan ~= Strategic.WAR
             and plan ~= Strategic.DEFEND then
             scores[plan] = 0;
         end
@@ -3197,7 +3491,10 @@ function Strategic.GetPlanScores(state, snapshot, turn)
 end
 
 function Strategic.SelectPlan(state, snapshot, scores)
-    if snapshot.ActiveMajorWars > 0 then
+    local warStopLoss = snapshot.ActiveMajorWars > 0
+        and snapshot.Turn
+            < (state.StrategicPlanCooldownUntil[Strategic.WAR] or -1);
+    if snapshot.ActiveMajorWars > 0 and not warStopLoss then
         return Strategic.WAR, "active_major_war";
     end
     local emergency = GetNumberParameter(
@@ -3209,7 +3506,9 @@ function Strategic.SelectPlan(state, snapshot, scores)
         state.CompetitiveScores.Military or state.RawScores.Military
     );
     if militaryScore <= emergency then
-        return Strategic.DEFEND, "military_emergency";
+        return Strategic.DEFEND, warStopLoss
+            and "war_stop_loss_military_emergency"
+            or "military_emergency";
     end
 
     local selected = Strategic.DEVELOP;
@@ -3236,7 +3535,9 @@ function Strategic.SelectPlan(state, snapshot, scores)
         and selectedScore < currentScore + switchMargin then
         return state.StrategicPlan, "switch_cost";
     end
-    return selected, "highest_score";
+    return selected, warStopLoss
+        and "war_stop_loss_reallocate"
+        or "highest_score";
 end
 
 function Strategic.UpdateSupport(state)
@@ -3532,7 +3833,7 @@ local function EvaluateRelativeState(playerID)
             local resetOutcomeBaseline = (state.StrategicPlan == Strategic.PRESSURE
                     and previousOutcomeSchema < 1)
                 or (state.StrategicPlan == Strategic.WAR
-                    and previousOutcomeSchema < 2);
+                    and previousOutcomeSchema < Strategic.OUTCOME_SCHEMA);
             if resetOutcomeBaseline
                 and state.StrategicPlanStartedTurn >= 0 then
                 Strategic.ResetPlanReviewBaseline(
@@ -3573,13 +3874,44 @@ local function EvaluateRelativeState(playerID)
             turn
         );
         if strategicPlanRetired then
+            local retiredPlan = state.StrategicPlan;
+            local stalledCooldownStandard = retiredPlan == Strategic.WAR
+                and GetNumberParameter(
+                    "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
+                    20
+                )
+                or GetNumberParameter(
+                    "ASAI_PLAN_STALL_COOLDOWN_STANDARD",
+                    16
+                );
+            if retiredPlan == Strategic.WAR then
+                stalledCooldownStandard = stalledCooldownStandard
+                    + math.max(0, empireSnapshot.MajorWars - 1)
+                        * GetNumberParameter(
+                            "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
+                            8
+                        );
+            end
             local stalledPlanCooldown = ScaleStandardTurns(
-                GetNumberParameter("ASAI_PLAN_STALL_COOLDOWN_STANDARD", 16)
+                stalledCooldownStandard
             );
             state.StrategicPlanCooldownUntil[state.StrategicPlan] = math.max(
                 state.StrategicPlanCooldownUntil[state.StrategicPlan] or -1,
                 turn + stalledPlanCooldown
             );
+            if retiredPlan == Strategic.WAR then
+                print(string.format(
+                    "ASAI_WAR_STOP_LOSS turn=%d standard_turn=%.1f player=%d stall_count=%d major_wars=%d active_major_wars=%d cooldown_standard=%d cooldown_until=%d",
+                    turn,
+                    GetStandardEquivalentTurn(turn),
+                    playerID,
+                    state.StrategicPlanStallCount,
+                    empireSnapshot.MajorWars,
+                    empireSnapshot.ActiveMajorWars,
+                    stalledCooldownStandard,
+                    state.StrategicPlanCooldownUntil[Strategic.WAR]
+                ));
+            end
         end
         state.StrategicPlanScores = Strategic.GetPlanScores(
             state,
@@ -3596,7 +3928,10 @@ local function EvaluateRelativeState(playerID)
             GetNumberParameter("ASAI_PLAN_MIN_DWELL_STANDARD", 12)
         );
         local forcedStrategicPlan = strategicPlanReason == "active_major_war"
-            or strategicPlanReason == "military_emergency";
+            or strategicPlanReason == "military_emergency"
+            or strategicPlanReason == "war_stop_loss_military_emergency"
+            or (strategicPlanReason == "war_stop_loss_reallocate"
+                and state.StrategicPlan == Strategic.WAR);
         if desiredStrategicPlan ~= state.StrategicPlan
             and (strategicPlanRetired or forcedStrategicPlan) then
             state.StrategicPlan = desiredStrategicPlan;
@@ -3694,7 +4029,12 @@ local function EvaluateRelativeState(playerID)
             end
             if state.Focus ~= RELATIVE_FOCUS_NONE then
                 state.FocusHandoffReady = false;
-                StartFocusReview(state, state.Focus, turn);
+                StartFocusReview(
+                    state,
+                    state.Focus,
+                    turn,
+                    strengthSnapshot
+                );
             end
         end
 
@@ -3813,7 +4153,7 @@ local function EvaluateRelativeState(playerID)
         end
         if focusChanged then
             print(string.format(
-                "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s result=%s handoff_ready=%d gain=%.3f raw_gain=%.3f",
+                "ASAI_RECOVERY turn=%d standard_turn=%.1f player=%d raw_science=%.3f raw_culture=%.3f raw_empire=%.3f science=%.3f culture=%.3f empire=%.3f from=%s to=%s result=%s handoff_ready=%d smoothed_closure=%.3f raw_closure=%.3f own_yield_gain=%.3f own_progress_gain=%d",
                 turn,
                 GetStandardEquivalentTurn(turn),
                 playerID,
@@ -3828,7 +4168,9 @@ local function EvaluateRelativeState(playerID)
                 GetFocusResultName(state.FocusResult),
                 state.FocusHandoffReady and 1 or 0,
                 state.FocusGain,
-                state.FocusRawGain
+                state.FocusRawGain,
+                state.FocusOwnYieldGain,
+                state.FocusOwnProgressGain
             ));
         end
     end
@@ -3901,8 +4243,11 @@ function ASAI_IsMilitaryDominance(playerID, threshold)
 end
 GameEvents.ASAI_IsMilitaryDominance.Add(ASAI_IsMilitaryDominance);
 
-local function GetMilitaryQueueTarget(snapshot)
-    local targetPercent = snapshot.ActiveMajorWars > 0
+local function GetMilitaryQueueTarget(snapshot, state)
+    local warStopLoss = snapshot.ActiveMajorWars > 0
+        and snapshot.Turn
+            < (state.StrategicPlanCooldownUntil[Strategic.WAR] or -1);
+    local targetPercent = snapshot.ActiveMajorWars > 0 and not warStopLoss
         and GetNumberParameter("ASAI_WAR_QUEUE_TARGET_X100", 45)
         or GetNumberParameter("ASAI_MILITARY_QUEUE_TARGET_X100", 25);
     return snapshot.Cities > 0
@@ -3916,7 +4261,7 @@ local function GetMilitaryExecutionStatus(playerID)
     end
     local state = GetRelativeState(playerID);
     local snapshot = GetSnapshot(playerID);
-    local target = GetMilitaryQueueTarget(snapshot);
+    local target = GetMilitaryQueueTarget(snapshot, state);
     local failedWarReview = state.StrategicPlan == Strategic.WAR
         and (state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_EXECUTING
             or state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_STALLED);
@@ -4209,9 +4554,14 @@ local function MarkRecentMajorCombat(playerID)
     if not IsMajorAI(playerID) then
         return;
     end
-    Players[playerID]:SetProperty(
+    local player = Players[playerID];
+    player:SetProperty(
         LAST_MAJOR_COMBAT_TURN_PROPERTY,
         Game.GetCurrentGameTurn()
+    );
+    Strategic.IncrementRuntimeCounter(
+        player,
+        Strategic.MAJOR_COMBAT_EVENTS_PROPERTY
     );
     m_Snapshots[playerID] = nil;
 end
@@ -4298,10 +4648,18 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
     local combatAge = snapshot.LastMajorCombatTurn > -100000
         and GetStandardEquivalentTurn(snapshot.Turn - snapshot.LastMajorCombatTurn)
         or -1;
+    local warCooldownUntil = relativeState.StrategicPlanCooldownUntil[
+        Strategic.WAR
+    ] or -1;
+    local warStopLoss = snapshot.ActiveMajorWars > 0
+        and snapshot.Turn < warCooldownUntil;
+    local warStopLossRemaining = warStopLoss
+        and GetStandardEquivalentTurn(warCooldownUntil - snapshot.Turn)
+        or 0;
     local resultYieldsActive = (relativeState.MildResultYieldsActive == 1
         or relativeState.SevereResultYieldsActive == 1) and 1 or 0;
     print(string.format(
-        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d captured=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f weakest_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d scale_recovery=%d scale_expansion=%d result_yields=%d mild_result_yields=%d severe_result_yields=%d result_tier=%s pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_age=%.1f focus_execution=%d focus_stalls=%d plan=%s plan_support=%s plan_result=%s plan_score=%.1f plan_gain=%.3f plan_execution=%d plan_stalls=%d",
+        "ASAI_METRIC turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s cities=%d captured=%d pop=%d owned=%d improved=%d infratarget=%d builder_budget=%d trader_budget=%d settler_budget=%d settler_cap=%d builders=%d builders_inflight=%d traders=%d traders_inflight=%d settlers=%d settlers_inflight=%d capacity=%d capacity_target=%d gold=%.1f netgold=%.1f science=%.1f culture=%.1f techs=%d civics=%d military=%d wars=%d major_wars=%d active_major_wars=%d combat_age=%.1f combat_events=%d capture_events=%d pillage_events=%d war_stop_loss=%d war_stop_loss_remaining=%.1f minor_wars=%d era=%d relative_raw=%.3f relative=%.3f second_core=%.3f weakest_core=%.3f science_raw=%.3f science_ratio=%.3f culture_raw=%.3f culture_ratio=%.3f empire_raw=%.3f empire_ratio=%.3f military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d scale_recovery=%d scale_expansion=%d result_yields=%d mild_result_yields=%d severe_result_yields=%d result_tier=%s pacing=%s support=%s focus=%s focus_result=%s handoff_ready=%d focus_gain=%.3f focus_raw_gain=%.3f focus_own_yield_gain=%.3f focus_own_progress_gain=%d focus_age=%.1f focus_execution=%d focus_stalls=%d plan=%s plan_support=%s plan_result=%s plan_score=%.1f plan_gain=%.3f plan_execution=%d plan_stalls=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -4336,6 +4694,11 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         snapshot.MajorWars,
         snapshot.ActiveMajorWars,
         combatAge,
+        snapshot.MajorCombatEvents,
+        snapshot.MajorCaptureEvents,
+        snapshot.MajorPillageEvents,
+        warStopLoss and 1 or 0,
+        warStopLossRemaining,
         snapshot.MinorWars,
         snapshot.Era,
         relativeState.RawScores.Overall,
@@ -4365,6 +4728,8 @@ local function WriteMetrics(playerID, firstTimeThisTurn)
         handoffReady,
         relativeState.FocusGain,
         relativeState.FocusRawGain,
+        relativeState.FocusOwnYieldGain,
+        relativeState.FocusOwnProgressGain,
         focusAge,
         relativeState.FocusExecution,
         relativeState.FocusStallCount,
@@ -4528,8 +4893,12 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
     local defenseCoverage = defenseSupported == 1 and defenses.Cities > 0
         and defenses.DefendedCities / defenses.Cities or -1;
     local militaryExecution, militaryQueueTarget = GetMilitaryExecutionStatus(playerID);
+    local warStopLoss = snapshot.ActiveMajorWars > 0
+        and snapshot.Turn < (
+            relativeState.StrategicPlanCooldownUntil[Strategic.WAR] or -1
+        );
     print(string.format(
-        "ASAI_MILITARY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d strength=%d combat_units=%d land_units=%d ranged_units=%d siege_units=%d mobile_units=%d naval_units=%d air_units=%d units_per_city=%.2f planned_cities=%d units_per_planned_city=%.2f queue_combat=%d queue_target=%d military_execution=%d queue_land=%d queue_ranged=%d queue_siege=%d queue_mobile=%d queue_naval=%d queue_air=%d defended_cities=%d defense_coverage=%.3f defense_supported=%d military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d active_major_wars=%d",
+        "ASAI_MILITARY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d strength=%d combat_units=%d land_units=%d ranged_units=%d siege_units=%d mobile_units=%d naval_units=%d air_units=%d units_per_city=%.2f planned_cities=%d units_per_planned_city=%.2f queue_combat=%d queue_target=%d military_execution=%d queue_land=%d queue_ranged=%d queue_siege=%d queue_mobile=%d queue_naval=%d queue_air=%d defended_cities=%d defense_coverage=%.3f defense_supported=%d military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d active_major_wars=%d war_stop_loss=%d combat_events=%d capture_events=%d pillage_events=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -4561,7 +4930,11 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
         relativeState.Scores.Military,
         relativeState.MilitaryReadiness,
         relativeState.MilitaryDominance,
-        snapshot.ActiveMajorWars
+        snapshot.ActiveMajorWars,
+        warStopLoss and 1 or 0,
+        snapshot.MajorCombatEvents,
+        snapshot.MajorCaptureEvents,
+        snapshot.MajorPillageEvents
     ));
 end
 
@@ -4669,6 +5042,90 @@ local function LogMetrics(playerID, firstTimeThisTurn)
         m_ConditionErrors.ASAI_LogScienceExecution = true;
     end
 end
+
+function Strategic.RecordCityConquered(capturerID, ownerID)
+    if not IsMajorAI(capturerID) then
+        return;
+    end
+    if ownerID == nil or ownerID < 0 then
+        return;
+    end
+    local owner = Players[ownerID];
+    if owner == nil or not owner:IsMajor() then
+        return;
+    end
+    Strategic.IncrementRuntimeCounter(
+        Players[capturerID],
+        Strategic.MAJOR_CAPTURE_EVENTS_PROPERTY
+    );
+    m_Snapshots[capturerID] = nil;
+    m_Snapshots[ownerID] = nil;
+end
+
+function Strategic.OnCityConquered(capturerID, ownerID, cityID, cityX, cityY)
+    local success, captureError = pcall(
+        Strategic.RecordCityConquered,
+        capturerID,
+        ownerID
+    );
+    if not success and m_ConditionErrors.ASAI_RecordCityConquered == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_RecordCityConquered player=%s fallback=skip error=%s",
+            tostring(capturerID),
+            tostring(captureError)
+        ));
+        m_ConditionErrors.ASAI_RecordCityConquered = true;
+    end
+end
+
+function Strategic.RecordMajorPillage(playerID, plotIndex)
+    if not IsMajorAI(playerID) then
+        return;
+    end
+    local plot = Map.GetPlotByIndex(plotIndex);
+    if plot == nil then
+        return;
+    end
+    local ownerID = plot:GetOwner();
+    if ownerID == nil or ownerID < 0 then
+        return;
+    end
+    local owner = Players[ownerID];
+    if owner == nil or not owner:IsMajor()
+        or not Players[playerID]:GetDiplomacy():IsAtWarWith(ownerID) then
+        return;
+    end
+    Strategic.IncrementRuntimeCounter(
+        Players[playerID],
+        Strategic.MAJOR_PILLAGE_EVENTS_PROPERTY
+    );
+    m_Snapshots[playerID] = nil;
+end
+
+function Strategic.OnPillage(
+    playerID,
+    unitID,
+    improvementType,
+    buildingType,
+    districtType,
+    plotIndex
+)
+    local success, pillageError = pcall(
+        Strategic.RecordMajorPillage,
+        playerID,
+        plotIndex
+    );
+    if not success and m_ConditionErrors.ASAI_RecordMajorPillage == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_RecordMajorPillage player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(pillageError)
+        ));
+        m_ConditionErrors.ASAI_RecordMajorPillage = true;
+    end
+end
 Events.PlayerTurnActivated.Add(LogMetrics);
 Events.UnitDamageChanged.Add(OnUnitDamageChanged);
+GameEvents.CityConquered.Add(Strategic.OnCityConquered);
+GameEvents.OnPillage.Add(Strategic.OnPillage);
 Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted);

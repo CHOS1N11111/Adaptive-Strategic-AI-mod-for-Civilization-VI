@@ -28,7 +28,9 @@ SET MaxTargetDistInRegion = 10,
     MaxTargetDistInArea = 12,
     MaxTargetDistInWorld = 14,
     MinOddsOfSuccess = 0.35,
-    MustHaveUnits = 6
+    -- This is a launch floor, not an exact formation size. Optional team
+    -- slots can still recruit a larger army when enough units are available.
+    MustHaveUnits = 5
 WHERE OperationName = 'Wartime Attack Walled City';
 
 UPDATE AiOperationTeams
@@ -77,7 +79,9 @@ WHERE TeamName = 'City Attack Force'
   AND AiType = 'UNITTYPE_SIEGE_ALL';
 
 UPDATE OpTeamRequirements
-SET MinNumber = 2,
+-- One ranged unit is the launch floor; MaxNumber keeps 1-5 valid so a richer
+-- army may bring more ranged units without blocking a smaller usable force.
+SET MinNumber = 1,
     MaxNumber = 5
 WHERE TeamName = 'City Attack Force'
   AND AiType = 'UNITTYPE_RANGED';
