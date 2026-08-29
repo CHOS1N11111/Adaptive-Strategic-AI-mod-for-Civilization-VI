@@ -4,7 +4,7 @@
 
 A Civilization VI: Gathering Storm AI overhaul built to keep Deity games competitive from the opening to the victory screen.
 
-**Version 0.11.7** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
+**Version 0.11.8** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
 
 Vanilla Deity concentrates much of its challenge in the opening and often loses pressure later. Adaptive Strategic AI replaces part of that early spike with a smoother era-scaled curve, then helps every major AI turn its economy, military, and victory plans into useful results.
 
@@ -43,11 +43,11 @@ These are the total Deity AI bonuses after the mod replaces the vanilla values:
 | Ancient | +50% | +24% | +3 | +30% |
 | Classical | +55% | +27% | +3 | +32% |
 | Medieval | +65% | +32% | +4 | +34% |
-| Renaissance | +75% | +38% | +4 | +36% |
-| Industrial | +85% | +44% | +4 | +38% |
-| Modern | +95% | +50% | +4 | +40% |
-| Atomic | +105% | +55% | +4 | +40% |
-| Information / Future | +115% | +60% | +4 | +40% |
+| Renaissance | +75% | +38% | +5 | +36% |
+| Industrial | +85% | +45% | +5 | +38% |
+| Modern | +95% | +52% | +5 | +40% |
+| Atomic | +105% | +60% | +5 | +40% |
+| Information / Future | +115% | +60% | +5 | +40% |
 
 An Ancient Era Deity AI starts with 2 Settlers, 3 Warriors, and 1 Builder in total. This is below the vanilla Deity opening and leaves more room for the player to make meaningful early decisions.
 

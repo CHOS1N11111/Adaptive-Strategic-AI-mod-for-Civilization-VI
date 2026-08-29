@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.7"
-EXPECTED_MODINFO_VERSION = "29"
+EXPECTED_RELEASE = "0.11.8"
+EXPECTED_MODINFO_VERSION = "30"
 
 
 def default_database() -> Path:
@@ -774,19 +774,19 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         "CLASSICAL": (3, 5),
         "MEDIEVAL": (5, 10),
         "RENAISSANCE": (6, 10),
-        "INDUSTRIAL": (6, 10),
-        "MODERN": (6, 10),
-        "ATOMIC": (5, 10),
-        "INFORMATION": (5, 10),
+        "INDUSTRIAL": (7, 10),
+        "MODERN": (7, 10),
+        "ATOMIC": (8, 10),
+        "INFORMATION": (0, 10),
     }
     expected_curve = {
         "OPENING": (24, 50),
         "CLASSICAL": (27, 55),
         "MEDIEVAL": (32, 65),
         "RENAISSANCE": (38, 75),
-        "INDUSTRIAL": (44, 85),
-        "MODERN": (50, 95),
-        "ATOMIC": (55, 105),
+        "INDUSTRIAL": (45, 85),
+        "MODERN": (52, 95),
+        "ATOMIC": (60, 105),
         "INFORMATION": (60, 115),
     }
     actual_science_total = 32
@@ -829,6 +829,7 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
     expected_arguments = {
         ("ASAI_DEITY_OPENING_COMBAT", "Amount"): "-1",
         ("ASAI_DEITY_MEDIEVAL_COMBAT", "Amount"): "1",
+        ("ASAI_DEITY_RENAISSANCE_COMBAT", "Amount"): "1",
         ("ASAI_DEITY_OPENING_XP", "Amount"): "-10",
         ("ASAI_DEITY_CLASSICAL_XP", "Amount"): "2",
         ("ASAI_DEITY_MEDIEVAL_XP", "Amount"): "2",
@@ -844,6 +845,30 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         actual = None if row is None else str(row[0])
         if actual != expected:
             errors.append(f"modifier argument {key} expected {expected}, found {actual}")
+
+    expected_combat_curve = {
+        "ASAI_DEITY_OPENING_COMBAT": ("ASAI_DEITY_AI", -1),
+        "ASAI_DEITY_MEDIEVAL_COMBAT": ("ASAI_DEITY_AI_MEDIEVAL", 1),
+        "ASAI_DEITY_RENAISSANCE_COMBAT": ("ASAI_DEITY_AI_RENAISSANCE", 1),
+    }
+    actual_combat_curve = {
+        modifier_id: (requirement_set, int(amount))
+        for modifier_id, requirement_set, amount in connection.execute(
+            """
+            SELECT m.ModifierId, m.OwnerRequirementSetId, a.Value
+            FROM Modifiers AS m
+            JOIN ModifierArguments AS a ON a.ModifierId = m.ModifierId
+            WHERE m.ModifierId LIKE 'ASAI_DEITY_%_COMBAT'
+              AND a.Name = 'Amount'
+            ORDER BY m.ModifierId
+            """
+        )
+    }
+    if actual_combat_curve != expected_combat_curve:
+        errors.append(
+            "Deity combat curve differs: "
+            f"expected {expected_combat_curve}, found {actual_combat_curve}"
+        )
 
     legacy_combat = connection.execute(
         "SELECT COUNT(*) FROM Modifiers "
