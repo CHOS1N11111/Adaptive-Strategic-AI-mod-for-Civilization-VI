@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.6"
-EXPECTED_MODINFO_VERSION = "28"
+EXPECTED_RELEASE = "0.11.7"
+EXPECTED_MODINFO_VERSION = "29"
 
 
 def default_database() -> Path:
@@ -208,6 +208,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_PLAN_REVIEW",
         "ASAI_PLAN_MIGRATION",
         "ASAI_WAR_STOP_LOSS",
+        "ASAI_EXPANSION_STOP_LOSS",
         "ASAI_RECOVERY",
         "ASAI_METRIC",
         "ASAI_COMPONENTS",
@@ -473,6 +474,38 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in scale_recovery_fragments:
         if fragment not in source:
             errors.append(f"scale recovery fragment is missing: {fragment}")
+    expansion_fragments = (
+        "function Strategic.GetExpansionPhase(era)",
+        'GameInfo.Eras["ERA_INDUSTRIAL"]',
+        'GameInfo.Eras["ERA_MODERN"]',
+        "snapshot.Era >= modern.Index",
+        "Strategic.EXPANSION_RESTRICTED",
+        "Strategic.EXPANSION_CLOSED",
+        "function Strategic.UpdateExpansionState(state, snapshot, turn)",
+        "ASAI_EXPANSION_RESTRICTED_CITY_TARGET",
+        "ASAI_EXPANSION_RESTRICTED_SCORE_PERCENT",
+        "ASAI_EXPANSION_RECENT_SUCCESS_WINDOWS",
+        "ASAI_EXPANSION_SETTLER_STALL_LIMIT",
+        "ASAI_EXPANSION_STALL_COOLDOWN_STANDARD",
+        "state.StrategicPlanBaselineSettlers > 0",
+        "state.StrategicPlanBaselineActiveWars <= 0",
+        "snapshot.ActiveMajorWars <= 0",
+        "local foundedExpansion = foundedCityGain > 0 and captureEvents <= 0",
+        "and combatEvents <= 0",
+        "expansionSettlerStalled",
+        "state.ExpansionBlockedUntil",
+        '"expansion_era_closed"',
+        '"expansion_era_restricted"',
+        '"expansion_stall_reallocate"',
+        "ASAI_EXPANSION_STOP_LOSS",
+        "expansion_phase=%s",
+        "expansion_allowed=%d",
+        "expansion_blocked=%d",
+        "expansion_settler_stalls=%d",
+    )
+    for fragment in expansion_fragments:
+        if fragment not in source:
+            errors.append(f"expansion lifecycle fragment is missing: {fragment}")
     strategic_plan_fragments = (
         'PROPERTY = "ASAI_STRATEGIC_PLAN"',
         "function Strategic.GetWorldReference()",
@@ -495,14 +528,15 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "war_stop_loss_reallocate",
         "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
         "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
-        "local retirePlan = state.StrategicPlan ~= Strategic.DEVELOP\n"
-        "        and state.StrategicPlanResult",
+        "local retirePlan = expansionSettlerStalled",
         "snapshot.ActiveMajorWars > 0 and not warStopLoss",
         "snapshot.Turn < warCooldownUntil",
         "state.StrategicPlanExecution > 0",
         'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
+        "OUTCOME_SCHEMA = 4",
         "reset_pressure_baseline=%d",
         "reset_war_baseline=%d",
+        "reset_expansion_baseline=%d",
         "function Strategic.UpdateSupport(state)",
         "ASAI_PLAN_MIN_DWELL_STANDARD",
         "ASAI_PLAN_CONFIRM_SAMPLES",
@@ -524,7 +558,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "score_develop=%.1f",
         "score_war=%.1f",
         "competitive=%.3f",
-        "capture_gain=%d territory_gain=%d combat_unit_gain=%d",
+        "founded_city_gain=%d capture_gain=%d",
+        "settlers_baseline=%d settlers=%d settler_stall_count=%d",
         "strategic_progress=%d active_major_wars=%d",
     )
     for fragment in strategic_plan_fragments:
@@ -682,6 +717,11 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
         "ASAI_SCALE_RECOVERY_SETTLER_BONUS",
         "ASAI_SCALE_RECOVERY_SETTLER_CAP",
+        "ASAI_EXPANSION_RESTRICTED_CITY_TARGET",
+        "ASAI_EXPANSION_RESTRICTED_SCORE_PERCENT",
+        "ASAI_EXPANSION_RECENT_SUCCESS_WINDOWS",
+        "ASAI_EXPANSION_SETTLER_STALL_LIMIT",
+        "ASAI_EXPANSION_STALL_COOLDOWN_STANDARD",
         "state.ScaleRecovery == 1 and state.ScaleExpansionAllowed ~= 1",
         "state.ScaleExpansionAllowed ~= 1",
         "snapshot.Settlers + snapshot.InFlightSettlers < maximumInFlight",
@@ -1309,6 +1349,11 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_EXPANSION_CITIES_PER_INFLIGHT_SETTLER",
         "ASAI_SCALE_RECOVERY_SETTLER_BONUS",
         "ASAI_SCALE_RECOVERY_SETTLER_CAP",
+        "ASAI_EXPANSION_RESTRICTED_CITY_TARGET",
+        "ASAI_EXPANSION_RESTRICTED_SCORE_PERCENT",
+        "ASAI_EXPANSION_RECENT_SUCCESS_WINDOWS",
+        "ASAI_EXPANSION_SETTLER_STALL_LIMIT",
+        "ASAI_EXPANSION_STALL_COOLDOWN_STANDARD",
         "ASAI_TRADE_CAPACITY_START_STANDARD",
         "ASAI_TRADE_CITIES_PER_CAPACITY",
         "ASAI_WAR_FRONT_CITY_DISTANCE",
@@ -1577,6 +1622,18 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         errors.append(f"scale-recovery settler bonus cannot be negative: {scale_settler_bonus}")
     if scale_settler_cap is not None and scale_settler_cap < 1:
         errors.append(f"scale-recovery settler cap must be positive: {scale_settler_cap}")
+    expansion_lifecycle_profile = (
+        parameters.get("ASAI_EXPANSION_RESTRICTED_CITY_TARGET"),
+        parameters.get("ASAI_EXPANSION_RESTRICTED_SCORE_PERCENT"),
+        parameters.get("ASAI_EXPANSION_RECENT_SUCCESS_WINDOWS"),
+        parameters.get("ASAI_EXPANSION_SETTLER_STALL_LIMIT"),
+        parameters.get("ASAI_EXPANSION_STALL_COOLDOWN_STANDARD"),
+    )
+    if expansion_lifecycle_profile != (4, 50, 2, 2, 16):
+        errors.append(
+            "expansion lifecycle profile differs from the era/settler design: "
+            f"{expansion_lifecycle_profile}"
+        )
     trade_capacity_start = parameters.get("ASAI_TRADE_CAPACITY_START_STANDARD")
     trade_cities = parameters.get("ASAI_TRADE_CITIES_PER_CAPACITY")
     if trade_capacity_start is not None and trade_capacity_start < 0:
@@ -2000,7 +2057,6 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): (1, -50),
         ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): (1, -30),
         ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): (1, -40),
-        ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): (1, 30),
         ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_IMPROVEMENT"): (1, 25),
         ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_UNIT_TRADE"): (1, 20),
         ("ASAI_MilitaryDominancePseudoYields", "PSEUDOYIELD_DISTRICT"): (1, 15),
@@ -2033,6 +2089,30 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     ).fetchone()[0]
     if surprise_war:
         errors.append("military dominance must not explicitly favor surprise war")
+
+    settler_priority_leaks = list(
+        connection.execute(
+            """
+            SELECT ListType, Item, Value
+            FROM AiFavoredItems
+            WHERE ListType LIKE 'ASAI_%'
+              AND Item IN ('PSEUDOYIELD_UNIT_SETTLER', 'UNIT_SETTLER')
+              AND Value > 0
+              AND ListType NOT IN (
+                    'ASAI_OpeningPseudoYields',
+                    'ASAI_OpeningUnits',
+                    'ASAI_ExpansionRecoveryPseudoYields',
+                    'ASAI_ExpansionRecoveryUnits'
+                  )
+            ORDER BY ListType, Item
+            """
+        )
+    )
+    if settler_priority_leaks:
+        errors.append(
+            "non-expansion strategies still provide Settler support: "
+            f"{settler_priority_leaks}"
+        )
 
     scale_strategy = connection.execute(
         "SELECT COUNT(*) FROM Strategies "
