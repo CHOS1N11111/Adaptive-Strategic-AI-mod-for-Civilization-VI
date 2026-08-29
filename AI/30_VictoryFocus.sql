@@ -5,6 +5,7 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_ScienceBuildings'),
     ('ASAI_ScienceProjects'),
     ('ASAI_ScienceTechs'),
+    ('ASAI_ScienceCivics'),
     ('ASAI_ScienceYields'),
     ('ASAI_SciencePseudoYields'),
     ('ASAI_CultureDistricts'),
@@ -34,6 +35,7 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_ScienceBuildings', 'Buildings'),
     ('ASAI_ScienceProjects', 'Projects'),
     ('ASAI_ScienceTechs', 'Technologies'),
+    ('ASAI_ScienceCivics', 'Civics'),
     ('ASAI_ScienceYields', 'Yields'),
     ('ASAI_SciencePseudoYields', 'PseudoYields'),
     ('ASAI_CultureDistricts', 'Districts'),
@@ -63,6 +65,7 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('VICTORY_STRATEGY_SCIENCE_VICTORY', 'ASAI_ScienceBuildings'),
     ('VICTORY_STRATEGY_SCIENCE_VICTORY', 'ASAI_ScienceProjects'),
     ('VICTORY_STRATEGY_SCIENCE_VICTORY', 'ASAI_ScienceTechs'),
+    ('VICTORY_STRATEGY_SCIENCE_VICTORY', 'ASAI_ScienceCivics'),
     ('VICTORY_STRATEGY_SCIENCE_VICTORY', 'ASAI_ScienceYields'),
     ('VICTORY_STRATEGY_SCIENCE_VICTORY', 'ASAI_SciencePseudoYields'),
     ('VICTORY_STRATEGY_CULTURAL_VICTORY', 'ASAI_CultureDistricts'),
@@ -162,23 +165,43 @@ SELECT 'ASAI_ScienceProjects', ProjectType, 1, 100
 FROM Projects
 WHERE SpaceRace = 1;
 
--- Each value follows the direct unlock order of the Gathering Storm space
--- projects. Completed technologies leave the chooser naturally; the list is
--- attached only to the native science-victory strategy.
+-- The future-era tree randomizes prerequisites and hides part of the route.
+-- Weight every frontier technology that can stand between Nanotechnology and
+-- the final two project gates, while keeping the direct gates strongest.
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
 SELECT 'ASAI_ScienceTechs', TechnologyType, 1,
     CASE TechnologyType
-        WHEN 'TECH_ROCKETRY' THEN 45
-        WHEN 'TECH_SATELLITES' THEN 60
-        WHEN 'TECH_NANOTECHNOLOGY' THEN 80
-        WHEN 'TECH_SMART_MATERIALS' THEN 100
-        WHEN 'TECH_OFFWORLD_MISSION' THEN 115
+        WHEN 'TECH_ROCKETRY' THEN 50
+        WHEN 'TECH_SATELLITES' THEN 70
+        WHEN 'TECH_NANOTECHNOLOGY' THEN 100
+        WHEN 'TECH_SMART_MATERIALS' THEN 150
+        WHEN 'TECH_OFFWORLD_MISSION' THEN 180
+        ELSE 45
     END
 FROM Technologies
 WHERE TechnologyType IN
     ('TECH_ROCKETRY', 'TECH_SATELLITES', 'TECH_NANOTECHNOLOGY',
+     'TECH_SEASTEADS', 'TECH_ADVANCED_AI', 'TECH_ADVANCED_POWER_CELLS',
+     'TECH_CYBERNETICS', 'TECH_PREDICTIVE_SYSTEMS',
      'TECH_SMART_MATERIALS', 'TECH_OFFWORLD_MISSION');
+
+-- Reach the two space-project policy cards without turning science victory
+-- into a fixed civic route. These are chooser weights, not free civics.
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScienceCivics', CivicType, 1,
+    CASE CivicType
+        WHEN 'CIVIC_COLD_WAR' THEN 45
+        WHEN 'CIVIC_SPACE_RACE' THEN 90
+        WHEN 'CIVIC_RAPID_DEPLOYMENT' THEN 55
+        WHEN 'CIVIC_GLOBALIZATION' THEN 100
+        ELSE 35
+    END
+FROM Civics
+WHERE CivicType IN
+    ('CIVIC_COLD_WAR', 'CIVIC_SPACE_RACE', 'CIVIC_RAPID_DEPLOYMENT',
+     'CIVIC_GLOBALIZATION', 'CIVIC_SOCIAL_MEDIA');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)

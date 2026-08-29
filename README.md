@@ -4,7 +4,7 @@
 
 A Civilization VI: Gathering Storm AI overhaul built to keep Deity games competitive from the opening to the victory screen.
 
-**Version 0.11.4** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
+**Version 0.11.5** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
 
 Vanilla Deity concentrates much of its challenge in the opening and often loses pressure later. Adaptive Strategic AI replaces part of that early spike with a smoother era-scaled curve, then helps every major AI turn its economy, military, and victory plans into useful results.
 
@@ -16,7 +16,7 @@ Vanilla Deity concentrates much of its challenge in the opening and often loses 
 - **Independent adaptive plans.** Every major AI evaluates itself against the human player, the wider field, and its own recent trend. Development, recovery, expansion, defense, pressure, and war plans can change as the situation changes.
 - **Stronger expansion and economy.** The AI values better settlement sites, uses leaner Settler escorts, limits duplicate civilian production, and reacts to missing improvements, trade capacity, infrastructure, or reserves.
 - **More credible military behavior.** Readiness, real combat contact, army composition, city-assault formations, wartime production, and captured cities are evaluated separately. A large army alone is not treated as a successful war.
-- **Better victory conversion.** Science, culture, domination, religion, and diplomacy receive distinct priorities. Science-focused AIs place increasing value on the technologies that directly unlock the Gathering Storm space projects.
+- **Better victory conversion.** Science, culture, domination, religion, and diplomacy receive distinct priorities. After launching a satellite, an AI receives reversible milestone support for the next space project, the randomized Future Era route, and a capped number of parallel Spaceports. An active defense emergency can suspend that support.
 - **Bounded recovery, not constant parity.** Targeted decision support handles isolated weaknesses. Reversible yield support is reserved for broad or severe collapse and never penalizes a matched or leading AI.
 
 The mod does **not** spawn units or grant technologies, civics, resources, cities, or stored progress.

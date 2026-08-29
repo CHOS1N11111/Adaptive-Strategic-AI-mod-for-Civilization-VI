@@ -134,6 +134,34 @@ Strategic.COOLDOWN_PROPERTIES = {
     [Strategic.PRESSURE] = "ASAI_PLAN_PRESSURE_COOLDOWN_UNTIL",
     [Strategic.WAR] = "ASAI_PLAN_WAR_COOLDOWN_UNTIL"
 };
+local ScienceExecution = {
+    NONE = 0,
+    SATELLITE = 1,
+    MOON = 2,
+    MARS = 3,
+    EXOPLANET = 4,
+    STAGE_PROPERTY = "ASAI_SCIENCE_EXECUTION_STAGE",
+    STAGE_TURN_PROPERTY = "ASAI_SCIENCE_EXECUTION_STAGE_TURN",
+    LAST_PROGRESS_TURN_PROPERTY = "ASAI_SCIENCE_EXECUTION_LAST_PROGRESS_TURN",
+    PROJECTS = {
+        Satellite = "PROJECT_LAUNCH_EARTH_SATELLITE",
+        Moon = "PROJECT_LAUNCH_MOON_LANDING",
+        Mars = "PROJECT_LAUNCH_MARS_BASE",
+        Exoplanet = "PROJECT_LAUNCH_EXOPLANET_EXPEDITION",
+        OrbitalLaser = "PROJECT_ORBITAL_LASER",
+        TerrestrialLaser = "PROJECT_TERRESTRIAL_LASER"
+    },
+    FRONTIER_TECHS = {
+        "TECH_SEASTEADS",
+        "TECH_ADVANCED_AI",
+        "TECH_ADVANCED_POWER_CELLS",
+        "TECH_CYBERNETICS",
+        "TECH_PREDICTIVE_SYSTEMS",
+        "TECH_SMART_MATERIALS",
+        "TECH_OFFWORLD_MISSION"
+    },
+    Cache = {}
+};
 local RELATIVE_TREND_PROPERTIES = {
     Overall = "ASAI_RELATIVE_TREND_X1000",
     Science = "ASAI_RELATIVE_SCIENCE_TREND_X1000",
@@ -1367,6 +1395,277 @@ local function GetStoredNumber(player, propertyName, fallback)
         return fallback;
     end
     return value;
+end
+
+function ScienceExecution.GetStageName(stage)
+    if stage == ScienceExecution.SATELLITE then
+        return "satellite";
+    end
+    if stage == ScienceExecution.MOON then
+        return "moon";
+    end
+    if stage == ScienceExecution.MARS then
+        return "mars";
+    end
+    if stage == ScienceExecution.EXOPLANET then
+        return "exoplanet";
+    end
+    return "none";
+end
+
+function ScienceExecution.GetProjectCount(player, projectType)
+    local projectInfo = GameInfo.Projects[projectType];
+    if projectInfo == nil then
+        return 0;
+    end
+    local stats = player:GetStats();
+    if stats == nil then
+        error("Player:GetStats() is unavailable");
+    end
+    return tonumber(stats:GetNumProjectsAdvanced(projectInfo.Index)) or 0;
+end
+
+function ScienceExecution.GetCompletedSpaceports(player)
+    local districts = player:GetDistricts();
+    if districts == nil then
+        error("Player:GetDistricts() is unavailable");
+    end
+    local completed = 0;
+    for _, district in districts:Members() do
+        local districtInfo = GameInfo.Districts[district:GetType()];
+        if districtInfo ~= nil
+            and districtInfo.DistrictType == "DISTRICT_SPACEPORT"
+            and district:IsComplete() then
+            completed = completed + 1;
+        end
+    end
+    return completed;
+end
+
+function ScienceExecution.GetQueueState(player)
+    local activeProjects = 0;
+    local inFlightSpaceports = 0;
+    local currentProject = "none";
+    for _, city in player:GetCities():Members() do
+        local productionType = GetCurrentProductionType(city);
+        local projectInfo = productionType ~= nil
+            and GameInfo.Projects[productionType] or nil;
+        if projectInfo ~= nil
+            and (projectInfo.SpaceRace == true or projectInfo.SpaceRace == 1) then
+            activeProjects = activeProjects + 1;
+            if currentProject == "none" then
+                currentProject = projectInfo.ProjectType;
+            end
+        elseif productionType == "DISTRICT_SPACEPORT" then
+            inFlightSpaceports = inFlightSpaceports + 1;
+        end
+    end
+    return activeProjects, currentProject, inFlightSpaceports;
+end
+
+function ScienceExecution.CountFrontierTechs(player)
+    local technologies = player:GetTechs();
+    local completed = 0;
+    for _, technologyType in ipairs(ScienceExecution.FRONTIER_TECHS) do
+        local technologyInfo = GameInfo.Technologies[technologyType];
+        if technologyInfo ~= nil and technologies:HasTech(technologyInfo.Index) then
+            completed = completed + 1;
+        end
+    end
+    return completed;
+end
+
+function ScienceExecution.HasCivic(culture, civicType)
+    local civicInfo = GameInfo.Civics[civicType];
+    return civicInfo ~= nil and culture:HasCivic(civicInfo.Index);
+end
+
+function ScienceExecution.GetPolicyStatus(culture)
+    local integratedInfo = GameInfo.Policies["POLICY_INTEGRATED_SPACE_CELL"];
+    local agencyInfo = GameInfo.Policies["POLICY_INTERNATIONAL_SPACE_AGENCY"];
+    local integrated = 0;
+    local agency = 0;
+    for slot = 0, culture:GetNumPolicySlots() - 1 do
+        local policyIndex = culture:GetSlotPolicy(slot);
+        if integratedInfo ~= nil and policyIndex == integratedInfo.Index then
+            integrated = 1;
+        end
+        if agencyInfo ~= nil and policyIndex == agencyInfo.Index then
+            agency = 1;
+        end
+    end
+    return integrated, agency;
+end
+
+function ScienceExecution.GetSpaceportTarget(stage, cities)
+    if stage <= ScienceExecution.NONE then
+        return 0;
+    end
+    local midThreshold = math.max(1, GetNumberParameter(
+        "ASAI_SCIENCE_SPACEPORT_MID_CITY_THRESHOLD",
+        8
+    ));
+    if stage <= ScienceExecution.MOON then
+        return cities >= midThreshold and 2 or 1;
+    end
+    if stage == ScienceExecution.MARS then
+        local cap = math.max(2, math.floor(GetNumberParameter(
+            "ASAI_SCIENCE_SPACEPORT_MARS_CAP",
+            3
+        )));
+        return math.min(cities, cap, math.max(2, math.floor(cities / 5)));
+    end
+    local cap = math.max(2, math.floor(GetNumberParameter(
+        "ASAI_SCIENCE_SPACEPORT_LASER_CAP",
+        4
+    )));
+    return math.min(cities, cap, math.max(2, math.floor(cities / 4)));
+end
+
+function ScienceExecution.Collect(playerID)
+    if not IsMajorAI(playerID) then
+        error("science execution requires a living major AI");
+    end
+    local turn = Game.GetCurrentGameTurn();
+    local player = Players[playerID];
+    local plan = GetStoredNumber(player, Strategic.PROPERTY, Strategic.DEVELOP);
+    local cached = ScienceExecution.Cache[playerID];
+    if cached ~= nil and cached.Turn == turn and cached.Plan == plan then
+        return cached;
+    end
+
+    local snapshot = GetSnapshot(playerID);
+    local satellite = ScienceExecution.GetProjectCount(
+        player,
+        ScienceExecution.PROJECTS.Satellite
+    );
+    local moon = ScienceExecution.GetProjectCount(player, ScienceExecution.PROJECTS.Moon);
+    local mars = ScienceExecution.GetProjectCount(player, ScienceExecution.PROJECTS.Mars);
+    local exoplanet = ScienceExecution.GetProjectCount(
+        player,
+        ScienceExecution.PROJECTS.Exoplanet
+    );
+    local orbitalLasers = ScienceExecution.GetProjectCount(
+        player,
+        ScienceExecution.PROJECTS.OrbitalLaser
+    );
+    local terrestrialLasers = ScienceExecution.GetProjectCount(
+        player,
+        ScienceExecution.PROJECTS.TerrestrialLaser
+    );
+    local computedStage = ScienceExecution.NONE;
+    if satellite > 0 then
+        computedStage = ScienceExecution.SATELLITE;
+    end
+    if moon > 0 then
+        computedStage = ScienceExecution.MOON;
+    end
+    if mars > 0 then
+        computedStage = ScienceExecution.MARS;
+    end
+    if exoplanet > 0 then
+        computedStage = ScienceExecution.EXOPLANET;
+    end
+
+    local rawStoredStageProperty = player:GetProperty(ScienceExecution.STAGE_PROPERTY);
+    local rawStoredStage = tonumber(rawStoredStageProperty);
+    local storedStage = rawStoredStage or ScienceExecution.NONE;
+    local stage = math.max(computedStage, storedStage);
+    local rawProgressTurnProperty = player:GetProperty(
+        ScienceExecution.LAST_PROGRESS_TURN_PROPERTY
+    );
+    local rawProgressTurn = tonumber(rawProgressTurnProperty);
+    local lastProgressTurn = rawProgressTurn or turn;
+    if rawStoredStage == nil then
+        player:SetProperty(ScienceExecution.STAGE_PROPERTY, stage);
+        player:SetProperty(ScienceExecution.STAGE_TURN_PROPERTY, turn);
+        player:SetProperty(ScienceExecution.LAST_PROGRESS_TURN_PROPERTY, turn);
+        lastProgressTurn = turn;
+    elseif stage > storedStage then
+        player:SetProperty(ScienceExecution.STAGE_PROPERTY, stage);
+        player:SetProperty(ScienceExecution.STAGE_TURN_PROPERTY, turn);
+        player:SetProperty(ScienceExecution.LAST_PROGRESS_TURN_PROPERTY, turn);
+        lastProgressTurn = turn;
+        print(string.format(
+            "ASAI_SCIENCE_STAGE turn=%d player=%d from=%s to=%s",
+            turn,
+            playerID,
+            ScienceExecution.GetStageName(storedStage),
+            ScienceExecution.GetStageName(stage)
+        ));
+    elseif rawProgressTurn == nil then
+        player:SetProperty(ScienceExecution.LAST_PROGRESS_TURN_PROPERTY, turn);
+        lastProgressTurn = turn;
+    end
+
+    local activeProjects, currentProject, inFlightSpaceports =
+        ScienceExecution.GetQueueState(player);
+    local spaceports = ScienceExecution.GetCompletedSpaceports(player);
+    local spaceportTarget = ScienceExecution.GetSpaceportTarget(stage, snapshot.Cities);
+    local defenseWindow = ScaleStandardTurns(GetNumberParameter(
+        "ASAI_SCIENCE_DEFENSE_COMBAT_STANDARD",
+        8
+    ));
+    local suspended = plan == Strategic.DEFEND
+        and snapshot.ActiveMajorWars > 0
+        and turn - snapshot.LastMajorCombatTurn <= defenseWindow;
+    local timeoutStandard = stage == ScienceExecution.MARS
+        and GetNumberParameter("ASAI_SCIENCE_MARS_TIMEOUT_STANDARD", 20)
+        or GetNumberParameter("ASAI_SCIENCE_STAGE_TIMEOUT_STANDARD", 16);
+    local recentProgress = turn - lastProgressTurn <= ScaleStandardTurns(timeoutStandard);
+    local active = stage > ScienceExecution.NONE
+        and not suspended
+        and (stage == ScienceExecution.EXOPLANET
+            or activeProjects > 0
+            or recentProgress);
+
+    local culture = player:GetCulture();
+    local policySuccess, integrated, agency = pcall(
+        ScienceExecution.GetPolicyStatus,
+        culture
+    );
+    if not policySuccess then
+        local policyError = integrated;
+        integrated = -1;
+        agency = -1;
+        if m_ConditionErrors.ASAI_SciencePolicyStatus == nil then
+            print(string.format(
+                "ASAI_DIAGNOSTIC_ERROR sensor=science_policies fallback=missing error=%s",
+                tostring(policyError)
+            ));
+            m_ConditionErrors.ASAI_SciencePolicyStatus = true;
+        end
+    end
+    local result = {
+        Turn = turn,
+        Plan = plan,
+        Stage = stage,
+        Active = active,
+        Suspended = suspended,
+        LastProgressTurn = lastProgressTurn,
+        ProgressAge = GetStandardEquivalentTurn(turn - lastProgressTurn),
+        Satellite = satellite,
+        Moon = moon,
+        Mars = mars,
+        Exoplanet = exoplanet,
+        Lasers = orbitalLasers + terrestrialLasers,
+        Spaceports = spaceports,
+        SpaceportsInFlight = inFlightSpaceports,
+        SpaceportTarget = spaceportTarget,
+        ActiveProjects = activeProjects,
+        CurrentProject = currentProject,
+        FrontierTechs = ScienceExecution.CountFrontierTechs(player),
+        SpaceRaceCivic = ScienceExecution.HasCivic(culture, "CIVIC_SPACE_RACE"),
+        GlobalizationCivic = ScienceExecution.HasCivic(culture, "CIVIC_GLOBALIZATION"),
+        IntegratedSpaceCell = integrated,
+        InternationalSpaceAgency = agency
+    };
+    ScienceExecution.Cache[playerID] = result;
+    return result;
+end
+
+function ScienceExecution.OnCityProjectCompleted(playerID, cityID, projectID)
+    ScienceExecution.Cache[playerID] = nil;
 end
 
 local function GetBandName(band)
@@ -3753,6 +4052,77 @@ function ASAI_IsScienceExecutionRecovery(playerID, threshold)
 end
 GameEvents.ASAI_IsScienceExecutionRecovery.Add(ASAI_IsScienceExecutionRecovery);
 
+function ScienceExecution.IsMoon(playerID, threshold)
+    local state = ScienceExecution.Collect(playerID);
+    return state.Active and state.Stage == ScienceExecution.SATELLITE;
+end
+function ASAI_IsScienceMoonExecution(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsScienceMoonExecution",
+        ScienceExecution.IsMoon,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsScienceMoonExecution.Add(ASAI_IsScienceMoonExecution);
+
+function ScienceExecution.IsMars(playerID, threshold)
+    local state = ScienceExecution.Collect(playerID);
+    return state.Active and state.Stage == ScienceExecution.MOON;
+end
+function ASAI_IsScienceMarsExecution(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsScienceMarsExecution",
+        ScienceExecution.IsMars,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsScienceMarsExecution.Add(ASAI_IsScienceMarsExecution);
+
+function ScienceExecution.IsExoplanet(playerID, threshold)
+    local state = ScienceExecution.Collect(playerID);
+    return state.Active and state.Stage == ScienceExecution.MARS;
+end
+function ASAI_IsScienceExoplanetExecution(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsScienceExoplanetExecution",
+        ScienceExecution.IsExoplanet,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsScienceExoplanetExecution.Add(ASAI_IsScienceExoplanetExecution);
+
+function ScienceExecution.IsLaser(playerID, threshold)
+    local state = ScienceExecution.Collect(playerID);
+    return state.Active and state.Stage == ScienceExecution.EXOPLANET;
+end
+function ASAI_IsScienceLaserExecution(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsScienceLaserExecution",
+        ScienceExecution.IsLaser,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsScienceLaserExecution.Add(ASAI_IsScienceLaserExecution);
+
+function ScienceExecution.IsSpaceportScale(playerID, threshold)
+    local state = ScienceExecution.Collect(playerID);
+    return state.Active
+        and state.Spaceports + state.SpaceportsInFlight < state.SpaceportTarget;
+end
+function ASAI_IsScienceSpaceportScale(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsScienceSpaceportScale",
+        ScienceExecution.IsSpaceportScale,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsScienceSpaceportScale.Add(ASAI_IsScienceSpaceportScale);
+
 local function IsCultureExecutionRecovery(playerID, threshold)
     return IsFocusExecutionRecovery(playerID, RELATIVE_FOCUS_CULTURE);
 end
@@ -4195,6 +4565,46 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
     ));
 end
 
+function ScienceExecution.WriteDiagnostics(playerID, firstTimeThisTurn)
+    if not firstTimeThisTurn or not IsMajorAI(playerID) then
+        return;
+    end
+    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 then
+        return;
+    end
+    local relativeState = GetRelativeState(playerID);
+    if not relativeState.EvaluatedThisTurn then
+        return;
+    end
+    local state = ScienceExecution.Collect(playerID);
+    print(string.format(
+        "ASAI_SCIENCE_EXECUTION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s active=%d suspended=%d progress_age=%.1f satellite=%d moon=%d mars=%d exoplanet=%d lasers=%d spaceports=%d spaceports_inflight=%d target=%d active_projects=%d current_project=%s future_frontier=%d space_race_civic=%d globalization=%d integrated_space_cell=%d international_space_agency=%d",
+        state.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(state.Turn),
+        playerID,
+        ScienceExecution.GetStageName(state.Stage),
+        state.Active and 1 or 0,
+        state.Suspended and 1 or 0,
+        state.ProgressAge,
+        state.Satellite,
+        state.Moon,
+        state.Mars,
+        state.Exoplanet,
+        state.Lasers,
+        state.Spaceports,
+        state.SpaceportsInFlight,
+        state.SpaceportTarget,
+        state.ActiveProjects,
+        state.CurrentProject,
+        state.FrontierTechs,
+        state.SpaceRaceCivic and 1 or 0,
+        state.GlobalizationCivic and 1 or 0,
+        state.IntegratedSpaceCell,
+        state.InternationalSpaceAgency
+    ));
+end
+
 local function LogMetrics(playerID, firstTimeThisTurn)
     if firstTimeThisTurn and IsMajorAI(playerID) then
         local evaluationSuccess, evaluationError = pcall(EvaluateRelativeState, playerID);
@@ -4245,6 +4655,20 @@ local function LogMetrics(playerID, firstTimeThisTurn)
         ));
         m_ConditionErrors.ASAI_LogMilitaryDiagnostics = true;
     end
+    local scienceSuccess, scienceError = pcall(
+        ScienceExecution.WriteDiagnostics,
+        playerID,
+        firstTimeThisTurn
+    );
+    if not scienceSuccess and m_ConditionErrors.ASAI_LogScienceExecution == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_LogScienceExecution player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(scienceError)
+        ));
+        m_ConditionErrors.ASAI_LogScienceExecution = true;
+    end
 end
 Events.PlayerTurnActivated.Add(LogMetrics);
 Events.UnitDamageChanged.Add(OnUnitDamageChanged);
+Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted);

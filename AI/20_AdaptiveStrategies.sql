@@ -36,7 +36,12 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_SCIENCE_EXECUTION_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_CULTURE_EXECUTION_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_EMPIRE_EXECUTION_RECOVERY', 'KIND_VICTORY_STRATEGY'),
-    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'KIND_VICTORY_STRATEGY');
+    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_MOON_EXECUTION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_MARS_EXECUTION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'KIND_VICTORY_STRATEGY');
 
 INSERT OR IGNORE INTO Strategies
     (StrategyType, NumConditionsNeeded)
@@ -65,7 +70,12 @@ VALUES
     ('ASAI_STRATEGY_SCIENCE_EXECUTION_RECOVERY', 1),
     ('ASAI_STRATEGY_CULTURE_EXECUTION_RECOVERY', 1),
     ('ASAI_STRATEGY_EMPIRE_EXECUTION_RECOVERY', 1),
-    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 1);
+    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 1),
+    ('ASAI_STRATEGY_SCIENCE_MOON_EXECUTION', 1),
+    ('ASAI_STRATEGY_SCIENCE_MARS_EXECUTION', 1),
+    ('ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION', 1),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 1),
+    ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 1);
 
 INSERT OR IGNORE INTO StrategyConditions
     (StrategyType, ConditionFunction, StringValue, ThresholdValue, Disqualifier)
@@ -119,7 +129,17 @@ VALUES
     ('ASAI_STRATEGY_EMPIRE_EXECUTION_RECOVERY', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_EMPIRE_EXECUTION_RECOVERY', 'Call Lua Function', 'ASAI_IsEmpireExecutionRecovery', 0, 0),
     ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'Is Not Major', NULL, 0, 1),
-    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'Call Lua Function', 'ASAI_IsExpansionRecovery', 0, 0);
+    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'Call Lua Function', 'ASAI_IsExpansionRecovery', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_MOON_EXECUTION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_MOON_EXECUTION', 'Call Lua Function', 'ASAI_IsScienceMoonExecution', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_MARS_EXECUTION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_MARS_EXECUTION', 'Call Lua Function', 'ASAI_IsScienceMarsExecution', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION', 'Call Lua Function', 'ASAI_IsScienceExoplanetExecution', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'Call Lua Function', 'ASAI_IsScienceLaserExecution', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'Call Lua Function', 'ASAI_IsScienceSpaceportScale', 0, 0);
 
 INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_OpeningPseudoYields'),
@@ -200,7 +220,25 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_EmpireExecutionBuildings'),
     ('ASAI_EmpireExecutionYields'),
     ('ASAI_ExpansionRecoveryPseudoYields'),
-    ('ASAI_ExpansionRecoveryUnits');
+    ('ASAI_ExpansionRecoveryUnits'),
+    ('ASAI_ScienceMoonTechs'),
+    ('ASAI_ScienceMoonProjects'),
+    ('ASAI_ScienceMoonYields'),
+    ('ASAI_ScienceMarsTechs'),
+    ('ASAI_ScienceMarsProjects'),
+    ('ASAI_ScienceMarsYields'),
+    ('ASAI_ScienceExoplanetTechs'),
+    ('ASAI_ScienceExoplanetProjects'),
+    ('ASAI_ScienceExoplanetYields'),
+    ('ASAI_ScienceLaserTechs'),
+    ('ASAI_ScienceLaserProjects'),
+    ('ASAI_ScienceLaserDistricts'),
+    ('ASAI_ScienceLaserBuildings'),
+    ('ASAI_ScienceLaserYields'),
+    ('ASAI_ScienceLaserPseudoYields'),
+    ('ASAI_ScienceSpaceportDistricts'),
+    ('ASAI_ScienceSpaceportYields'),
+    ('ASAI_ScienceSpaceportPseudoYields');
 
 INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_OpeningPseudoYields', 'PseudoYields'),
@@ -281,7 +319,25 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_EmpireExecutionBuildings', 'Buildings'),
     ('ASAI_EmpireExecutionYields', 'Yields'),
     ('ASAI_ExpansionRecoveryPseudoYields', 'PseudoYields'),
-    ('ASAI_ExpansionRecoveryUnits', 'Units');
+    ('ASAI_ExpansionRecoveryUnits', 'Units'),
+    ('ASAI_ScienceMoonTechs', 'Technologies'),
+    ('ASAI_ScienceMoonProjects', 'Projects'),
+    ('ASAI_ScienceMoonYields', 'Yields'),
+    ('ASAI_ScienceMarsTechs', 'Technologies'),
+    ('ASAI_ScienceMarsProjects', 'Projects'),
+    ('ASAI_ScienceMarsYields', 'Yields'),
+    ('ASAI_ScienceExoplanetTechs', 'Technologies'),
+    ('ASAI_ScienceExoplanetProjects', 'Projects'),
+    ('ASAI_ScienceExoplanetYields', 'Yields'),
+    ('ASAI_ScienceLaserTechs', 'Technologies'),
+    ('ASAI_ScienceLaserProjects', 'Projects'),
+    ('ASAI_ScienceLaserDistricts', 'Districts'),
+    ('ASAI_ScienceLaserBuildings', 'Buildings'),
+    ('ASAI_ScienceLaserYields', 'Yields'),
+    ('ASAI_ScienceLaserPseudoYields', 'PseudoYields'),
+    ('ASAI_ScienceSpaceportDistricts', 'Districts'),
+    ('ASAI_ScienceSpaceportYields', 'Yields'),
+    ('ASAI_ScienceSpaceportPseudoYields', 'PseudoYields');
 
 INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_OPENING_EXPANSION', 'ASAI_OpeningPseudoYields'),
@@ -362,7 +418,25 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_EMPIRE_EXECUTION_RECOVERY', 'ASAI_EmpireExecutionBuildings'),
     ('ASAI_STRATEGY_EMPIRE_EXECUTION_RECOVERY', 'ASAI_EmpireExecutionYields'),
     ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'ASAI_ExpansionRecoveryPseudoYields'),
-    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'ASAI_ExpansionRecoveryUnits');
+    ('ASAI_STRATEGY_EXPANSION_RECOVERY', 'ASAI_ExpansionRecoveryUnits'),
+    ('ASAI_STRATEGY_SCIENCE_MOON_EXECUTION', 'ASAI_ScienceMoonTechs'),
+    ('ASAI_STRATEGY_SCIENCE_MOON_EXECUTION', 'ASAI_ScienceMoonProjects'),
+    ('ASAI_STRATEGY_SCIENCE_MOON_EXECUTION', 'ASAI_ScienceMoonYields'),
+    ('ASAI_STRATEGY_SCIENCE_MARS_EXECUTION', 'ASAI_ScienceMarsTechs'),
+    ('ASAI_STRATEGY_SCIENCE_MARS_EXECUTION', 'ASAI_ScienceMarsProjects'),
+    ('ASAI_STRATEGY_SCIENCE_MARS_EXECUTION', 'ASAI_ScienceMarsYields'),
+    ('ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION', 'ASAI_ScienceExoplanetTechs'),
+    ('ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION', 'ASAI_ScienceExoplanetProjects'),
+    ('ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION', 'ASAI_ScienceExoplanetYields'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserTechs'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserProjects'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserDistricts'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserBuildings'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserYields'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserPseudoYields'),
+    ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'ASAI_ScienceSpaceportDistricts'),
+    ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'ASAI_ScienceSpaceportYields'),
+    ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'ASAI_ScienceSpaceportPseudoYields');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
@@ -544,7 +618,44 @@ VALUES
     ('ASAI_EmpireExecutionYields', 'YIELD_FOOD', 1, 24),
     ('ASAI_EmpireExecutionYields', 'YIELD_PRODUCTION', 1, 15),
     ('ASAI_ExpansionRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, 45),
-    ('ASAI_ExpansionRecoveryUnits', 'UNIT_SETTLER', 1, 40);
+    ('ASAI_ExpansionRecoveryUnits', 'UNIT_SETTLER', 1, 40),
+    ('ASAI_ScienceMoonTechs', 'TECH_SATELLITES', 1, 140),
+    ('ASAI_ScienceMoonProjects', 'PROJECT_LAUNCH_MOON_LANDING', 1, 220),
+    ('ASAI_ScienceMoonYields', 'YIELD_PRODUCTION', 1, 25),
+    ('ASAI_ScienceMarsTechs', 'TECH_NANOTECHNOLOGY', 1, 170),
+    ('ASAI_ScienceMarsProjects', 'PROJECT_LAUNCH_MARS_BASE', 1, 240),
+    ('ASAI_ScienceMarsYields', 'YIELD_PRODUCTION', 1, 30),
+    ('ASAI_ScienceExoplanetTechs', 'TECH_SEASTEADS', 1, 70),
+    ('ASAI_ScienceExoplanetTechs', 'TECH_ADVANCED_AI', 1, 70),
+    ('ASAI_ScienceExoplanetTechs', 'TECH_ADVANCED_POWER_CELLS', 1, 70),
+    ('ASAI_ScienceExoplanetTechs', 'TECH_CYBERNETICS', 1, 70),
+    ('ASAI_ScienceExoplanetTechs', 'TECH_PREDICTIVE_SYSTEMS', 1, 70),
+    ('ASAI_ScienceExoplanetTechs', 'TECH_SMART_MATERIALS', 1, 220),
+    ('ASAI_ScienceExoplanetProjects', 'PROJECT_LAUNCH_EXOPLANET_EXPEDITION', 1, 260),
+    ('ASAI_ScienceExoplanetYields', 'YIELD_SCIENCE', 1, 20),
+    ('ASAI_ScienceExoplanetYields', 'YIELD_PRODUCTION', 1, 35),
+    ('ASAI_ScienceLaserTechs', 'TECH_OFFWORLD_MISSION', 1, 240),
+    ('ASAI_ScienceLaserProjects', 'PROJECT_ORBITAL_LASER', 1, 280),
+    ('ASAI_ScienceLaserProjects', 'PROJECT_TERRESTRIAL_LASER', 1, 280),
+    ('ASAI_ScienceLaserDistricts', 'DISTRICT_SPACEPORT', 1, 125),
+    ('ASAI_ScienceLaserDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 50),
+    ('ASAI_ScienceLaserYields', 'YIELD_SCIENCE', 1, 20),
+    ('ASAI_ScienceLaserYields', 'YIELD_PRODUCTION', 1, 50),
+    ('ASAI_ScienceLaserYields', 'YIELD_GOLD', 1, 10),
+    ('ASAI_ScienceLaserPseudoYields', 'PSEUDOYIELD_SPACE_RACE', 1, 225),
+    ('ASAI_ScienceSpaceportDistricts', 'DISTRICT_SPACEPORT', 1, 160),
+    ('ASAI_ScienceSpaceportDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 45),
+    ('ASAI_ScienceSpaceportYields', 'YIELD_PRODUCTION', 1, 35),
+    ('ASAI_ScienceSpaceportPseudoYields', 'PSEUDOYIELD_SPACE_RACE', 1, 100),
+    ('ASAI_ScienceSpaceportPseudoYields', 'PSEUDOYIELD_WONDER', 1, -40);
+
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScienceLaserBuildings', BuildingType, 1, 60
+FROM Buildings
+WHERE BuildingType IN
+    ('BUILDING_FACTORY', 'BUILDING_POWER_PLANT', 'BUILDING_COAL_POWER_PLANT',
+     'BUILDING_FOSSIL_FUEL_POWER_PLANT');
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)

@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.4"
-EXPECTED_MODINFO_VERSION = "26"
+EXPECTED_RELEASE = "0.11.5"
+EXPECTED_MODINFO_VERSION = "27"
 
 
 def default_database() -> Path:
@@ -186,6 +186,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("economic diagnostics logger is not independently fail-closed")
     if "pcall(\n        WriteMilitaryDiagnostics" not in source:
         errors.append("military diagnostics logger is not independently fail-closed")
+    if "pcall(\n        ScienceExecution.WriteDiagnostics" not in source:
+        errors.append("science-execution diagnostics logger is not independently fail-closed")
     if "pcall(EvaluateRelativeState, playerID)" not in source:
         errors.append("Lua per-turn relative evaluator is not fail-closed")
     if "GetNumOutgoingRoutes" in source:
@@ -212,6 +214,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_ECONOMY",
         "ASAI_CONVERSION",
         "ASAI_MILITARY turn=",
+        "ASAI_SCIENCE_EXECUTION turn=",
         "ASAI_FOCUS",
         "ASAI_DIAGNOSTIC_ERROR",
     ):
@@ -550,6 +553,33 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     for fragment in diagnostic_fragments:
         if fragment not in source:
             errors.append(f"economic diagnostic fragment is missing: {fragment}")
+    science_execution_fragments = (
+        'STAGE_PROPERTY = "ASAI_SCIENCE_EXECUTION_STAGE"',
+        'LAST_PROGRESS_TURN_PROPERTY = "ASAI_SCIENCE_EXECUTION_LAST_PROGRESS_TURN"',
+        "stats:GetNumProjectsAdvanced(projectInfo.Index)",
+        "function ScienceExecution.GetSpaceportTarget(stage, cities)",
+        "ASAI_SCIENCE_SPACEPORT_MARS_CAP",
+        "ASAI_SCIENCE_SPACEPORT_LASER_CAP",
+        "math.floor(cities / 5)",
+        "math.floor(cities / 4)",
+        "state.Spaceports + state.SpaceportsInFlight < state.SpaceportTarget",
+        "ASAI_SCIENCE_STAGE_TIMEOUT_STANDARD",
+        "ASAI_SCIENCE_MARS_TIMEOUT_STANDARD",
+        "ASAI_SCIENCE_DEFENSE_COMBAT_STANDARD",
+        "snapshot.ActiveMajorWars > 0",
+        "or activeProjects > 0",
+        "function ASAI_IsScienceMoonExecution(playerID, threshold)",
+        "function ASAI_IsScienceMarsExecution(playerID, threshold)",
+        "function ASAI_IsScienceExoplanetExecution(playerID, threshold)",
+        "function ASAI_IsScienceLaserExecution(playerID, threshold)",
+        "function ASAI_IsScienceSpaceportScale(playerID, threshold)",
+        "Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted)",
+        "integrated_space_cell=%d",
+        "international_space_agency=%d",
+    )
+    for fragment in science_execution_fragments:
+        if fragment not in source:
+            errors.append(f"science-execution fragment is missing: {fragment}")
     component_block = re.search(
         r"local RELATIVE_COMPONENTS = \{(.*?)\n\};",
         source,
@@ -895,11 +925,16 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         )
 
     expected_science_path = {
-        "TECH_ROCKETRY": 45,
-        "TECH_SATELLITES": 60,
-        "TECH_NANOTECHNOLOGY": 80,
-        "TECH_SMART_MATERIALS": 100,
-        "TECH_OFFWORLD_MISSION": 115,
+        "TECH_ROCKETRY": 50,
+        "TECH_SATELLITES": 70,
+        "TECH_NANOTECHNOLOGY": 100,
+        "TECH_SEASTEADS": 45,
+        "TECH_ADVANCED_AI": 45,
+        "TECH_ADVANCED_POWER_CELLS": 45,
+        "TECH_CYBERNETICS": 45,
+        "TECH_PREDICTIVE_SYSTEMS": 45,
+        "TECH_SMART_MATERIALS": 150,
+        "TECH_OFFWORLD_MISSION": 180,
     }
     actual_science_path = dict(
         connection.execute(
@@ -935,12 +970,184 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
             "'PROJECT_ORBITAL_LASER', 'PROJECT_TERRESTRIAL_LASER')"
         )
     }
-    if project_gate_techs != set(expected_science_path):
+    expected_project_gate_techs = {
+        "TECH_ROCKETRY",
+        "TECH_SATELLITES",
+        "TECH_NANOTECHNOLOGY",
+        "TECH_SMART_MATERIALS",
+        "TECH_OFFWORLD_MISSION",
+    }
+    if project_gate_techs != expected_project_gate_techs:
         errors.append(
             "science-victory priorities no longer match direct project gates: "
-            f"expected {sorted(expected_science_path)}, "
+            f"expected {sorted(expected_project_gate_techs)}, "
             f"found {sorted(project_gate_techs)}"
         )
+
+    expected_science_civics = {
+        "CIVIC_COLD_WAR": 45,
+        "CIVIC_SPACE_RACE": 90,
+        "CIVIC_RAPID_DEPLOYMENT": 55,
+        "CIVIC_GLOBALIZATION": 100,
+        "CIVIC_SOCIAL_MEDIA": 35,
+    }
+    actual_science_civics = dict(
+        connection.execute(
+            "SELECT Item, Value FROM AiFavoredItems "
+            "WHERE ListType = 'ASAI_ScienceCivics'"
+        )
+    )
+    if actual_science_civics != expected_science_civics:
+        errors.append(
+            "science-victory civic path differs: "
+            f"expected {expected_science_civics}, found {actual_science_civics}"
+        )
+    science_civic_owners = {
+        row[0]
+        for row in connection.execute(
+            "SELECT StrategyType FROM Strategy_Priorities "
+            "WHERE ListType = 'ASAI_ScienceCivics'"
+        )
+    }
+    if science_civic_owners != {"VICTORY_STRATEGY_SCIENCE_VICTORY"}:
+        errors.append(
+            "science-victory civic path must belong only to the native "
+            f"science strategy, found {sorted(science_civic_owners)}"
+        )
+
+    expected_science_stage_conditions = {
+        "ASAI_STRATEGY_SCIENCE_MOON_EXECUTION": "ASAI_IsScienceMoonExecution",
+        "ASAI_STRATEGY_SCIENCE_MARS_EXECUTION": "ASAI_IsScienceMarsExecution",
+        "ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION": "ASAI_IsScienceExoplanetExecution",
+        "ASAI_STRATEGY_SCIENCE_LASER_EXECUTION": "ASAI_IsScienceLaserExecution",
+        "ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE": "ASAI_IsScienceSpaceportScale",
+    }
+    actual_science_stage_conditions = dict(
+        connection.execute(
+            "SELECT StrategyType, StringValue FROM StrategyConditions "
+            "WHERE StrategyType LIKE 'ASAI_STRATEGY_SCIENCE_%_EXECUTION' "
+            "AND ConditionFunction = 'Call Lua Function' "
+            "UNION ALL "
+            "SELECT StrategyType, StringValue FROM StrategyConditions "
+            "WHERE StrategyType = 'ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE' "
+            "AND ConditionFunction = 'Call Lua Function'"
+        )
+    )
+    if actual_science_stage_conditions != expected_science_stage_conditions:
+        errors.append(
+            "science milestone conditions differ: "
+            f"expected {expected_science_stage_conditions}, "
+            f"found {actual_science_stage_conditions}"
+        )
+
+    expected_science_stage_lists = {
+        "ASAI_STRATEGY_SCIENCE_MOON_EXECUTION": {
+            "ASAI_ScienceMoonTechs",
+            "ASAI_ScienceMoonProjects",
+            "ASAI_ScienceMoonYields",
+        },
+        "ASAI_STRATEGY_SCIENCE_MARS_EXECUTION": {
+            "ASAI_ScienceMarsTechs",
+            "ASAI_ScienceMarsProjects",
+            "ASAI_ScienceMarsYields",
+        },
+        "ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION": {
+            "ASAI_ScienceExoplanetTechs",
+            "ASAI_ScienceExoplanetProjects",
+            "ASAI_ScienceExoplanetYields",
+        },
+        "ASAI_STRATEGY_SCIENCE_LASER_EXECUTION": {
+            "ASAI_ScienceLaserTechs",
+            "ASAI_ScienceLaserProjects",
+            "ASAI_ScienceLaserDistricts",
+            "ASAI_ScienceLaserBuildings",
+            "ASAI_ScienceLaserYields",
+            "ASAI_ScienceLaserPseudoYields",
+        },
+        "ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE": {
+            "ASAI_ScienceSpaceportDistricts",
+            "ASAI_ScienceSpaceportYields",
+            "ASAI_ScienceSpaceportPseudoYields",
+        },
+    }
+    for strategy_type, expected_lists in expected_science_stage_lists.items():
+        actual_lists = {
+            row[0]
+            for row in connection.execute(
+                "SELECT ListType FROM Strategy_Priorities WHERE StrategyType = ?",
+                (strategy_type,),
+            )
+        }
+        if actual_lists != expected_lists:
+            errors.append(
+                f"{strategy_type} priorities differ: expected {sorted(expected_lists)}, "
+                f"found {sorted(actual_lists)}"
+            )
+
+    expected_science_stage_items = {
+        "ASAI_ScienceMoonTechs": {"TECH_SATELLITES": 140},
+        "ASAI_ScienceMoonProjects": {"PROJECT_LAUNCH_MOON_LANDING": 220},
+        "ASAI_ScienceMoonYields": {"YIELD_PRODUCTION": 25},
+        "ASAI_ScienceMarsTechs": {"TECH_NANOTECHNOLOGY": 170},
+        "ASAI_ScienceMarsProjects": {"PROJECT_LAUNCH_MARS_BASE": 240},
+        "ASAI_ScienceMarsYields": {"YIELD_PRODUCTION": 30},
+        "ASAI_ScienceExoplanetTechs": {
+            "TECH_SEASTEADS": 70,
+            "TECH_ADVANCED_AI": 70,
+            "TECH_ADVANCED_POWER_CELLS": 70,
+            "TECH_CYBERNETICS": 70,
+            "TECH_PREDICTIVE_SYSTEMS": 70,
+            "TECH_SMART_MATERIALS": 220,
+        },
+        "ASAI_ScienceExoplanetProjects": {
+            "PROJECT_LAUNCH_EXOPLANET_EXPEDITION": 260
+        },
+        "ASAI_ScienceExoplanetYields": {
+            "YIELD_SCIENCE": 20,
+            "YIELD_PRODUCTION": 35,
+        },
+        "ASAI_ScienceLaserTechs": {"TECH_OFFWORLD_MISSION": 240},
+        "ASAI_ScienceLaserProjects": {
+            "PROJECT_ORBITAL_LASER": 280,
+            "PROJECT_TERRESTRIAL_LASER": 280,
+        },
+        "ASAI_ScienceLaserDistricts": {
+            "DISTRICT_SPACEPORT": 125,
+            "DISTRICT_INDUSTRIAL_ZONE": 50,
+        },
+        "ASAI_ScienceLaserBuildings": {
+            "BUILDING_FACTORY": 60,
+            "BUILDING_POWER_PLANT": 60,
+            "BUILDING_COAL_POWER_PLANT": 60,
+            "BUILDING_FOSSIL_FUEL_POWER_PLANT": 60,
+        },
+        "ASAI_ScienceLaserYields": {
+            "YIELD_SCIENCE": 20,
+            "YIELD_PRODUCTION": 50,
+            "YIELD_GOLD": 10,
+        },
+        "ASAI_ScienceLaserPseudoYields": {"PSEUDOYIELD_SPACE_RACE": 225},
+        "ASAI_ScienceSpaceportDistricts": {
+            "DISTRICT_SPACEPORT": 160,
+            "DISTRICT_INDUSTRIAL_ZONE": 45,
+        },
+        "ASAI_ScienceSpaceportYields": {"YIELD_PRODUCTION": 35},
+        "ASAI_ScienceSpaceportPseudoYields": {
+            "PSEUDOYIELD_SPACE_RACE": 100,
+            "PSEUDOYIELD_WONDER": -40,
+        },
+    }
+    for list_type, expected_items in expected_science_stage_items.items():
+        actual_items = dict(
+            connection.execute(
+                "SELECT Item, Value FROM AiFavoredItems WHERE ListType = ?",
+                (list_type,),
+            )
+        )
+        if actual_items != expected_items:
+            errors.append(
+                f"{list_type} differs: expected {expected_items}, found {actual_items}"
+            )
 
     expected_settlement_items = {
         ("Nearest Friendly City", None): -8,
@@ -1122,6 +1329,12 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_MILITARY_DOMINANCE_DENSITY_EXIT_X100",
         "ASAI_MILITARY_QUEUE_TARGET_X100",
         "ASAI_WAR_QUEUE_TARGET_X100",
+        "ASAI_SCIENCE_STAGE_TIMEOUT_STANDARD",
+        "ASAI_SCIENCE_MARS_TIMEOUT_STANDARD",
+        "ASAI_SCIENCE_DEFENSE_COMBAT_STANDARD",
+        "ASAI_SCIENCE_SPACEPORT_MID_CITY_THRESHOLD",
+        "ASAI_SCIENCE_SPACEPORT_MARS_CAP",
+        "ASAI_SCIENCE_SPACEPORT_LASER_CAP",
         "ASAI_RELATIVE_SCIENCE_ENTER_X100",
         "ASAI_RELATIVE_SCIENCE_EXIT_X100",
         "ASAI_RELATIVE_CULTURE_ENTER_X100",
@@ -1447,6 +1660,32 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
             errors.append(
                 "military queue targets are not ordered safely: "
                 f"{(military_queue_target, war_queue_target)}"
+            )
+
+    science_execution_parameters = (
+        parameters.get("ASAI_SCIENCE_STAGE_TIMEOUT_STANDARD"),
+        parameters.get("ASAI_SCIENCE_MARS_TIMEOUT_STANDARD"),
+        parameters.get("ASAI_SCIENCE_DEFENSE_COMBAT_STANDARD"),
+        parameters.get("ASAI_SCIENCE_SPACEPORT_MID_CITY_THRESHOLD"),
+        parameters.get("ASAI_SCIENCE_SPACEPORT_MARS_CAP"),
+        parameters.get("ASAI_SCIENCE_SPACEPORT_LASER_CAP"),
+    )
+    if None not in science_execution_parameters:
+        if science_execution_parameters != (16, 20, 8, 8, 3, 4):
+            errors.append(
+                "science-execution controls differ from the turn 1-137 review: "
+                f"{science_execution_parameters}"
+            )
+        if not (
+            0 < science_execution_parameters[2]
+            <= science_execution_parameters[0]
+            <= science_execution_parameters[1]
+            and 1 < science_execution_parameters[4]
+            < science_execution_parameters[5]
+        ):
+            errors.append(
+                "science-execution timing or spaceport caps are invalid: "
+                f"{science_execution_parameters}"
             )
         if (military_queue_target, war_queue_target) != (25, 45):
             errors.append(
@@ -2218,8 +2457,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 25:
-                    errors.append(f"expected 25 adaptive strategies, found {strategy_count}")
+                if strategy_count != 30:
+                    errors.append(f"expected 30 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -2245,9 +2484,9 @@ def main() -> int:
         "+50% Production/Gold, +24% Science/Culture/Faith, +3 combat, +30% XP"
     )
     print(
-        "- adaptive strategies: 25 "
-        "(including the rolling development plan and coordinated recovery, "
-        "expansion, defense, pressure, and war plans)"
+        "- adaptive strategies: 30 "
+        "(including rolling plans, coordinated recovery, and milestone-based "
+        "science-victory execution)"
     )
     print(
         "- reversible result tiers: mild +20/+15/+15/+10 and "

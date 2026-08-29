@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Mod id="6f0de0e4-37d7-48ad-a6d4-4a958d76e7f1" version="26">
+<Mod id="6f0de0e4-37d7-48ad-a6d4-4a958d76e7f1" version="27">
   <Properties>
     <Name>Adaptive Strategic AI</Name>
-    <Description>Competitive Deity AI with rolling strategic plans, bounded pacing, reversible catch-up, coherent science finishes, and outcome-aware war execution.</Description>
+    <Description>Competitive Deity AI with rolling plans, bounded pacing, reversible catch-up, milestone-based science finishes, and outcome-aware wars.</Description>
     <Teaser>AI leads early. Adaptive pressure.</Teaser>
     <Authors>30474</Authors>
     <AffectsSavedGames>1</AffectsSavedGames>
