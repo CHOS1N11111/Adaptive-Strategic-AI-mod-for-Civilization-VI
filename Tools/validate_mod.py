@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.8"
-EXPECTED_MODINFO_VERSION = "30"
+EXPECTED_RELEASE = "0.11.9"
+EXPECTED_MODINFO_VERSION = "31"
 
 
 def default_database() -> Path:
@@ -186,12 +186,16 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("economic diagnostics logger is not independently fail-closed")
     if "pcall(\n        WriteMilitaryDiagnostics" not in source:
         errors.append("military diagnostics logger is not independently fail-closed")
+    if "pcall(\n        ThreatResponse.WriteDiagnostics" not in source:
+        errors.append("threat-response diagnostics logger is not independently fail-closed")
     if "pcall(\n        ScienceExecution.WriteDiagnostics" not in source:
         errors.append("science-execution diagnostics logger is not independently fail-closed")
     if "pcall(EvaluateRelativeState, playerID)" not in source:
         errors.append("Lua per-turn relative evaluator is not fail-closed")
     if "GetNumOutgoingRoutes" in source:
         errors.append("GetNumOutgoingRoutes is unavailable in gameplay-script context")
+    if "GetNumProjectsAdvanced" in source:
+        errors.append("GetNumProjectsAdvanced is unavailable in gameplay-script context")
     if "GetMilitaryStrengthWithoutTreasury" in source or ":GetMilitaryStrength()" in source:
         errors.append("player military-strength methods are unavailable in gameplay-script context")
     if "tonumber(player:GetProperty(" in source:
@@ -216,7 +220,11 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_ECONOMY",
         "ASAI_CONVERSION",
         "ASAI_MILITARY turn=",
+        "ASAI_THREAT turn=",
         "ASAI_SCIENCE_EXECUTION turn=",
+        "ASAI_SCIENCE_STAGE turn=",
+        "ASAI_SCIENCE_MIGRATION turn=",
+        "ASAI_SCIENCE_PROJECT turn=",
         "ASAI_FOCUS",
         "ASAI_DIAGNOSTIC_ERROR",
     ):
@@ -528,7 +536,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "war_stop_loss_reallocate",
         "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
         "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
-        "local retirePlan = expansionSettlerStalled",
+        "local previousSettlerStallCount = state.ExpansionSettlerStallCount",
+        "local retirePlan = (state.StrategicPlan == Strategic.EXPAND",
+        "return retirePlan, expansionSettlerStalled;",
+        "if expansionSettlerStalled then",
         "snapshot.ActiveMajorWars > 0 and not warStopLoss",
         "snapshot.Turn < warCooldownUntil",
         "state.StrategicPlanExecution > 0",
@@ -623,7 +634,17 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     science_execution_fragments = (
         'STAGE_PROPERTY = "ASAI_SCIENCE_EXECUTION_STAGE"',
         'LAST_PROGRESS_TURN_PROPERTY = "ASAI_SCIENCE_EXECUTION_LAST_PROGRESS_TURN"',
-        "stats:GetNumProjectsAdvanced(projectInfo.Index)",
+        'COUNT_PROPERTY_PREFIX = "ASAI_SCIENCE_PROJECT_COUNT_"',
+        'TRACKING_SCHEMA_PROPERTY = "ASAI_SCIENCE_TRACKING_SCHEMA"',
+        "ScienceExecution.PROJECT_STAGES = {",
+        "function ScienceExecution.SetProjectCountAtLeast(player, projectType, minimum)",
+        "function ScienceExecution.SeedCountsThroughStage(player, stage)",
+        "function ScienceExecution.GetLegacyAvailableStage(player)",
+        "buildQueue.CanProduce",
+        "ScienceExecution.SeedCountsThroughStage(player, migrationStage)",
+        "function ScienceExecution.RecordProjectCompletion(\n    playerID,",
+        "bCanceled == true or bCanceled == 1",
+        "pcall(\n        ScienceExecution.RecordProjectCompletion",
         "function ScienceExecution.GetSpaceportTarget(stage, cities)",
         "ASAI_SCIENCE_SPACEPORT_MARS_CAP",
         "ASAI_SCIENCE_SPACEPORT_LASER_CAP",
@@ -641,12 +662,35 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "function ASAI_IsScienceLaserExecution(playerID, threshold)",
         "function ASAI_IsScienceSpaceportScale(playerID, threshold)",
         "Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted)",
+        "migration_stage=%s",
+        "migration_sensor_ok=%d",
         "integrated_space_cell=%d",
         "international_space_agency=%d",
     )
     for fragment in science_execution_fragments:
         if fragment not in source:
             errors.append(f"science-execution fragment is missing: {fragment}")
+    threat_response_fragments = (
+        'LAST_AIR_TURN_PROPERTY = "ASAI_LAST_AIR_THREAT_TURN"',
+        'LAST_GDR_TURN_PROPERTY = "ASAI_LAST_GDR_THREAT_TURN"',
+        "function ThreatResponse.GetUnitProfile(unitInfo)",
+        'unitInfo.PromotionClass == "PROMOTION_CLASS_AIR_FIGHTER"',
+        'unitInfo.UnitType == "UNIT_GIANT_DEATH_ROBOT"',
+        "ASAI_HIGH_TECH_THREAT_WINDOW_STANDARD",
+        "ASAI_HIGH_TECH_THREAT_DISTANCE",
+        "ASAI_HIGH_TECH_AIR_COUNTER_RATIO_X100",
+        "ASAI_HIGH_TECH_GDR_COUNTER_RATIO_X100",
+        "and ((recentAir and airGap) or (recentGDR and gdrGap))",
+        "function ASAI_IsHighTechDefense(playerID, threshold)",
+        "function ThreatResponse.MarkNearbyThreat(playerID, opponent, x, y)",
+        "if oldDamage ~= nil and newDamage <= oldDamage then",
+        "function ThreatResponse.RecordDistrictDamage(",
+        "newDamage <= oldDamage",
+        "Events.DistrictDamageChanged.Add(ThreatResponse.OnDistrictDamageChanged)",
+    )
+    for fragment in threat_response_fragments:
+        if fragment not in source:
+            errors.append(f"high-tech threat-response fragment is missing: {fragment}")
     component_block = re.search(
         r"local RELATIVE_COMPONENTS = \{(.*?)\n\};",
         source,
@@ -708,6 +752,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "function ASAI_IsTraderBudgetReached(playerID, threshold)",
         "function ASAI_IsSettlerBudgetReached(playerID, threshold)",
         "snapshot.Settlers + snapshot.InFlightSettlers",
+        "if expansionUnavailable then\n        return true;",
     )
     for fragment in civilian_budget_fragments:
         if fragment not in source:
@@ -725,6 +770,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "state.ScaleRecovery == 1 and state.ScaleExpansionAllowed ~= 1",
         "state.ScaleExpansionAllowed ~= 1",
         "snapshot.Settlers + snapshot.InFlightSettlers < maximumInFlight",
+        "state.ExpansionPhase ~= Strategic.EXPANSION_CLOSED",
+        "state.ExpansionSettlerStallCount >= stallLimit",
         "function ASAI_IsExpansionRecovery(playerID, threshold)",
         "settlers_inflight=%d",
         "settler_cap=%d",
@@ -1172,6 +1219,7 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
             "ASAI_ScienceLaserBuildings",
             "ASAI_ScienceLaserYields",
             "ASAI_ScienceLaserPseudoYields",
+            "ASAI_ScienceLaserSuppressedProjects",
         },
         "ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE": {
             "ASAI_ScienceSpaceportDistricts",
@@ -1217,8 +1265,8 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         },
         "ASAI_ScienceLaserTechs": {"TECH_OFFWORLD_MISSION": 240},
         "ASAI_ScienceLaserProjects": {
-            "PROJECT_ORBITAL_LASER": 280,
-            "PROJECT_TERRESTRIAL_LASER": 280,
+            "PROJECT_ORBITAL_LASER": 500,
+            "PROJECT_TERRESTRIAL_LASER": 500,
         },
         "ASAI_ScienceLaserDistricts": {
             "DISTRICT_SPACEPORT": 125,
@@ -1232,10 +1280,10 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
         },
         "ASAI_ScienceLaserYields": {
             "YIELD_SCIENCE": 20,
-            "YIELD_PRODUCTION": 50,
+            "YIELD_PRODUCTION": 65,
             "YIELD_GOLD": 10,
         },
-        "ASAI_ScienceLaserPseudoYields": {"PSEUDOYIELD_SPACE_RACE": 225},
+        "ASAI_ScienceLaserPseudoYields": {"PSEUDOYIELD_SPACE_RACE": 350},
         "ASAI_ScienceSpaceportDistricts": {
             "DISTRICT_SPACEPORT": 160,
             "DISTRICT_INDUSTRIAL_ZONE": 45,
@@ -1257,6 +1305,45 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
             errors.append(
                 f"{list_type} differs: expected {expected_items}, found {actual_items}"
             )
+
+    expected_laser_suppression = {
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT ProjectType
+            FROM Projects
+            WHERE ProjectType LIKE 'PROJECT_ENHANCE_DISTRICT_%'
+               OR COALESCE(WMD, 0) = 1
+               OR ProjectType IN (
+                    'PROJECT_SEND_AID',
+                    'PROJECT_TRAIN_ATHLETES',
+                    'PROJECT_TRAIN_ASTRONAUTS',
+                    'PROJECT_CARBON_RECAPTURE',
+                    'PROJECT_RECOMMISSION_REACTOR',
+                    'PROJECT_CONVERT_REACTOR_TO_COAL',
+                    'PROJECT_CONVERT_REACTOR_TO_OIL',
+                    'PROJECT_CONVERT_REACTOR_TO_URANIUM',
+                    'PROJECT_DECOMMISSION_COAL_POWER_PLANT',
+                    'PROJECT_DECOMMISSION_OIL_POWER_PLANT',
+                    'PROJECT_DECOMMISSION_NUCLEAR_POWER_PLANT'
+               )
+            """
+        )
+    }
+    actual_laser_suppression = dict(
+        connection.execute(
+            "SELECT Item, Value FROM AiFavoredItems "
+            "WHERE ListType = 'ASAI_ScienceLaserSuppressedProjects'"
+        )
+    )
+    if set(actual_laser_suppression) != expected_laser_suppression or any(
+        value != -160 for value in actual_laser_suppression.values()
+    ):
+        errors.append(
+            "science-laser project suppression differs: "
+            f"expected {sorted(expected_laser_suppression)} at -160, "
+            f"found {actual_laser_suppression}"
+        )
 
     expected_settlement_items = {
         ("Nearest Friendly City", None): -8,
@@ -1388,6 +1475,10 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         "ASAI_WAR_PILLAGE_PROGRESS_MIN",
         "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
         "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
+        "ASAI_HIGH_TECH_THREAT_WINDOW_STANDARD",
+        "ASAI_HIGH_TECH_THREAT_DISTANCE",
+        "ASAI_HIGH_TECH_AIR_COUNTER_RATIO_X100",
+        "ASAI_HIGH_TECH_GDR_COUNTER_RATIO_X100",
         "ASAI_RELATIVE_START_TURN_STANDARD",
         "ASAI_RELATIVE_CHECK_INTERVAL_STANDARD",
         "ASAI_RELATIVE_MIN_DWELL_STANDARD",
@@ -1829,6 +1920,30 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
                 f"{(military_queue_target, war_queue_target)}"
             )
 
+    high_tech_response_parameters = (
+        parameters.get("ASAI_HIGH_TECH_THREAT_WINDOW_STANDARD"),
+        parameters.get("ASAI_HIGH_TECH_THREAT_DISTANCE"),
+        parameters.get("ASAI_HIGH_TECH_AIR_COUNTER_RATIO_X100"),
+        parameters.get("ASAI_HIGH_TECH_GDR_COUNTER_RATIO_X100"),
+    )
+    if None not in high_tech_response_parameters:
+        if high_tech_response_parameters != (10, 10, 75, 50):
+            errors.append(
+                "high-tech threat response differs from the turn 1-175 review: "
+                f"{high_tech_response_parameters}"
+            )
+        window, distance, air_ratio, gdr_ratio = high_tech_response_parameters
+        if not (0 < window <= 20 and 0 < distance <= 15):
+            errors.append(
+                "high-tech threat duration or attribution distance is invalid: "
+                f"{(window, distance)}"
+            )
+        if not (0 < gdr_ratio <= air_ratio <= 100):
+            errors.append(
+                "high-tech counter ratios are invalid: "
+                f"{(air_ratio, gdr_ratio)}"
+            )
+
     science_execution_parameters = (
         parameters.get("ASAI_SCIENCE_STAGE_TIMEOUT_STANDARD"),
         parameters.get("ASAI_SCIENCE_MARS_TIMEOUT_STANDARD"),
@@ -2026,8 +2141,8 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_BuilderBudgetUnits", "UNIT_BUILDER"): -70,
         ("ASAI_TraderBudgetPseudoYields", "PSEUDOYIELD_UNIT_TRADE"): -50,
         ("ASAI_TraderBudgetUnits", "UNIT_TRADER"): -70,
-        ("ASAI_SettlerBudgetPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -65,
-        ("ASAI_SettlerBudgetUnits", "UNIT_SETTLER"): -80,
+        ("ASAI_SettlerBudgetPseudoYields", "PSEUDOYIELD_UNIT_SETTLER"): -100,
+        ("ASAI_SettlerBudgetUnits", "UNIT_SETTLER"): -120,
     }
     for (list_type, item), expected in expected_budget_values.items():
         row = connection.execute(
@@ -2047,6 +2162,46 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     if readiness_strategy != 1:
         errors.append(
             f"expected one military-readiness strategy, found {readiness_strategy}"
+        )
+
+    high_tech_strategy = connection.execute(
+        "SELECT COUNT(*) FROM Strategies "
+        "WHERE StrategyType = 'ASAI_STRATEGY_HIGH_TECH_DEFENSE'"
+    ).fetchone()[0]
+    if high_tech_strategy != 1:
+        errors.append(
+            f"expected one high-tech-defense strategy, found {high_tech_strategy}"
+        )
+    high_tech_condition = connection.execute(
+        "SELECT COUNT(*) FROM StrategyConditions "
+        "WHERE StrategyType = 'ASAI_STRATEGY_HIGH_TECH_DEFENSE' "
+        "AND ConditionFunction = 'Call Lua Function' "
+        "AND StringValue = 'ASAI_IsHighTechDefense'"
+    ).fetchone()[0]
+    if high_tech_condition != 1:
+        errors.append(
+            "high-tech defense must have exactly one ASAI_IsHighTechDefense condition"
+        )
+    expected_high_tech_lists = {
+        "ASAI_HighTechDefensePseudoYields",
+        "ASAI_HighTechDefenseUnitBuilds",
+        "ASAI_HighTechDefenseUnits",
+        "ASAI_HighTechDefenseTechs",
+        "ASAI_HighTechDefenseDistricts",
+        "ASAI_HighTechDefenseYields",
+    }
+    actual_high_tech_lists = {
+        row[0]
+        for row in connection.execute(
+            "SELECT ListType FROM Strategy_Priorities "
+            "WHERE StrategyType = 'ASAI_STRATEGY_HIGH_TECH_DEFENSE'"
+        )
+    }
+    if actual_high_tech_lists != expected_high_tech_lists:
+        errors.append(
+            "high-tech-defense priority lists differ: "
+            f"expected {sorted(expected_high_tech_lists)}, "
+            f"found {sorted(actual_high_tech_lists)}"
         )
 
     dominance_strategy = connection.execute(
@@ -2286,6 +2441,22 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
         ("ASAI_MilitaryExecutionUnitBuilds", "PROMOTION_CLASS_AIR_BOMBER"): 70,
         ("ASAI_MilitaryExecutionYields", "YIELD_PRODUCTION"): 25,
         ("ASAI_MilitaryExecutionYields", "YIELD_GOLD"): 12,
+        ("ASAI_HighTechDefensePseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 50,
+        ("ASAI_HighTechDefensePseudoYields", "PSEUDOYIELD_UNIT_AIR_COMBAT"): 150,
+        ("ASAI_HighTechDefensePseudoYields", "PSEUDOYIELD_STANDING_ARMY_VALUE"): 40,
+        ("ASAI_HighTechDefenseUnitBuilds", "PROMOTION_CLASS_AIR_FIGHTER"): 180,
+        ("ASAI_HighTechDefenseUnitBuilds", "PROMOTION_CLASS_AIR_BOMBER"): 90,
+        ("ASAI_HighTechDefenseUnits", "UNIT_ANTIAIR_GUN"): 160,
+        ("ASAI_HighTechDefenseUnits", "UNIT_MOBILE_SAM"): 220,
+        ("ASAI_HighTechDefenseUnits", "UNIT_GIANT_DEATH_ROBOT"): 140,
+        ("ASAI_HighTechDefenseTechs", "TECH_ADVANCED_BALLISTICS"): 120,
+        ("ASAI_HighTechDefenseTechs", "TECH_GUIDANCE_SYSTEMS"): 180,
+        ("ASAI_HighTechDefenseTechs", "TECH_ADVANCED_FLIGHT"): 140,
+        ("ASAI_HighTechDefenseTechs", "TECH_LASERS"): 180,
+        ("ASAI_HighTechDefenseTechs", "TECH_ROBOTICS"): 160,
+        ("ASAI_HighTechDefenseDistricts", "DISTRICT_AERODROME"): 100,
+        ("ASAI_HighTechDefenseYields", "YIELD_PRODUCTION"): 40,
+        ("ASAI_HighTechDefenseYields", "YIELD_GOLD"): 20,
         ("ASAI_LateDistricts", "DISTRICT_AERODROME"): 50,
         ("ASAI_WarPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 60,
         ("ASAI_WarPseudoYields", "PSEUDOYIELD_STANDING_ARMY_NUMBER"): 30,
@@ -2647,8 +2818,8 @@ def main() -> int:
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 30:
-                    errors.append(f"expected 30 adaptive strategies, found {strategy_count}")
+                if strategy_count != 31:
+                    errors.append(f"expected 31 adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -2674,7 +2845,7 @@ def main() -> int:
         "+50% Production/Gold, +24% Science/Culture/Faith, +3 combat, +30% XP"
     )
     print(
-        "- adaptive strategies: 30 "
+        "- adaptive strategies: 31 "
         "(including rolling plans, coordinated recovery, and milestone-based "
         "science-victory execution)"
     )

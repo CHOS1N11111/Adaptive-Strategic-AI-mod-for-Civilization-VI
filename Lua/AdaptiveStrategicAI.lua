@@ -174,6 +174,9 @@ local ScienceExecution = {
     STAGE_PROPERTY = "ASAI_SCIENCE_EXECUTION_STAGE",
     STAGE_TURN_PROPERTY = "ASAI_SCIENCE_EXECUTION_STAGE_TURN",
     LAST_PROGRESS_TURN_PROPERTY = "ASAI_SCIENCE_EXECUTION_LAST_PROGRESS_TURN",
+    COUNT_PROPERTY_PREFIX = "ASAI_SCIENCE_PROJECT_COUNT_",
+    TRACKING_SCHEMA_PROPERTY = "ASAI_SCIENCE_TRACKING_SCHEMA",
+    TRACKING_SCHEMA = 1,
     PROJECTS = {
         Satellite = "PROJECT_LAUNCH_EARTH_SATELLITE",
         Moon = "PROJECT_LAUNCH_MOON_LANDING",
@@ -191,6 +194,25 @@ local ScienceExecution = {
         "TECH_SMART_MATERIALS",
         "TECH_OFFWORLD_MISSION"
     },
+    Cache = {}
+};
+ScienceExecution.PROJECT_STAGES = {
+    [ScienceExecution.PROJECTS.Satellite] = ScienceExecution.SATELLITE,
+    [ScienceExecution.PROJECTS.Moon] = ScienceExecution.MOON,
+    [ScienceExecution.PROJECTS.Mars] = ScienceExecution.MARS,
+    [ScienceExecution.PROJECTS.Exoplanet] = ScienceExecution.EXOPLANET,
+    [ScienceExecution.PROJECTS.OrbitalLaser] = ScienceExecution.EXOPLANET,
+    [ScienceExecution.PROJECTS.TerrestrialLaser] = ScienceExecution.EXOPLANET
+};
+ScienceExecution.STAGE_PROJECTS = {
+    [ScienceExecution.SATELLITE] = ScienceExecution.PROJECTS.Satellite,
+    [ScienceExecution.MOON] = ScienceExecution.PROJECTS.Moon,
+    [ScienceExecution.MARS] = ScienceExecution.PROJECTS.Mars,
+    [ScienceExecution.EXOPLANET] = ScienceExecution.PROJECTS.Exoplanet
+};
+local ThreatResponse = {
+    LAST_AIR_TURN_PROPERTY = "ASAI_LAST_AIR_THREAT_TURN",
+    LAST_GDR_TURN_PROPERTY = "ASAI_LAST_GDR_THREAT_TURN",
     Cache = {}
 };
 local RELATIVE_TREND_PROPERTIES = {
@@ -1130,8 +1152,7 @@ local function IsSettlerBudgetReached(playerID, threshold)
     local expansionUnavailable = state.ExpansionPlanAllowed ~= 1
         and (state.ExpansionPhase == Strategic.EXPANSION_CLOSED
             or snapshot.Turn < state.ExpansionBlockedUntil);
-    if expansionUnavailable
-        and snapshot.Settlers + snapshot.InFlightSettlers > 0 then
+    if expansionUnavailable then
         return true;
     end
     local scaleExpansion = GetNumberParameter(
@@ -1483,15 +1504,29 @@ function ScienceExecution.GetStageName(stage)
 end
 
 function ScienceExecution.GetProjectCount(player, projectType)
-    local projectInfo = GameInfo.Projects[projectType];
-    if projectInfo == nil then
-        return 0;
+    local rawCount = player:GetProperty(
+        ScienceExecution.COUNT_PROPERTY_PREFIX .. projectType
+    );
+    local count = tonumber(rawCount);
+    return count ~= nil and math.max(0, math.floor(count)) or 0;
+end
+
+function ScienceExecution.SetProjectCountAtLeast(player, projectType, minimum)
+    local propertyName = ScienceExecution.COUNT_PROPERTY_PREFIX .. projectType;
+    local current = ScienceExecution.GetProjectCount(player, projectType);
+    if current < minimum then
+        player:SetProperty(propertyName, minimum);
     end
-    local stats = player:GetStats();
-    if stats == nil then
-        error("Player:GetStats() is unavailable");
+end
+
+function ScienceExecution.SeedCountsThroughStage(player, stage)
+    local maximum = math.min(stage, ScienceExecution.EXOPLANET);
+    for completedStage = ScienceExecution.SATELLITE, maximum do
+        local projectType = ScienceExecution.STAGE_PROJECTS[completedStage];
+        if projectType ~= nil then
+            ScienceExecution.SetProjectCountAtLeast(player, projectType, 1);
+        end
     end
-    return tonumber(stats:GetNumProjectsAdvanced(projectInfo.Index)) or 0;
 end
 
 function ScienceExecution.GetCompletedSpaceports(player)
@@ -1515,6 +1550,7 @@ function ScienceExecution.GetQueueState(player)
     local activeProjects = 0;
     local inFlightSpaceports = 0;
     local currentProject = "none";
+    local inferredStage = ScienceExecution.NONE;
     for _, city in player:GetCities():Members() do
         local productionType = GetCurrentProductionType(city);
         local projectInfo = productionType ~= nil
@@ -1525,11 +1561,72 @@ function ScienceExecution.GetQueueState(player)
             if currentProject == "none" then
                 currentProject = projectInfo.ProjectType;
             end
+            local projectStage = ScienceExecution.PROJECT_STAGES[
+                projectInfo.ProjectType
+            ];
+            if projectStage ~= nil then
+                local prerequisiteStage = projectInfo.ProjectType
+                        == ScienceExecution.PROJECTS.OrbitalLaser
+                    or projectInfo.ProjectType
+                        == ScienceExecution.PROJECTS.TerrestrialLaser;
+                prerequisiteStage = prerequisiteStage
+                    and ScienceExecution.EXOPLANET
+                    or math.max(ScienceExecution.NONE, projectStage - 1);
+                inferredStage = math.max(inferredStage, prerequisiteStage);
+            end
         elseif productionType == "DISTRICT_SPACEPORT" then
             inFlightSpaceports = inFlightSpaceports + 1;
         end
     end
-    return activeProjects, currentProject, inFlightSpaceports;
+    return activeProjects, currentProject, inFlightSpaceports, inferredStage;
+end
+
+function ScienceExecution.GetLegacyAvailableStage(player)
+    local candidates = {
+        {
+            Project = ScienceExecution.PROJECTS.OrbitalLaser,
+            Stage = ScienceExecution.EXOPLANET
+        },
+        {
+            Project = ScienceExecution.PROJECTS.TerrestrialLaser,
+            Stage = ScienceExecution.EXOPLANET
+        },
+        {
+            Project = ScienceExecution.PROJECTS.Exoplanet,
+            Stage = ScienceExecution.MARS
+        },
+        {
+            Project = ScienceExecution.PROJECTS.Mars,
+            Stage = ScienceExecution.MOON
+        },
+        {
+            Project = ScienceExecution.PROJECTS.Moon,
+            Stage = ScienceExecution.SATELLITE
+        }
+    };
+    for _, city in player:GetCities():Members() do
+        local buildQueue = city:GetBuildQueue();
+        if buildQueue ~= nil and buildQueue.CanProduce ~= nil then
+            for _, candidate in ipairs(candidates) do
+                local projectInfo = GameInfo.Projects[candidate.Project];
+                if projectInfo ~= nil and projectInfo.Hash ~= nil then
+                    local success, canProduce = pcall(
+                        buildQueue.CanProduce,
+                        buildQueue,
+                        projectInfo.Hash,
+                        true
+                    );
+                    if not success then
+                        return ScienceExecution.NONE, 0;
+                    end
+                    if canProduce then
+                        return candidate.Stage, 1;
+                    end
+                end
+            end
+        end
+    end
+    return ScienceExecution.NONE, 1;
 end
 
 function ScienceExecution.CountFrontierTechs(player)
@@ -1593,7 +1690,32 @@ end
 
 function ScienceExecution.Collect(playerID)
     if not IsMajorAI(playerID) then
-        error("science execution requires a living major AI");
+        return {
+            Turn = Game.GetCurrentGameTurn(),
+            Plan = Strategic.DEVELOP,
+            Stage = ScienceExecution.NONE,
+            Active = false,
+            Suspended = false,
+            LastProgressTurn = -1,
+            ProgressAge = 0,
+            Satellite = 0,
+            Moon = 0,
+            Mars = 0,
+            Exoplanet = 0,
+            Lasers = 0,
+            Spaceports = 0,
+            SpaceportsInFlight = 0,
+            SpaceportTarget = 0,
+            ActiveProjects = 0,
+            CurrentProject = "none",
+            FrontierTechs = 0,
+            SpaceRaceCivic = false,
+            GlobalizationCivic = false,
+            IntegratedSpaceCell = 0,
+            InternationalSpaceAgency = 0,
+            MigrationStage = ScienceExecution.NONE,
+            MigrationSensorOk = -1
+        };
     end
     local turn = Game.GetCurrentGameTurn();
     local player = Players[playerID];
@@ -1604,6 +1726,41 @@ function ScienceExecution.Collect(playerID)
     end
 
     local snapshot = GetSnapshot(playerID);
+    local activeProjects, currentProject, inFlightSpaceports, queueStage =
+        ScienceExecution.GetQueueState(player);
+    local rawStoredStageProperty = player:GetProperty(ScienceExecution.STAGE_PROPERTY);
+    local rawStoredStage = tonumber(rawStoredStageProperty);
+    local storedStage = rawStoredStage or ScienceExecution.NONE;
+    local rawTrackingSchema = player:GetProperty(
+        ScienceExecution.TRACKING_SCHEMA_PROPERTY
+    );
+    local trackingSchema = tonumber(rawTrackingSchema) or 0;
+    local availableStage = ScienceExecution.NONE;
+    local migrationSensorOk = -1;
+    if trackingSchema < ScienceExecution.TRACKING_SCHEMA then
+        availableStage, migrationSensorOk =
+            ScienceExecution.GetLegacyAvailableStage(player);
+        local migrationStage = math.max(
+            storedStage,
+            queueStage,
+            availableStage
+        );
+        ScienceExecution.SeedCountsThroughStage(player, migrationStage);
+        player:SetProperty(
+            ScienceExecution.TRACKING_SCHEMA_PROPERTY,
+            ScienceExecution.TRACKING_SCHEMA
+        );
+        print(string.format(
+            "ASAI_SCIENCE_MIGRATION turn=%d player=%d stored_stage=%s queue_stage=%s available_stage=%s sensor_ok=%d",
+            turn,
+            playerID,
+            ScienceExecution.GetStageName(storedStage),
+            ScienceExecution.GetStageName(queueStage),
+            ScienceExecution.GetStageName(availableStage),
+            migrationSensorOk
+        ));
+    end
+
     local satellite = ScienceExecution.GetProjectCount(
         player,
         ScienceExecution.PROJECTS.Satellite
@@ -1636,10 +1793,8 @@ function ScienceExecution.Collect(playerID)
         computedStage = ScienceExecution.EXOPLANET;
     end
 
-    local rawStoredStageProperty = player:GetProperty(ScienceExecution.STAGE_PROPERTY);
-    local rawStoredStage = tonumber(rawStoredStageProperty);
-    local storedStage = rawStoredStage or ScienceExecution.NONE;
-    local stage = math.max(computedStage, storedStage);
+    local migrationStage = math.max(queueStage, availableStage);
+    local stage = math.max(computedStage, storedStage, migrationStage);
     local rawProgressTurnProperty = player:GetProperty(
         ScienceExecution.LAST_PROGRESS_TURN_PROPERTY
     );
@@ -1667,8 +1822,6 @@ function ScienceExecution.Collect(playerID)
         lastProgressTurn = turn;
     end
 
-    local activeProjects, currentProject, inFlightSpaceports =
-        ScienceExecution.GetQueueState(player);
     local spaceports = ScienceExecution.GetCompletedSpaceports(player);
     local spaceportTarget = ScienceExecution.GetSpaceportTarget(stage, snapshot.Cities);
     local defenseWindow = ScaleStandardTurns(GetNumberParameter(
@@ -1727,14 +1880,96 @@ function ScienceExecution.Collect(playerID)
         SpaceRaceCivic = ScienceExecution.HasCivic(culture, "CIVIC_SPACE_RACE"),
         GlobalizationCivic = ScienceExecution.HasCivic(culture, "CIVIC_GLOBALIZATION"),
         IntegratedSpaceCell = integrated,
-        InternationalSpaceAgency = agency
+        InternationalSpaceAgency = agency,
+        MigrationStage = migrationStage,
+        MigrationSensorOk = migrationSensorOk
     };
     ScienceExecution.Cache[playerID] = result;
     return result;
 end
 
-function ScienceExecution.OnCityProjectCompleted(playerID, cityID, projectID)
+function ScienceExecution.RecordProjectCompletion(
+    playerID,
+    cityID,
+    projectID,
+    bCanceled
+)
+    if bCanceled == true or bCanceled == 1 or not IsMajorAI(playerID) then
+        return;
+    end
+    local projectInfo = GameInfo.Projects[projectID];
+    if projectInfo == nil then
+        return;
+    end
+    local projectType = projectInfo.ProjectType;
+    local completedStage = ScienceExecution.PROJECT_STAGES[projectType];
+    if completedStage == nil then
+        return;
+    end
+
+    local player = Players[playerID];
+    local propertyName = ScienceExecution.COUNT_PROPERTY_PREFIX .. projectType;
+    local projectCount = ScienceExecution.GetProjectCount(player, projectType) + 1;
+    local turn = Game.GetCurrentGameTurn();
+    local previousStage = GetStoredNumber(
+        player,
+        ScienceExecution.STAGE_PROPERTY,
+        ScienceExecution.NONE
+    );
+    local stage = math.max(previousStage, completedStage);
+    player:SetProperty(propertyName, projectCount);
+    player:SetProperty(
+        ScienceExecution.TRACKING_SCHEMA_PROPERTY,
+        ScienceExecution.TRACKING_SCHEMA
+    );
+    player:SetProperty(ScienceExecution.STAGE_PROPERTY, stage);
+    player:SetProperty(ScienceExecution.LAST_PROGRESS_TURN_PROPERTY, turn);
+    if stage > previousStage then
+        player:SetProperty(ScienceExecution.STAGE_TURN_PROPERTY, turn);
+        print(string.format(
+            "ASAI_SCIENCE_STAGE turn=%d player=%d from=%s to=%s",
+            turn,
+            playerID,
+            ScienceExecution.GetStageName(previousStage),
+            ScienceExecution.GetStageName(stage)
+        ));
+    end
+    print(string.format(
+        "ASAI_SCIENCE_PROJECT turn=%d player=%d city=%d project=%s count=%d stage=%s",
+        turn,
+        playerID,
+        cityID,
+        projectType,
+        projectCount,
+        ScienceExecution.GetStageName(stage)
+    ));
     ScienceExecution.Cache[playerID] = nil;
+end
+
+function ScienceExecution.OnCityProjectCompleted(
+    playerID,
+    cityID,
+    projectID,
+    buildingID,
+    x,
+    y,
+    bCanceled
+)
+    local success, projectError = pcall(
+        ScienceExecution.RecordProjectCompletion,
+        playerID,
+        cityID,
+        projectID,
+        bCanceled
+    );
+    if not success and m_ConditionErrors.ASAI_RecordScienceProject == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_RecordScienceProject player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(projectError)
+        ));
+        m_ConditionErrors.ASAI_RecordScienceProject = true;
+    end
 end
 
 local function GetBandName(band)
@@ -2910,6 +3145,7 @@ function Strategic.UpdateExpansionState(state, snapshot, turn)
     );
     if state.ExpansionBlockedUntil >= 0
         and turn >= state.ExpansionBlockedUntil
+        and state.ExpansionPhase ~= Strategic.EXPANSION_CLOSED
         and state.ExpansionSettlerStallCount >= stallLimit then
         state.ExpansionSettlerStallCount = 0;
     end
@@ -3378,9 +3614,6 @@ function Strategic.StartPlanReview(state, snapshot, strength, turn)
     state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE;
     state.StrategicPlanExecution = 0;
     state.StrategicPlanStallCount = 0;
-    if state.StrategicPlan ~= Strategic.EXPAND then
-        state.ExpansionSettlerStallCount = 0;
-    end
 end
 
 function Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn)
@@ -3466,31 +3699,32 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     local minimumGain = GetNumberParameter("ASAI_PLAN_MIN_GAIN_X100", 2) / 100;
     local improved = state.StrategicPlanGain >= minimumGain;
     local strategicProgress = false;
-    local expansionSettlerStalled = false;
+    local foundedExpansion = foundedCityGain > 0 and captureEvents <= 0;
+    local persistentSettler = state.StrategicPlanBaselineSettlers > 0
+        and snapshot.Settlers > 0;
+    local peacefulWindow = state.StrategicPlanBaselineActiveWars <= 0
+        and snapshot.ActiveMajorWars <= 0
+        and combatEvents <= 0
+        and captureEvents <= 0;
+    local previousSettlerStallCount = state.ExpansionSettlerStallCount;
+    if foundedExpansion then
+        state.ExpansionSettlerStallCount = 0;
+        state.ExpansionLastSuccessTurn = turn;
+    elseif not persistentSettler then
+        state.ExpansionSettlerStallCount = 0;
+    elseif peacefulWindow and turn >= state.ExpansionBlockedUntil then
+        state.ExpansionSettlerStallCount =
+            state.ExpansionSettlerStallCount + 1;
+    end
+    local expansionStallLimit = math.max(
+        1,
+        GetNumberParameter("ASAI_EXPANSION_SETTLER_STALL_LIMIT", 2)
+    );
+    local expansionSettlerStalled = previousSettlerStallCount
+            < expansionStallLimit
+        and state.ExpansionSettlerStallCount >= expansionStallLimit;
     if state.StrategicPlan == Strategic.EXPAND then
-        local foundedExpansion = foundedCityGain > 0 and captureEvents <= 0;
         improved = improved or foundedExpansion;
-        local persistentSettler = state.StrategicPlanBaselineSettlers > 0
-            and snapshot.Settlers > 0;
-        local peacefulWindow = state.StrategicPlanBaselineActiveWars <= 0
-            and snapshot.ActiveMajorWars <= 0
-            and combatEvents <= 0
-            and captureEvents <= 0;
-        if foundedExpansion then
-            state.ExpansionSettlerStallCount = 0;
-            state.ExpansionLastSuccessTurn = turn;
-        elseif persistentSettler and peacefulWindow then
-            state.ExpansionSettlerStallCount =
-                state.ExpansionSettlerStallCount + 1;
-        else
-            state.ExpansionSettlerStallCount = 0;
-        end
-        local expansionStallLimit = math.max(
-            1,
-            GetNumberParameter("ASAI_EXPANSION_SETTLER_STALL_LIMIT", 2)
-        );
-        expansionSettlerStalled = state.ExpansionSettlerStallCount
-            >= expansionStallLimit;
     elseif state.StrategicPlan == Strategic.DEFEND then
         improved = improved or combatGain > 0;
     elseif state.StrategicPlan == Strategic.PRESSURE then
@@ -3563,7 +3797,8 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         1,
         GetNumberParameter("ASAI_PLAN_STALL_LIMIT", 2)
     );
-    local retirePlan = expansionSettlerStalled
+    local retirePlan = (state.StrategicPlan == Strategic.EXPAND
+            and expansionSettlerStalled)
         or (state.StrategicPlan ~= Strategic.DEVELOP
             and state.StrategicPlanResult ~= RELATIVE_FOCUS_RESULT_IMPROVING
             and state.StrategicPlanStallCount >= stallLimit);
@@ -4077,57 +4312,65 @@ local function EvaluateRelativeState(playerID)
             strengthSnapshot,
             turn
         );
+        if expansionSettlerStalled then
+            local expansionCooldownStandard = GetNumberParameter(
+                "ASAI_EXPANSION_STALL_COOLDOWN_STANDARD",
+                16
+            );
+            local expansionCooldown = ScaleStandardTurns(
+                expansionCooldownStandard
+            );
+            state.StrategicPlanCooldownUntil[Strategic.EXPAND] = math.max(
+                state.StrategicPlanCooldownUntil[Strategic.EXPAND] or -1,
+                turn + expansionCooldown
+            );
+            state.ExpansionBlockedUntil = math.max(
+                state.ExpansionBlockedUntil,
+                turn + expansionCooldown
+            );
+            print(string.format(
+                "ASAI_EXPANSION_STOP_LOSS turn=%d standard_turn=%.1f player=%d era=%d phase=%s plan=%s settlers=%d settler_stall_count=%d cooldown_standard=%d cooldown_until=%d",
+                turn,
+                GetStandardEquivalentTurn(turn),
+                playerID,
+                empireSnapshot.Era,
+                Strategic.GetExpansionPhaseName(state.ExpansionPhase),
+                Strategic.GetPlanName(state.StrategicPlan),
+                empireSnapshot.Settlers,
+                state.ExpansionSettlerStallCount,
+                expansionCooldownStandard,
+                state.ExpansionBlockedUntil
+            ));
+        end
         if strategicPlanRetired then
             local retiredPlan = state.StrategicPlan;
-            local stalledCooldownStandard;
-            if expansionSettlerStalled then
-                stalledCooldownStandard = GetNumberParameter(
-                    "ASAI_EXPANSION_STALL_COOLDOWN_STANDARD",
-                    16
+            local retiredCooldownStandard = nil;
+            if not (retiredPlan == Strategic.EXPAND
+                    and expansionSettlerStalled) then
+                retiredCooldownStandard = retiredPlan == Strategic.WAR
+                    and GetNumberParameter(
+                        "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
+                        20
+                    )
+                    or GetNumberParameter(
+                        "ASAI_PLAN_STALL_COOLDOWN_STANDARD",
+                        16
+                    );
+                if retiredPlan == Strategic.WAR then
+                    retiredCooldownStandard = retiredCooldownStandard
+                        + math.max(0, empireSnapshot.MajorWars - 1)
+                            * GetNumberParameter(
+                                "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
+                                8
+                            );
+                end
+                local retiredCooldown = ScaleStandardTurns(
+                    retiredCooldownStandard
                 );
-            elseif retiredPlan == Strategic.WAR then
-                stalledCooldownStandard = GetNumberParameter(
-                    "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
-                    20
+                state.StrategicPlanCooldownUntil[retiredPlan] = math.max(
+                    state.StrategicPlanCooldownUntil[retiredPlan] or -1,
+                    turn + retiredCooldown
                 );
-            else
-                stalledCooldownStandard = GetNumberParameter(
-                    "ASAI_PLAN_STALL_COOLDOWN_STANDARD",
-                    16
-                );
-            end
-            if retiredPlan == Strategic.WAR then
-                stalledCooldownStandard = stalledCooldownStandard
-                    + math.max(0, empireSnapshot.MajorWars - 1)
-                        * GetNumberParameter(
-                            "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
-                            8
-                        );
-            end
-            local stalledPlanCooldown = ScaleStandardTurns(
-                stalledCooldownStandard
-            );
-            state.StrategicPlanCooldownUntil[state.StrategicPlan] = math.max(
-                state.StrategicPlanCooldownUntil[state.StrategicPlan] or -1,
-                turn + stalledPlanCooldown
-            );
-            if expansionSettlerStalled then
-                state.ExpansionBlockedUntil = math.max(
-                    state.ExpansionBlockedUntil,
-                    turn + stalledPlanCooldown
-                );
-                print(string.format(
-                    "ASAI_EXPANSION_STOP_LOSS turn=%d standard_turn=%.1f player=%d era=%d phase=%s settlers=%d settler_stall_count=%d cooldown_standard=%d cooldown_until=%d",
-                    turn,
-                    GetStandardEquivalentTurn(turn),
-                    playerID,
-                    empireSnapshot.Era,
-                    Strategic.GetExpansionPhaseName(state.ExpansionPhase),
-                    empireSnapshot.Settlers,
-                    state.ExpansionSettlerStallCount,
-                    stalledCooldownStandard,
-                    state.ExpansionBlockedUntil
-                ));
             end
             if retiredPlan == Strategic.WAR then
                 print(string.format(
@@ -4138,7 +4381,7 @@ local function EvaluateRelativeState(playerID)
                     state.StrategicPlanStallCount,
                     empireSnapshot.MajorWars,
                     empireSnapshot.ActiveMajorWars,
-                    stalledCooldownStandard,
+                    retiredCooldownStandard,
                     state.StrategicPlanCooldownUntil[Strategic.WAR]
                 ));
             end
@@ -4452,6 +4695,140 @@ function ASAI_IsRelativeSevereCatchup(playerID, threshold)
     );
 end
 GameEvents.ASAI_IsRelativeSevereCatchup.Add(ASAI_IsRelativeSevereCatchup);
+
+function ThreatResponse.GetUnitProfile(unitInfo)
+    if unitInfo == nil then
+        return 0, 0, 0, 0, 0;
+    end
+    local isAir = unitInfo.Domain == "DOMAIN_AIR" and 1 or 0;
+    local isBomber = unitInfo.PromotionClass == "PROMOTION_CLASS_AIR_BOMBER"
+        and 1 or 0;
+    local isGDR = unitInfo.UnitType == "UNIT_GIANT_DEATH_ROBOT" and 1 or 0;
+    local isAirDefense = ((tonumber(unitInfo.AntiAirCombat) or 0) > 0
+            or unitInfo.PromotionClass == "PROMOTION_CLASS_AIR_FIGHTER")
+        and 1 or 0;
+    local isGDRCounter = (isBomber == 1 or isGDR == 1) and 1 or 0;
+    return isAir, isBomber, isGDR, isAirDefense, isGDRCounter;
+end
+
+function ThreatResponse.Collect(playerID)
+    local turn = Game.GetCurrentGameTurn();
+    if not IsMajorAI(playerID) then
+        return {
+            Turn = turn,
+            Active = false,
+            EnemyAir = 0,
+            EnemyBombers = 0,
+            EnemyGDR = 0,
+            AirDefense = 0,
+            GDRCounters = 0,
+            AirRequired = 0,
+            GDRRequired = 0,
+            AirGap = false,
+            GDRGap = false,
+            RecentAir = false,
+            RecentGDR = false,
+            AirThreatAge = -1,
+            GDRThreatAge = -1
+        };
+    end
+    local cached = ThreatResponse.Cache[playerID];
+    if cached ~= nil and cached.Turn == turn then
+        return cached;
+    end
+
+    local player = Players[playerID];
+    local snapshot = GetSnapshot(playerID);
+    local enemyAir = 0;
+    local enemyBombers = 0;
+    local enemyGDR = 0;
+    for _, opponentID in ipairs(snapshot.MajorOpponents or {}) do
+        local opponent = Players[opponentID];
+        if opponent ~= nil and PlayerManager.IsAlive(opponentID) then
+            for _, unit in opponent:GetUnits():Members() do
+                local unitInfo = GameInfo.Units[unit:GetType()];
+                local air, bomber, gdr = ThreatResponse.GetUnitProfile(unitInfo);
+                enemyAir = enemyAir + air;
+                enemyBombers = enemyBombers + bomber;
+                enemyGDR = enemyGDR + gdr;
+            end
+        end
+    end
+
+    local airDefense = 0;
+    local gdrCounters = 0;
+    for _, unit in player:GetUnits():Members() do
+        local unitInfo = GameInfo.Units[unit:GetType()];
+        local _, _, _, antiAir, gdrCounter =
+            ThreatResponse.GetUnitProfile(unitInfo);
+        airDefense = airDefense + antiAir;
+        gdrCounters = gdrCounters + gdrCounter;
+    end
+
+    local rawLastAirTurn = player:GetProperty(
+        ThreatResponse.LAST_AIR_TURN_PROPERTY
+    );
+    local rawLastGDRTurn = player:GetProperty(
+        ThreatResponse.LAST_GDR_TURN_PROPERTY
+    );
+    local lastAirTurn = tonumber(rawLastAirTurn) or -100000;
+    local lastGDRTurn = tonumber(rawLastGDRTurn) or -100000;
+    local responseWindow = ScaleStandardTurns(GetNumberParameter(
+        "ASAI_HIGH_TECH_THREAT_WINDOW_STANDARD",
+        10
+    ));
+    local recentAir = turn - lastAirTurn <= responseWindow;
+    local recentGDR = turn - lastGDRTurn <= responseWindow;
+    local airRequired = enemyAir > 0 and math.max(1, math.ceil(
+        enemyAir * GetNumberParameter(
+            "ASAI_HIGH_TECH_AIR_COUNTER_RATIO_X100",
+            75
+        ) / 100
+    )) or 0;
+    local gdrRequired = enemyGDR > 0 and math.max(1, math.ceil(
+        enemyGDR * GetNumberParameter(
+            "ASAI_HIGH_TECH_GDR_COUNTER_RATIO_X100",
+            50
+        ) / 100
+    )) or 0;
+    local airGap = enemyAir > 0 and airDefense < airRequired;
+    local gdrGap = enemyGDR > 0 and gdrCounters < gdrRequired;
+    local result = {
+        Turn = turn,
+        Active = snapshot.MajorWars > 0
+            and ((recentAir and airGap) or (recentGDR and gdrGap)),
+        EnemyAir = enemyAir,
+        EnemyBombers = enemyBombers,
+        EnemyGDR = enemyGDR,
+        AirDefense = airDefense,
+        GDRCounters = gdrCounters,
+        AirRequired = airRequired,
+        GDRRequired = gdrRequired,
+        AirGap = airGap,
+        GDRGap = gdrGap,
+        RecentAir = recentAir,
+        RecentGDR = recentGDR,
+        AirThreatAge = lastAirTurn > -100000
+            and GetStandardEquivalentTurn(turn - lastAirTurn) or -1,
+        GDRThreatAge = lastGDRTurn > -100000
+            and GetStandardEquivalentTurn(turn - lastGDRTurn) or -1
+    };
+    ThreatResponse.Cache[playerID] = result;
+    return result;
+end
+
+local function IsHighTechDefense(playerID, threshold)
+    return ThreatResponse.Collect(playerID).Active;
+end
+function ASAI_IsHighTechDefense(playerID, threshold)
+    return RunStrategyCondition(
+        "ASAI_IsHighTechDefense",
+        IsHighTechDefense,
+        playerID,
+        threshold
+    );
+end
+GameEvents.ASAI_IsHighTechDefense.Add(ASAI_IsHighTechDefense);
 
 local function IsMilitaryReadiness(playerID, threshold)
     local state = GetRelativeState(playerID);
@@ -4791,6 +5168,43 @@ local function IsCombatUnitNear(player, x, y, maximumDistance)
     return false;
 end
 
+function ThreatResponse.MarkNearbyThreat(playerID, opponent, x, y)
+    if not IsMajorAI(playerID) or opponent == nil then
+        return;
+    end
+    local maximumDistance = math.max(
+        1,
+        GetNumberParameter("ASAI_HIGH_TECH_THREAT_DISTANCE", 10)
+    );
+    local airThreat = false;
+    local gdrThreat = false;
+    for _, unit in opponent:GetUnits():Members() do
+        local unitInfo = GameInfo.Units[unit:GetType()];
+        local air, _, gdr = ThreatResponse.GetUnitProfile(unitInfo);
+        if (air == 1 or gdr == 1)
+            and Map.GetPlotDistance(x, y, unit:GetX(), unit:GetY())
+                <= maximumDistance then
+            airThreat = airThreat or air == 1;
+            gdrThreat = gdrThreat or gdr == 1;
+            if airThreat and gdrThreat then
+                break;
+            end
+        end
+    end
+    if not airThreat and not gdrThreat then
+        return;
+    end
+    local player = Players[playerID];
+    local turn = Game.GetCurrentGameTurn();
+    if airThreat then
+        player:SetProperty(ThreatResponse.LAST_AIR_TURN_PROPERTY, turn);
+    end
+    if gdrThreat then
+        player:SetProperty(ThreatResponse.LAST_GDR_TURN_PROPERTY, turn);
+    end
+    ThreatResponse.Cache[playerID] = nil;
+end
+
 local function MarkRecentMajorCombat(playerID)
     if not IsMajorAI(playerID) then
         return;
@@ -4807,7 +5221,10 @@ local function MarkRecentMajorCombat(playerID)
     m_Snapshots[playerID] = nil;
 end
 
-local function RecordUnitDamage(playerID, unitID, damage)
+local function RecordUnitDamage(playerID, unitID, newDamage, oldDamage)
+    if oldDamage ~= nil and newDamage <= oldDamage then
+        return;
+    end
     local targetPlayer = Players[playerID];
     local targetUnit = UnitManager.GetUnit(playerID, unitID);
     if targetPlayer == nil or targetUnit == nil or not targetPlayer:IsMajor() then
@@ -4822,25 +5239,34 @@ local function RecordUnitDamage(playerID, unitID, damage)
     for _, opponentID in ipairs(PlayerManager.GetAliveMajorIDs()) do
         if opponentID ~= playerID and diplomacy:IsAtWarWith(opponentID) then
             local opponent = Players[opponentID];
-            if opponent ~= nil and IsCombatUnitNear(
-                opponent,
-                targetUnit:GetX(),
-                targetUnit:GetY(),
-                attributionDistance
-            ) then
-                MarkRecentMajorCombat(playerID);
-                MarkRecentMajorCombat(opponentID);
+            if opponent ~= nil then
+                ThreatResponse.MarkNearbyThreat(
+                    playerID,
+                    opponent,
+                    targetUnit:GetX(),
+                    targetUnit:GetY()
+                );
+                if IsCombatUnitNear(
+                    opponent,
+                    targetUnit:GetX(),
+                    targetUnit:GetY(),
+                    attributionDistance
+                ) then
+                    MarkRecentMajorCombat(playerID);
+                    MarkRecentMajorCombat(opponentID);
+                end
             end
         end
     end
 end
 
-local function OnUnitDamageChanged(playerID, unitID, damage)
+local function OnUnitDamageChanged(playerID, unitID, newDamage, oldDamage)
     local success, combatError = pcall(
         RecordUnitDamage,
         playerID,
         unitID,
-        damage
+        newDamage,
+        oldDamage
     );
     if not success and m_ConditionErrors.ASAI_RecordUnitDamage == nil then
         print(string.format(
@@ -4849,6 +5275,74 @@ local function OnUnitDamageChanged(playerID, unitID, damage)
             tostring(combatError)
         ));
         m_ConditionErrors.ASAI_RecordUnitDamage = true;
+    end
+end
+
+function ThreatResponse.RecordDistrictDamage(
+    playerID,
+    districtID,
+    damageType,
+    newDamage,
+    oldDamage
+)
+    if not IsMajorAI(playerID) or newDamage <= oldDamage then
+        return;
+    end
+    local player = Players[playerID];
+    local districts = player:GetDistricts();
+    local district = districts ~= nil and districts:FindID(districtID) or nil;
+    if district == nil then
+        return;
+    end
+    local diplomacy = player:GetDiplomacy();
+    local attributionDistance = math.max(
+        1,
+        GetNumberParameter("ASAI_HIGH_TECH_THREAT_DISTANCE", 10)
+    );
+    for _, opponentID in ipairs(PlayerManager.GetAliveMajorIDs()) do
+        if opponentID ~= playerID and diplomacy:IsAtWarWith(opponentID) then
+            local opponent = Players[opponentID];
+            if opponent ~= nil and IsCombatUnitNear(
+                opponent,
+                district:GetX(),
+                district:GetY(),
+                attributionDistance
+            ) then
+                MarkRecentMajorCombat(playerID);
+                MarkRecentMajorCombat(opponentID);
+                ThreatResponse.MarkNearbyThreat(
+                    playerID,
+                    opponent,
+                    district:GetX(),
+                    district:GetY()
+                );
+            end
+        end
+    end
+end
+
+function ThreatResponse.OnDistrictDamageChanged(
+    playerID,
+    districtID,
+    damageType,
+    newDamage,
+    oldDamage
+)
+    local success, threatError = pcall(
+        ThreatResponse.RecordDistrictDamage,
+        playerID,
+        districtID,
+        damageType,
+        newDamage,
+        oldDamage
+    );
+    if not success and m_ConditionErrors.ASAI_RecordDistrictThreat == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_RecordDistrictThreat player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(threatError)
+        ));
+        m_ConditionErrors.ASAI_RecordDistrictThreat = true;
     end
 end
 
@@ -5208,7 +5702,7 @@ function ScienceExecution.WriteDiagnostics(playerID, firstTimeThisTurn)
     end
     local state = ScienceExecution.Collect(playerID);
     print(string.format(
-        "ASAI_SCIENCE_EXECUTION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s active=%d suspended=%d progress_age=%.1f satellite=%d moon=%d mars=%d exoplanet=%d lasers=%d spaceports=%d spaceports_inflight=%d target=%d active_projects=%d current_project=%s future_frontier=%d space_race_civic=%d globalization=%d integrated_space_cell=%d international_space_agency=%d",
+        "ASAI_SCIENCE_EXECUTION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s active=%d suspended=%d progress_age=%.1f satellite=%d moon=%d mars=%d exoplanet=%d lasers=%d spaceports=%d spaceports_inflight=%d target=%d active_projects=%d current_project=%s migration_stage=%s migration_sensor_ok=%d future_frontier=%d space_race_civic=%d globalization=%d integrated_space_cell=%d international_space_agency=%d",
         state.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(state.Turn),
@@ -5227,11 +5721,48 @@ function ScienceExecution.WriteDiagnostics(playerID, firstTimeThisTurn)
         state.SpaceportTarget,
         state.ActiveProjects,
         state.CurrentProject,
+        ScienceExecution.GetStageName(state.MigrationStage),
+        state.MigrationSensorOk,
         state.FrontierTechs,
         state.SpaceRaceCivic and 1 or 0,
         state.GlobalizationCivic and 1 or 0,
         state.IntegratedSpaceCell,
         state.InternationalSpaceAgency
+    ));
+end
+
+function ThreatResponse.WriteDiagnostics(playerID, firstTimeThisTurn)
+    if not firstTimeThisTurn or not IsMajorAI(playerID) then
+        return;
+    end
+    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 then
+        return;
+    end
+    local relativeState = GetRelativeState(playerID);
+    if not relativeState.EvaluatedThisTurn then
+        return;
+    end
+    local state = ThreatResponse.Collect(playerID);
+    print(string.format(
+        "ASAI_THREAT turn=%d evaluated_turn=%d standard_turn=%.1f player=%d active=%d enemy_air=%d enemy_bombers=%d enemy_gdr=%d air_defense=%d air_required=%d gdr_counters=%d gdr_required=%d air_gap=%d gdr_gap=%d recent_air=%d recent_gdr=%d air_threat_age=%.1f gdr_threat_age=%.1f",
+        state.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(state.Turn),
+        playerID,
+        state.Active and 1 or 0,
+        state.EnemyAir,
+        state.EnemyBombers,
+        state.EnemyGDR,
+        state.AirDefense,
+        state.AirRequired,
+        state.GDRCounters,
+        state.GDRRequired,
+        state.AirGap and 1 or 0,
+        state.GDRGap and 1 or 0,
+        state.RecentAir and 1 or 0,
+        state.RecentGDR and 1 or 0,
+        state.AirThreatAge,
+        state.GDRThreatAge
     ));
 end
 
@@ -5284,6 +5815,19 @@ local function LogMetrics(playerID, firstTimeThisTurn)
             tostring(militaryError)
         ));
         m_ConditionErrors.ASAI_LogMilitaryDiagnostics = true;
+    end
+    local threatSuccess, threatError = pcall(
+        ThreatResponse.WriteDiagnostics,
+        playerID,
+        firstTimeThisTurn
+    );
+    if not threatSuccess and m_ConditionErrors.ASAI_LogThreatDiagnostics == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_LogThreatDiagnostics player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(threatError)
+        ));
+        m_ConditionErrors.ASAI_LogThreatDiagnostics = true;
     end
     local scienceSuccess, scienceError = pcall(
         ScienceExecution.WriteDiagnostics,
@@ -5383,6 +5927,7 @@ function Strategic.OnPillage(
 end
 Events.PlayerTurnActivated.Add(LogMetrics);
 Events.UnitDamageChanged.Add(OnUnitDamageChanged);
+Events.DistrictDamageChanged.Add(ThreatResponse.OnDistrictDamageChanged);
 GameEvents.CityConquered.Add(Strategic.OnCityConquered);
 GameEvents.OnPillage.Add(Strategic.OnPillage);
 Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted);

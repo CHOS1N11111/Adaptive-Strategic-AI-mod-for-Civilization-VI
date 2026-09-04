@@ -25,6 +25,7 @@ INSERT OR IGNORE INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_MILITARY_READINESS', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_LATE_GAME', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 'KIND_VICTORY_STRATEGY'),
@@ -59,6 +60,7 @@ VALUES
     ('ASAI_STRATEGY_MILITARY_READINESS', 1),
     ('ASAI_STRATEGY_MILITARY_DOMINANCE', 1),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 1),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 1),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 1),
     ('ASAI_STRATEGY_LATE_GAME', 1),
     ('ASAI_STRATEGY_RELATIVE_CATCHUP', 1),
@@ -106,6 +108,8 @@ VALUES
     ('ASAI_STRATEGY_MILITARY_DOMINANCE', 'Call Lua Function', 'ASAI_IsMilitaryDominance', 0, 0),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'Call Lua Function', 'ASAI_IsMilitaryExecutionRecovery', 0, 0),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'Call Lua Function', 'ASAI_IsHighTechDefense', 0, 0),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'Is Not Major', NULL, 0, 1),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'Call Lua Function', 'ASAI_IsScaleRecovery', 0, 0),
     ('ASAI_STRATEGY_LATE_GAME', 'Is Not Major', NULL, 0, 1),
@@ -184,6 +188,12 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_MilitaryExecutionPseudoYields'),
     ('ASAI_MilitaryExecutionUnitBuilds'),
     ('ASAI_MilitaryExecutionYields'),
+    ('ASAI_HighTechDefensePseudoYields'),
+    ('ASAI_HighTechDefenseUnitBuilds'),
+    ('ASAI_HighTechDefenseUnits'),
+    ('ASAI_HighTechDefenseTechs'),
+    ('ASAI_HighTechDefenseDistricts'),
+    ('ASAI_HighTechDefenseYields'),
     ('ASAI_ScaleRecoveryPseudoYields'),
     ('ASAI_ScaleRecoveryYields'),
     ('ASAI_ScaleRecoveryDistricts'),
@@ -236,6 +246,7 @@ INSERT OR IGNORE INTO AiListTypes (ListType) VALUES
     ('ASAI_ScienceLaserBuildings'),
     ('ASAI_ScienceLaserYields'),
     ('ASAI_ScienceLaserPseudoYields'),
+    ('ASAI_ScienceLaserSuppressedProjects'),
     ('ASAI_ScienceSpaceportDistricts'),
     ('ASAI_ScienceSpaceportYields'),
     ('ASAI_ScienceSpaceportPseudoYields');
@@ -283,6 +294,12 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_MilitaryExecutionPseudoYields', 'PseudoYields'),
     ('ASAI_MilitaryExecutionUnitBuilds', 'UnitPromotionClasses'),
     ('ASAI_MilitaryExecutionYields', 'Yields'),
+    ('ASAI_HighTechDefensePseudoYields', 'PseudoYields'),
+    ('ASAI_HighTechDefenseUnitBuilds', 'UnitPromotionClasses'),
+    ('ASAI_HighTechDefenseUnits', 'Units'),
+    ('ASAI_HighTechDefenseTechs', 'Technologies'),
+    ('ASAI_HighTechDefenseDistricts', 'Districts'),
+    ('ASAI_HighTechDefenseYields', 'Yields'),
     ('ASAI_ScaleRecoveryPseudoYields', 'PseudoYields'),
     ('ASAI_ScaleRecoveryYields', 'Yields'),
     ('ASAI_ScaleRecoveryDistricts', 'Districts'),
@@ -335,6 +352,7 @@ INSERT OR IGNORE INTO AiLists (ListType, System) VALUES
     ('ASAI_ScienceLaserBuildings', 'Buildings'),
     ('ASAI_ScienceLaserYields', 'Yields'),
     ('ASAI_ScienceLaserPseudoYields', 'PseudoYields'),
+    ('ASAI_ScienceLaserSuppressedProjects', 'Projects'),
     ('ASAI_ScienceSpaceportDistricts', 'Districts'),
     ('ASAI_ScienceSpaceportYields', 'Yields'),
     ('ASAI_ScienceSpaceportPseudoYields', 'PseudoYields');
@@ -382,6 +400,12 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'ASAI_MilitaryExecutionPseudoYields'),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'ASAI_MilitaryExecutionUnitBuilds'),
     ('ASAI_STRATEGY_MILITARY_EXECUTION_RECOVERY', 'ASAI_MilitaryExecutionYields'),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'ASAI_HighTechDefensePseudoYields'),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'ASAI_HighTechDefenseUnitBuilds'),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'ASAI_HighTechDefenseUnits'),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'ASAI_HighTechDefenseTechs'),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'ASAI_HighTechDefenseDistricts'),
+    ('ASAI_STRATEGY_HIGH_TECH_DEFENSE', 'ASAI_HighTechDefenseYields'),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'ASAI_ScaleRecoveryPseudoYields'),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'ASAI_ScaleRecoveryYields'),
     ('ASAI_STRATEGY_SCALE_RECOVERY', 'ASAI_ScaleRecoveryDistricts'),
@@ -434,6 +458,7 @@ INSERT OR IGNORE INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserBuildings'),
     ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserYields'),
     ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserPseudoYields'),
+    ('ASAI_STRATEGY_SCIENCE_LASER_EXECUTION', 'ASAI_ScienceLaserSuppressedProjects'),
     ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'ASAI_ScienceSpaceportDistricts'),
     ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'ASAI_ScienceSpaceportYields'),
     ('ASAI_STRATEGY_SCIENCE_SPACEPORT_SCALE', 'ASAI_ScienceSpaceportPseudoYields');
@@ -469,8 +494,8 @@ VALUES
     ('ASAI_BuilderBudgetUnits', 'UNIT_BUILDER', 1, -70),
     ('ASAI_TraderBudgetPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, -50),
     ('ASAI_TraderBudgetUnits', 'UNIT_TRADER', 1, -70),
-    ('ASAI_SettlerBudgetPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -65),
-    ('ASAI_SettlerBudgetUnits', 'UNIT_SETTLER', 1, -80),
+    ('ASAI_SettlerBudgetPseudoYields', 'PSEUDOYIELD_UNIT_SETTLER', 1, -100),
+    ('ASAI_SettlerBudgetUnits', 'UNIT_SETTLER', 1, -120),
     ('ASAI_GoldPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 60),
     ('ASAI_GoldDistricts', 'DISTRICT_COMMERCIAL_HUB', 1, 30),
     ('ASAI_GoldDistricts', 'DISTRICT_HARBOR', 1, 30),
@@ -544,6 +569,24 @@ VALUES
     ('ASAI_MilitaryExecutionUnitBuilds', 'PROMOTION_CLASS_AIR_BOMBER', 1, 70),
     ('ASAI_MilitaryExecutionYields', 'YIELD_PRODUCTION', 1, 25),
     ('ASAI_MilitaryExecutionYields', 'YIELD_GOLD', 1, 12),
+    -- This response is dormant until recent damage is attributable to nearby
+    -- enemy air power or GDRs and the defender lacks enough counters.
+    ('ASAI_HighTechDefensePseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 50),
+    ('ASAI_HighTechDefensePseudoYields', 'PSEUDOYIELD_UNIT_AIR_COMBAT', 1, 150),
+    ('ASAI_HighTechDefensePseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 40),
+    ('ASAI_HighTechDefenseUnitBuilds', 'PROMOTION_CLASS_AIR_FIGHTER', 1, 180),
+    ('ASAI_HighTechDefenseUnitBuilds', 'PROMOTION_CLASS_AIR_BOMBER', 1, 90),
+    ('ASAI_HighTechDefenseUnits', 'UNIT_ANTIAIR_GUN', 1, 160),
+    ('ASAI_HighTechDefenseUnits', 'UNIT_MOBILE_SAM', 1, 220),
+    ('ASAI_HighTechDefenseUnits', 'UNIT_GIANT_DEATH_ROBOT', 1, 140),
+    ('ASAI_HighTechDefenseTechs', 'TECH_ADVANCED_BALLISTICS', 1, 120),
+    ('ASAI_HighTechDefenseTechs', 'TECH_GUIDANCE_SYSTEMS', 1, 180),
+    ('ASAI_HighTechDefenseTechs', 'TECH_ADVANCED_FLIGHT', 1, 140),
+    ('ASAI_HighTechDefenseTechs', 'TECH_LASERS', 1, 180),
+    ('ASAI_HighTechDefenseTechs', 'TECH_ROBOTICS', 1, 160),
+    ('ASAI_HighTechDefenseDistricts', 'DISTRICT_AERODROME', 1, 100),
+    ('ASAI_HighTechDefenseYields', 'YIELD_PRODUCTION', 1, 40),
+    ('ASAI_HighTechDefenseYields', 'YIELD_GOLD', 1, 20),
     ('ASAI_LatePseudoYields', 'PSEUDOYIELD_UNIT_AIR_COMBAT', 1, 75),
     ('ASAI_LatePseudoYields', 'PSEUDOYIELD_STANDING_ARMY_VALUE', 1, 25),
     ('ASAI_LateDistricts', 'DISTRICT_AERODROME', 1, 50),
@@ -632,14 +675,14 @@ VALUES
     ('ASAI_ScienceExoplanetYields', 'YIELD_SCIENCE', 1, 20),
     ('ASAI_ScienceExoplanetYields', 'YIELD_PRODUCTION', 1, 35),
     ('ASAI_ScienceLaserTechs', 'TECH_OFFWORLD_MISSION', 1, 240),
-    ('ASAI_ScienceLaserProjects', 'PROJECT_ORBITAL_LASER', 1, 280),
-    ('ASAI_ScienceLaserProjects', 'PROJECT_TERRESTRIAL_LASER', 1, 280),
+    ('ASAI_ScienceLaserProjects', 'PROJECT_ORBITAL_LASER', 1, 500),
+    ('ASAI_ScienceLaserProjects', 'PROJECT_TERRESTRIAL_LASER', 1, 500),
     ('ASAI_ScienceLaserDistricts', 'DISTRICT_SPACEPORT', 1, 125),
     ('ASAI_ScienceLaserDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 50),
     ('ASAI_ScienceLaserYields', 'YIELD_SCIENCE', 1, 20),
-    ('ASAI_ScienceLaserYields', 'YIELD_PRODUCTION', 1, 50),
+    ('ASAI_ScienceLaserYields', 'YIELD_PRODUCTION', 1, 65),
     ('ASAI_ScienceLaserYields', 'YIELD_GOLD', 1, 10),
-    ('ASAI_ScienceLaserPseudoYields', 'PSEUDOYIELD_SPACE_RACE', 1, 225),
+    ('ASAI_ScienceLaserPseudoYields', 'PSEUDOYIELD_SPACE_RACE', 1, 350),
     ('ASAI_ScienceSpaceportDistricts', 'DISTRICT_SPACEPORT', 1, 160),
     ('ASAI_ScienceSpaceportDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 45),
     ('ASAI_ScienceSpaceportYields', 'YIELD_PRODUCTION', 1, 35),
@@ -653,6 +696,29 @@ FROM Buildings
 WHERE BuildingType IN
     ('BUILDING_FACTORY', 'BUILDING_POWER_PLANT', 'BUILDING_COAL_POWER_PLANT',
      'BUILDING_FOSSIL_FUEL_POWER_PLANT');
+
+-- Once the exoplanet expedition is in flight, keep ordinary district work,
+-- competitions, aid, and reactor maintenance from displacing laser stations.
+-- Defensive repairs and units remain available.
+INSERT OR IGNORE INTO AiFavoredItems
+    (ListType, Item, Favored, Value)
+SELECT 'ASAI_ScienceLaserSuppressedProjects', ProjectType, 1, -160
+FROM Projects
+WHERE ProjectType LIKE 'PROJECT_ENHANCE_DISTRICT_%'
+   OR COALESCE(WMD, 0) = 1
+   OR ProjectType IN (
+        'PROJECT_SEND_AID',
+        'PROJECT_TRAIN_ATHLETES',
+        'PROJECT_TRAIN_ASTRONAUTS',
+        'PROJECT_CARBON_RECAPTURE',
+        'PROJECT_RECOMMISSION_REACTOR',
+        'PROJECT_CONVERT_REACTOR_TO_COAL',
+        'PROJECT_CONVERT_REACTOR_TO_OIL',
+        'PROJECT_CONVERT_REACTOR_TO_URANIUM',
+        'PROJECT_DECOMMISSION_COAL_POWER_PLANT',
+        'PROJECT_DECOMMISSION_OIL_POWER_PLANT',
+        'PROJECT_DECOMMISSION_NUCLEAR_POWER_PLANT'
+   );
 
 INSERT OR IGNORE INTO AiFavoredItems
     (ListType, Item, Favored, Value)
