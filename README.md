@@ -4,7 +4,7 @@
 
 A Civilization VI: Gathering Storm AI overhaul built to keep Deity games competitive from the opening to the victory screen.
 
-**Version 0.11.9** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
+**Version 0.11.10** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
 
 Vanilla Deity concentrates much of its challenge in the opening and often loses pressure later. Adaptive Strategic AI replaces part of that early spike with a smoother era-scaled curve, then helps every major AI turn its economy, military, and victory plans into useful results.
 

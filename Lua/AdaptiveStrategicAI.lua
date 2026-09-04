@@ -215,6 +215,15 @@ local ThreatResponse = {
     LAST_GDR_TURN_PROPERTY = "ASAI_LAST_GDR_THREAT_TURN",
     Cache = {}
 };
+local Diagnostics = {
+    QUEUE_SAMPLE_TURN_PROPERTY = "ASAI_QUEUE_SAMPLE_TURN",
+    QUEUE_IDLE_SAMPLE_TURN_PROPERTY = "ASAI_QUEUE_IDLE_SAMPLE_TURN",
+    QUEUE_IDLE_STREAK_PROPERTY = "ASAI_QUEUE_IDLE_STREAK",
+    QUEUE_IDLE_PLAYER_PROPERTY = "ASAI_QUEUE_IDLE_PLAYER",
+    CultureBuildingRoles = nil,
+    UnitAiTypes = nil,
+    UnavailableSensors = {}
+};
 local RELATIVE_TREND_PROPERTIES = {
     Overall = "ASAI_RELATIVE_TREND_X1000",
     Science = "ASAI_RELATIVE_SCIENCE_TREND_X1000",
@@ -303,7 +312,11 @@ local function RunStrategyCondition(conditionName, evaluator, playerID, threshol
     return false;
 end
 
-local function TryDiagnosticSensor(sensorName, collector)
+local function TryDiagnosticSensor(sensorName, collector, rememberUnsupported)
+    if rememberUnsupported
+        and Diagnostics.UnavailableSensors[sensorName] then
+        return nil, 0;
+    end
     local success, result = pcall(collector);
     if success and result ~= nil then
         return result, 1;
@@ -317,6 +330,9 @@ local function TryDiagnosticSensor(sensorName, collector)
             tostring(result)
         ));
         m_ConditionErrors[errorKey] = true;
+    end
+    if rememberUnsupported then
+        Diagnostics.UnavailableSensors[sensorName] = true;
     end
     return nil, 0;
 end
@@ -571,12 +587,14 @@ local function CollectQueueDiagnostics(player)
         Wonders = 0,
         Science = 0,
         Culture = 0,
-        Empire = 0
+        Empire = 0,
+        IdleCityIDs = {}
     };
     for _, city in player:GetCities():Members() do
         local productionType = GetCurrentProductionType(city);
         if productionType == nil then
             result.Idle = result.Idle + 1;
+            table.insert(result.IdleCityIDs, city:GetID());
         elseif GameInfo.Units[productionType] ~= nil then
             result.Units = result.Units + 1;
             AddMilitaryRole(result, GameInfo.Units[productionType]);
@@ -652,6 +670,331 @@ local function CollectDefenseDiagnostics(player)
         end
     end
     return { Cities = cities, DefendedCities = defendedCities };
+end
+
+function Diagnostics.UpdateQueueIdleHistory(player, turn, queue, queueOk)
+    local result = {
+        PreviousSampleTurn = -1,
+        PersistentIdle = -1,
+        MaximumIdleStreak = -1
+    };
+    if queueOk ~= 1 or queue == nil then
+        return result;
+    end
+
+    local rawPreviousSampleTurn = player:GetProperty(
+        Diagnostics.QUEUE_SAMPLE_TURN_PROPERTY
+    );
+    local previousSampleTurn = tonumber(rawPreviousSampleTurn) or -1;
+    local sameSample = previousSampleTurn == turn;
+    local idleCities = {};
+    for _, cityID in ipairs(queue.IdleCityIDs or {}) do
+        idleCities[cityID] = true;
+    end
+
+    local persistentIdle = 0;
+    local maximumIdleStreak = 0;
+    for _, city in player:GetCities():Members() do
+        local rawLastSampleTurn = city:GetProperty(
+            Diagnostics.QUEUE_IDLE_SAMPLE_TURN_PROPERTY
+        );
+        local lastSampleTurn = tonumber(rawLastSampleTurn) or -1;
+        local rawPreviousStreak = city:GetProperty(
+            Diagnostics.QUEUE_IDLE_STREAK_PROPERTY
+        );
+        local previousStreak = tonumber(rawPreviousStreak) or 0;
+        local rawPreviousPlayer = city:GetProperty(
+            Diagnostics.QUEUE_IDLE_PLAYER_PROPERTY
+        );
+        local previousPlayer = tonumber(rawPreviousPlayer) or -1;
+        local idleStreak = 0;
+        if idleCities[city:GetID()] then
+            if sameSample and previousPlayer == player:GetID() then
+                idleStreak = previousStreak;
+            elseif previousPlayer == player:GetID()
+                and lastSampleTurn == previousSampleTurn then
+                idleStreak = previousStreak + 1;
+            else
+                idleStreak = 1;
+            end
+        end
+        if idleStreak >= 2 then
+            persistentIdle = persistentIdle + 1;
+        end
+        maximumIdleStreak = math.max(maximumIdleStreak, idleStreak);
+        if not sameSample then
+            city:SetProperty(
+                Diagnostics.QUEUE_IDLE_SAMPLE_TURN_PROPERTY,
+                turn
+            );
+            city:SetProperty(
+                Diagnostics.QUEUE_IDLE_STREAK_PROPERTY,
+                idleStreak
+            );
+            city:SetProperty(
+                Diagnostics.QUEUE_IDLE_PLAYER_PROPERTY,
+                player:GetID()
+            );
+        end
+    end
+    if not sameSample then
+        player:SetProperty(Diagnostics.QUEUE_SAMPLE_TURN_PROPERTY, turn);
+    end
+
+    result.PreviousSampleTurn = previousSampleTurn;
+    result.PersistentIdle = persistentIdle;
+    result.MaximumIdleStreak = maximumIdleStreak;
+    return result;
+end
+
+function Diagnostics.CollectTradeRoutes(player)
+    local result = {
+        Active = 0,
+        Domestic = 0,
+        International = 0,
+        UnknownDestination = 0,
+        IdleTraders = 0,
+        TraderLinksOk = 1
+    };
+    local routedTraderIDs = {};
+    for _, city in player:GetCities():Members() do
+        local cityTrade = city:GetTrade();
+        if cityTrade == nil or cityTrade.GetOutgoingRoutes == nil then
+            error("City:GetTrade():GetOutgoingRoutes() is unavailable");
+        end
+        local routes = cityTrade:GetOutgoingRoutes();
+        if routes == nil then
+            error("City:GetTrade():GetOutgoingRoutes() returned no routes table");
+        end
+        for _, route in ipairs(routes) do
+            result.Active = result.Active + 1;
+            if route.DestinationCityPlayer == player:GetID() then
+                result.Domestic = result.Domestic + 1;
+            elseif route.DestinationCityPlayer == nil
+                or route.DestinationCityPlayer < 0 then
+                result.UnknownDestination = result.UnknownDestination + 1;
+            else
+                result.International = result.International + 1;
+            end
+            if route.TraderUnitID ~= nil and route.TraderUnitID >= 0 then
+                routedTraderIDs[route.TraderUnitID] = true;
+            else
+                result.TraderLinksOk = 0;
+            end
+        end
+    end
+    if result.TraderLinksOk == 1 then
+        for _, unit in player:GetUnits():Members() do
+            local unitInfo = GameInfo.Units[unit:GetType()];
+            if unitInfo ~= nil and unitInfo.MakeTradeRoute
+                and not routedTraderIDs[unit:GetID()] then
+                result.IdleTraders = result.IdleTraders + 1;
+            end
+        end
+    else
+        result.IdleTraders = -1;
+    end
+    return result;
+end
+
+function Diagnostics.GetCultureBuildingRoles()
+    if Diagnostics.CultureBuildingRoles ~= nil then
+        return Diagnostics.CultureBuildingRoles;
+    end
+    local roles = {};
+    for buildingInfo in GameInfo.Buildings() do
+        if buildingInfo.IsWonder ~= true and buildingInfo.IsWonder ~= 1 then
+            if IsBuildingRole(
+                buildingInfo.BuildingType,
+                "BUILDING_MONUMENT"
+            ) then
+                table.insert(roles, {
+                    Index = buildingInfo.Index,
+                    Monument = true
+                });
+            elseif IsDistrictRole(
+                buildingInfo.PrereqDistrict,
+                "DISTRICT_THEATER"
+            ) then
+                table.insert(roles, {
+                    Index = buildingInfo.Index,
+                    Monument = false
+                });
+            end
+        end
+    end
+    Diagnostics.CultureBuildingRoles = roles;
+    return roles;
+end
+
+function Diagnostics.CollectCultureInfrastructure(player)
+    local result = {
+        Theaters = 0,
+        Monuments = 0,
+        TheaterBuildings = 0
+    };
+    local districts = player:GetDistricts();
+    if districts == nil then
+        error("Player:GetDistricts() is unavailable");
+    end
+    for _, district in districts:Members() do
+        local districtInfo = GameInfo.Districts[district:GetType()];
+        if districtInfo ~= nil
+            and IsDistrictRole(districtInfo.DistrictType, "DISTRICT_THEATER")
+            and district:IsComplete() then
+            result.Theaters = result.Theaters + 1;
+        end
+    end
+
+    local buildingRoles = Diagnostics.GetCultureBuildingRoles();
+    for _, city in player:GetCities():Members() do
+        local cityBuildings = city:GetBuildings();
+        if cityBuildings == nil or cityBuildings.HasBuilding == nil then
+            error("City:GetBuildings():HasBuilding() is unavailable");
+        end
+        for _, role in ipairs(buildingRoles) do
+            if cityBuildings:HasBuilding(role.Index) then
+                if role.Monument then
+                    result.Monuments = result.Monuments + 1;
+                else
+                    result.TheaterBuildings = result.TheaterBuildings + 1;
+                end
+            end
+        end
+    end
+    return result;
+end
+
+function Diagnostics.CollectCultureQueue(player)
+    local result = {
+        Districts = 0,
+        Monuments = 0,
+        Buildings = 0,
+        Projects = 0,
+        Total = 0
+    };
+    for _, city in player:GetCities():Members() do
+        local productionType = GetCurrentProductionType(city);
+        local districtInfo = productionType ~= nil
+            and GameInfo.Districts[productionType] or nil;
+        local buildingInfo = productionType ~= nil
+            and GameInfo.Buildings[productionType] or nil;
+        local projectInfo = productionType ~= nil
+            and GameInfo.Projects[productionType] or nil;
+        if districtInfo ~= nil
+            and IsDistrictRole(productionType, "DISTRICT_THEATER") then
+            result.Districts = result.Districts + 1;
+        elseif buildingInfo ~= nil
+            and IsBuildingRole(productionType, "BUILDING_MONUMENT") then
+            result.Monuments = result.Monuments + 1;
+        elseif buildingInfo ~= nil
+            and IsDistrictRole(
+                buildingInfo.PrereqDistrict,
+                "DISTRICT_THEATER"
+            ) then
+            result.Buildings = result.Buildings + 1;
+        elseif projectInfo ~= nil
+            and IsDistrictRole(
+                projectInfo.PrereqDistrict,
+                "DISTRICT_THEATER"
+            ) then
+            result.Projects = result.Projects + 1;
+        end
+    end
+    result.Total = result.Districts
+        + result.Monuments
+        + result.Buildings
+        + result.Projects;
+    return result;
+end
+
+function Diagnostics.CollectCulturalGreatPeople(player)
+    local greatPeoplePoints = player:GetGreatPeoplePoints();
+    if greatPeoplePoints == nil
+        or greatPeoplePoints.GetPointsPerTurn == nil
+        or greatPeoplePoints.GetPointsTotal == nil then
+        error("Player:GetGreatPeoplePoints() diagnostics are unavailable");
+    end
+    local result = { PerTurn = 0, Balance = 0 };
+    for _, classType in ipairs({
+        "GREAT_PERSON_CLASS_WRITER",
+        "GREAT_PERSON_CLASS_ARTIST",
+        "GREAT_PERSON_CLASS_MUSICIAN"
+    }) do
+        local classInfo = GameInfo.GreatPersonClasses[classType];
+        if classInfo ~= nil then
+            result.PerTurn = result.PerTurn
+                + (tonumber(greatPeoplePoints:GetPointsPerTurn(
+                    classInfo.Index
+                )) or 0);
+            result.Balance = result.Balance
+                + (tonumber(greatPeoplePoints:GetPointsTotal(
+                    classInfo.Index
+                )) or 0);
+        end
+    end
+    return result;
+end
+
+function Diagnostics.GetUnitAiTypes()
+    if Diagnostics.UnitAiTypes ~= nil then
+        return Diagnostics.UnitAiTypes;
+    end
+    local unitAiTypes = {};
+    for row in GameInfo.UnitAiInfos() do
+        unitAiTypes[row.UnitType] = unitAiTypes[row.UnitType] or {};
+        unitAiTypes[row.UnitType][row.AiType] = true;
+    end
+    Diagnostics.UnitAiTypes = unitAiTypes;
+    return unitAiTypes;
+end
+
+function Diagnostics.AddAssaultRoles(result, prefix, unitType)
+    local unitAiTypes = Diagnostics.GetUnitAiTypes()[unitType] or {};
+    if unitAiTypes.UNITTYPE_RANGED then
+        result[prefix .. "Ranged"] = result[prefix .. "Ranged"] + 1;
+    end
+    if unitAiTypes.UNITTYPE_SIEGE_ALL then
+        result[prefix .. "WallBreakers"] =
+            result[prefix .. "WallBreakers"] + 1;
+    end
+    if unitAiTypes.UNITTYPE_AIR_SIEGE then
+        result[prefix .. "AirSiege"] = result[prefix .. "AirSiege"] + 1;
+    end
+end
+
+function Diagnostics.CollectAssaultRoles(player)
+    local result = {
+        FieldedRanged = 0,
+        FieldedWallBreakers = 0,
+        FieldedAirSiege = 0,
+        QueuedRanged = 0,
+        QueuedWallBreakers = 0,
+        QueuedAirSiege = 0
+    };
+    for _, unit in player:GetUnits():Members() do
+        local unitInfo = GameInfo.Units[unit:GetType()];
+        if unitInfo ~= nil then
+            Diagnostics.AddAssaultRoles(
+                result,
+                "Fielded",
+                unitInfo.UnitType
+            );
+        end
+    end
+    for _, city in player:GetCities():Members() do
+        local productionType = GetCurrentProductionType(city);
+        local unitInfo = productionType ~= nil
+            and GameInfo.Units[productionType] or nil;
+        if unitInfo ~= nil then
+            Diagnostics.AddAssaultRoles(
+                result,
+                "Queued",
+                unitInfo.UnitType
+            );
+        end
+    end
+    return result;
 end
 
 local function CountWarsByOpponentType(playerID, player)
@@ -866,7 +1209,8 @@ local function GetEconomicSnapshot(playerID)
         Wonders = -1,
         Science = -1,
         Culture = -1,
-        Empire = -1
+        Empire = -1,
+        IdleCityIDs = {}
     };
     districts = districts or {
         Used = -1,
@@ -911,8 +1255,8 @@ local function GetEconomicSnapshot(playerID)
         ProductionOk = productionOk,
         QueueOk = queueOk,
         DistrictOk = districtOk,
-        ResourceSupported = 0,
-        UpgradeSupported = 0
+        ResourceSupported = -1,
+        UpgradeSupported = -1
     };
     m_EconomicSnapshots[playerID] = result;
     return result;
@@ -5559,6 +5903,49 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
 
     local snapshot = GetSnapshot(playerID);
     local economic = GetEconomicSnapshot(playerID);
+    local player = Players[playerID];
+    local queueHistory, queueHistoryOk = TryDiagnosticSensor(
+        "queue_history",
+        function()
+            return Diagnostics.UpdateQueueIdleHistory(
+                player,
+                snapshot.Turn,
+                economic.Queue,
+                economic.QueueOk
+            );
+        end
+    );
+    queueHistory = queueHistory or {
+        PreviousSampleTurn = -1,
+        PersistentIdle = -1,
+        MaximumIdleStreak = -1
+    };
+    local tradeRoutes, tradeRoutesOk = TryDiagnosticSensor(
+        "trade_routes",
+        function() return Diagnostics.CollectTradeRoutes(player); end,
+        true
+    );
+    tradeRoutes = tradeRoutes or {
+        Active = -1,
+        Domestic = -1,
+        International = -1,
+        UnknownDestination = -1,
+        IdleTraders = -1,
+        TraderLinksOk = 0
+    };
+    local actualRouteCoverage = tradeRoutesOk == 1
+        and snapshot.RouteCapacity > 0
+        and tradeRoutes.Active / snapshot.RouteCapacity or -1;
+    local routeGap = tradeRoutesOk == 1
+        and math.max(0, snapshot.RouteCapacity - tradeRoutes.Active) or -1;
+    local traderPipelineGap = math.max(
+        0,
+        snapshot.RouteCapacity
+            - snapshot.Traders
+            - snapshot.InFlightTraders
+    );
+    local capacityTarget = GetTradeCapacityTarget(snapshot);
+    local capacityGap = math.max(0, capacityTarget - snapshot.RouteCapacity);
     local human = GetHumanEconomicReference();
     local productionRatio = human ~= nil
         and GetDiagnosticRatio(economic.Production, human.Production) or -1;
@@ -5568,7 +5955,7 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
             human.ProductionPerCity
         ) or -1;
     print(string.format(
-        "ASAI_ECONOMY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d production=%.1f production_per_city=%.2f production_per_pop=%.2f production_ratio=%.3f production_per_city_ratio=%.3f district_used=%d district_completed=%d district_estimated_slots=%d district_util=%.3f district_slot_mode=population_formula route_capacity=%d route_coverage=%.3f route_pipeline=%.3f improvement_coverage=%.3f improvement_pipeline=%.3f improved_land=%.3f production_ok=%d district_ok=%d",
+        "ASAI_ECONOMY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d production=%.1f production_per_city=%.2f production_per_pop=%.2f production_ratio=%.3f production_per_city_ratio=%.3f district_used=%d district_completed=%d district_estimated_slots=%d district_util=%.3f district_slot_mode=population_formula route_capacity=%d route_coverage=%.3f route_pipeline=%.3f route_coverage_mode=trader_unit_proxy active_routes=%d actual_route_coverage=%.3f idle_traders=%d trader_links_ok=%d domestic_routes=%d international_routes=%d unknown_routes=%d route_gap=%d route_sensor_ok=%d improvement_coverage=%.3f improvement_pipeline=%.3f improved_land=%.3f production_ok=%d district_ok=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -5585,6 +5972,15 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         snapshot.RouteCapacity,
         economic.RouteCoverage,
         economic.RoutePipelineCoverage,
+        tradeRoutes.Active,
+        actualRouteCoverage,
+        tradeRoutes.IdleTraders,
+        tradeRoutes.TraderLinksOk,
+        tradeRoutes.Domestic,
+        tradeRoutes.International,
+        tradeRoutes.UnknownDestination,
+        routeGap,
+        tradeRoutesOk,
         economic.ImprovementCoverage,
         economic.ImprovementPipelineCoverage,
         economic.ImprovedLand,
@@ -5592,7 +5988,7 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         economic.DistrictOk
     ));
     print(string.format(
-        "ASAI_CONVERSION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d cities=%d queue_units=%d queue_districts=%d queue_buildings=%d queue_projects=%d queue_wonders=%d queue_idle=%d queue_unknown=%d queue_science=%d queue_culture=%d queue_empire=%d gold=%.1f gold_reserve=%.1f gold_surplus=%.1f gold_per_city=%.1f queue_ok=%d resource_supported=%d upgrade_supported=%d",
+        "ASAI_CONVERSION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d cities=%d queue_units=%d queue_districts=%d queue_buildings=%d queue_projects=%d queue_wonders=%d queue_idle=%d queue_idle_at_evaluation=%d queue_idle_persistent=%d queue_idle_max_streak=%d queue_previous_sample_turn=%d queue_sample_phase=player_turn_activated queue_history_ok=%d queue_unknown=%d queue_science=%d queue_culture=%d queue_empire=%d gold=%.1f gold_reserve=%.1f gold_surplus=%.1f gold_per_city=%.1f queue_ok=%d resource_supported=%d upgrade_supported=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -5604,6 +6000,11 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         economic.Queue.Projects,
         economic.Queue.Wonders,
         economic.Queue.Idle,
+        economic.Queue.Idle,
+        queueHistory.PersistentIdle,
+        queueHistory.MaximumIdleStreak,
+        queueHistory.PreviousSampleTurn,
+        queueHistoryOk,
         economic.Queue.Unknown,
         economic.Queue.Science,
         economic.Queue.Culture,
@@ -5615,6 +6016,101 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         economic.QueueOk,
         economic.ResourceSupported,
         economic.UpgradeSupported
+    ));
+    print(string.format(
+        "ASAI_TRADE turn=%d evaluated_turn=%d standard_turn=%.1f player=%d capacity=%d capacity_target=%d capacity_gap=%d traders=%d traders_inflight=%d trader_pipeline_gap=%d active_routes=%d route_gap=%d idle_traders=%d trader_links_ok=%d domestic_routes=%d international_routes=%d unknown_routes=%d trader_recovery=%d capacity_recovery=%d route_sensor_ok=%d",
+        snapshot.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(snapshot.Turn),
+        playerID,
+        snapshot.RouteCapacity,
+        capacityTarget,
+        capacityGap,
+        snapshot.Traders,
+        snapshot.InFlightTraders,
+        traderPipelineGap,
+        tradeRoutes.Active,
+        routeGap,
+        tradeRoutes.IdleTraders,
+        tradeRoutes.TraderLinksOk,
+        tradeRoutes.Domestic,
+        tradeRoutes.International,
+        tradeRoutes.UnknownDestination,
+        IsTradeRecovery(playerID) and 1 or 0,
+        IsTradeCapacityRecovery(playerID) and 1 or 0,
+        tradeRoutesOk
+    ));
+end
+
+function Diagnostics.WriteCultureDiagnostics(playerID, firstTimeThisTurn)
+    if not firstTimeThisTurn or not IsMajorAI(playerID) then
+        return;
+    end
+    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 then
+        return;
+    end
+
+    local relativeState = GetRelativeState(playerID);
+    if not relativeState.EvaluatedThisTurn then
+        return;
+    end
+    local player = Players[playerID];
+    local snapshot = GetSnapshot(playerID);
+    local strength = GetStrengthSnapshot(playerID);
+    local infrastructure, infrastructureOk = TryDiagnosticSensor(
+        "culture_infrastructure",
+        function()
+            return Diagnostics.CollectCultureInfrastructure(player);
+        end
+    );
+    infrastructure = infrastructure or {
+        Theaters = -1,
+        Monuments = -1,
+        TheaterBuildings = -1
+    };
+    local cultureQueue, cultureQueueOk = TryDiagnosticSensor(
+        "culture_queue",
+        function() return Diagnostics.CollectCultureQueue(player); end
+    );
+    cultureQueue = cultureQueue or {
+        Districts = -1,
+        Monuments = -1,
+        Buildings = -1,
+        Projects = -1,
+        Total = -1
+    };
+    local greatPeople, greatPeopleOk = TryDiagnosticSensor(
+        "culture_great_people",
+        function() return Diagnostics.CollectCulturalGreatPeople(player); end,
+        true
+    );
+    greatPeople = greatPeople or { PerTurn = -1, Balance = -1 };
+    print(string.format(
+        "ASAI_CULTURE turn=%d evaluated_turn=%d standard_turn=%.1f player=%d culture=%.1f civics=%d theaters=%d theaters_inflight=%d monuments=%d monuments_inflight=%d theater_buildings=%d theater_buildings_inflight=%d theater_projects_inflight=%d culture_queue_total=%d cultural_gpp_per_turn=%.1f cultural_gpp_balance=%.1f recovery_active=%d focus_active=%d support_active=%d focus_result=%s focus_execution=%d infrastructure_sensor_ok=%d queue_sensor_ok=%d gpp_sensor_ok=%d",
+        snapshot.Turn,
+        relativeState.LastEvaluationTurn,
+        GetStandardEquivalentTurn(snapshot.Turn),
+        playerID,
+        strength.Culture,
+        strength.Civics,
+        infrastructure.Theaters,
+        cultureQueue.Districts,
+        infrastructure.Monuments,
+        cultureQueue.Monuments,
+        infrastructure.TheaterBuildings,
+        cultureQueue.Buildings,
+        cultureQueue.Projects,
+        cultureQueue.Total,
+        greatPeople.PerTurn,
+        greatPeople.Balance,
+        relativeState.Recovery.Culture and 1 or 0,
+        relativeState.Focus == RELATIVE_FOCUS_CULTURE and 1 or 0,
+        relativeState.StrategicSupport == RELATIVE_FOCUS_CULTURE and 1 or 0,
+        GetFocusResultName(relativeState.FocusResult),
+        relativeState.FocusExecution,
+        infrastructureOk,
+        cultureQueueOk,
+        greatPeopleOk
     ));
 end
 
@@ -5639,17 +6135,57 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
         function() return CollectDefenseDiagnostics(Players[playerID]); end
     );
     defenses = defenses or { Cities = snapshot.Cities, DefendedCities = -1 };
+    local assaultRoles, assaultRolesOk = TryDiagnosticSensor(
+        "assault_roles",
+        function() return Diagnostics.CollectAssaultRoles(Players[playerID]); end
+    );
+    assaultRoles = assaultRoles or {
+        FieldedRanged = -1,
+        FieldedWallBreakers = -1,
+        FieldedAirSiege = -1,
+        QueuedRanged = -1,
+        QueuedWallBreakers = -1,
+        QueuedAirSiege = -1
+    };
     local unitsPerCity = snapshot.Cities > 0
         and strength.CombatUnits / snapshot.Cities or 0;
     local defenseCoverage = defenseSupported == 1 and defenses.Cities > 0
         and defenses.DefendedCities / defenses.Cities or -1;
     local militaryExecution, militaryQueueTarget = GetMilitaryExecutionStatus(playerID);
+    local militaryQueueGap = economic.QueueOk == 1 and math.max(
+        0,
+        militaryQueueTarget - economic.Queue.Combat
+    ) or -1;
+    local forceDensityTarget = GetNumberParameter(
+        "ASAI_MILITARY_UNITS_PER_PLANNED_CITY_EXIT_X100",
+        225
+    ) / 100;
+    local combatForceTarget = math.ceil(
+        relativeState.MilitaryPlannedCities * forceDensityTarget
+    );
+    local combatForceGap = math.max(
+        0,
+        combatForceTarget - strength.CombatUnits
+    );
+    local assaultRoleTarget = snapshot.ActiveMajorWars > 0 and 1 or 0;
+    local operationRangedGap = assaultRolesOk == 1 and math.max(
+        0,
+        assaultRoleTarget
+            - assaultRoles.FieldedRanged
+            - assaultRoles.QueuedRanged
+    ) or -1;
+    local wallBreakerGap = assaultRolesOk == 1 and math.max(
+        0,
+        assaultRoleTarget
+            - assaultRoles.FieldedWallBreakers
+            - assaultRoles.QueuedWallBreakers
+    ) or -1;
     local warStopLoss = snapshot.ActiveMajorWars > 0
         and snapshot.Turn < (
             relativeState.StrategicPlanCooldownUntil[Strategic.WAR] or -1
         );
     print(string.format(
-        "ASAI_MILITARY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d strength=%d combat_units=%d land_units=%d ranged_units=%d siege_units=%d mobile_units=%d naval_units=%d air_units=%d units_per_city=%.2f planned_cities=%d units_per_planned_city=%.2f queue_combat=%d queue_target=%d military_execution=%d queue_land=%d queue_ranged=%d queue_siege=%d queue_mobile=%d queue_naval=%d queue_air=%d defended_cities=%d defense_coverage=%.3f defense_supported=%d military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d active_major_wars=%d war_stop_loss=%d combat_events=%d capture_events=%d pillage_events=%d",
+        "ASAI_MILITARY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d strength=%d combat_units=%d land_units=%d ranged_units=%d siege_units=%d mobile_units=%d naval_units=%d air_units=%d units_per_city=%.2f planned_cities=%d units_per_planned_city=%.2f combat_force_target=%d combat_force_gap=%d queue_combat=%d queue_target=%d queue_gap=%d military_execution=%d queue_land=%d queue_ranged=%d queue_siege=%d queue_mobile=%d queue_naval=%d queue_air=%d operation_ranged=%d operation_ranged_inflight=%d operation_ranged_gap=%d wall_breakers=%d wall_breakers_inflight=%d wall_breaker_gap=%d air_siege=%d air_siege_inflight=%d assault_role_target=%d assault_roles_ok=%d defended_cities=%d defense_coverage=%.3f defense_supported=%d military_raw=%.3f military_ratio=%.3f military_readiness=%d military_dominance=%d active_major_wars=%d war_stop_loss=%d combat_events=%d capture_events=%d pillage_events=%d",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -5665,8 +6201,11 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
         unitsPerCity,
         relativeState.MilitaryPlannedCities,
         relativeState.MilitaryUnitsPerPlannedCity,
+        combatForceTarget,
+        combatForceGap,
         economic.Queue.Combat,
         militaryQueueTarget,
+        militaryQueueGap,
         militaryExecution and 1 or 0,
         economic.Queue.Land,
         economic.Queue.Ranged,
@@ -5674,6 +6213,16 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
         economic.Queue.Mobile,
         economic.Queue.Naval,
         economic.Queue.Air,
+        assaultRoles.FieldedRanged,
+        assaultRoles.QueuedRanged,
+        operationRangedGap,
+        assaultRoles.FieldedWallBreakers,
+        assaultRoles.QueuedWallBreakers,
+        wallBreakerGap,
+        assaultRoles.FieldedAirSiege,
+        assaultRoles.QueuedAirSiege,
+        assaultRoleTarget,
+        assaultRolesOk,
         defenses.DefendedCities,
         defenseCoverage,
         defenseSupported,
@@ -5802,6 +6351,19 @@ local function LogMetrics(playerID, firstTimeThisTurn)
             tostring(diagnosticError)
         ));
         m_ConditionErrors.ASAI_LogEconomicDiagnostics = true;
+    end
+    local cultureSuccess, cultureError = pcall(
+        Diagnostics.WriteCultureDiagnostics,
+        playerID,
+        firstTimeThisTurn
+    );
+    if not cultureSuccess and m_ConditionErrors.ASAI_LogCultureDiagnostics == nil then
+        print(string.format(
+            "ASAI_ERROR condition=ASAI_LogCultureDiagnostics player=%s fallback=skip error=%s",
+            tostring(playerID),
+            tostring(cultureError)
+        ));
+        m_ConditionErrors.ASAI_LogCultureDiagnostics = true;
     end
     local militarySuccess, militaryError = pcall(
         WriteMilitaryDiagnostics,

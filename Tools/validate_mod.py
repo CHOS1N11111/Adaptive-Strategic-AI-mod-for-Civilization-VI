@@ -30,8 +30,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.9"
-EXPECTED_MODINFO_VERSION = "31"
+EXPECTED_RELEASE = "0.11.10"
+EXPECTED_MODINFO_VERSION = "32"
 
 
 def default_database() -> Path:
@@ -184,6 +184,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("Lua metrics logger is not fail-closed")
     if "pcall(\n        WriteEconomicDiagnostics" not in source:
         errors.append("economic diagnostics logger is not independently fail-closed")
+    if "pcall(\n        Diagnostics.WriteCultureDiagnostics" not in source:
+        errors.append("culture diagnostics logger is not independently fail-closed")
     if "pcall(\n        WriteMilitaryDiagnostics" not in source:
         errors.append("military diagnostics logger is not independently fail-closed")
     if "pcall(\n        ThreatResponse.WriteDiagnostics" not in source:
@@ -219,6 +221,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_STRATEGY_INPUT",
         "ASAI_ECONOMY",
         "ASAI_CONVERSION",
+        "ASAI_TRADE turn=",
+        "ASAI_CULTURE turn=",
         "ASAI_MILITARY turn=",
         "ASAI_THREAT turn=",
         "ASAI_SCIENCE_EXECUTION turn=",
@@ -579,7 +583,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     if "and state.StrategicPlan ~= Strategic.WAR" in source:
         errors.append("WAR plans are still excluded from stalled-plan retirement")
     diagnostic_fragments = (
-        "local function TryDiagnosticSensor(sensorName, collector)",
+        "local function TryDiagnosticSensor(sensorName, collector, rememberUnsupported)",
         "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
         "local function CollectProductionDiagnostics(player)",
         'GameInfo.Yields["YIELD_PRODUCTION"]',
@@ -592,6 +596,13 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "queue_science=%d",
         "queue_culture=%d",
         "queue_empire=%d",
+        "queue_idle_at_evaluation=%d",
+        "queue_idle_persistent=%d",
+        "queue_idle_max_streak=%d",
+        "queue_sample_phase=player_turn_activated",
+        "queue_history_ok=%d",
+        "Diagnostics.QUEUE_IDLE_STREAK_PROPERTY",
+        "Diagnostics.QUEUE_IDLE_PLAYER_PROPERTY",
         "local function CollectDistrictDiagnostics(player)",
         "player:GetDistricts()",
         "districtInfo.RequiresPopulation == true",
@@ -601,8 +612,25 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         '"district_capacity"',
         "RoutePipelineCoverage = snapshot.RouteCapacity > 0",
         "ImprovementPipelineCoverage = infrastructureTarget > 0",
-        "ResourceSupported = 0",
-        "UpgradeSupported = 0",
+        "ResourceSupported = -1",
+        "UpgradeSupported = -1",
+        "function Diagnostics.CollectTradeRoutes(player)",
+        "cityTrade:GetOutgoingRoutes()",
+        "route_coverage_mode=trader_unit_proxy",
+        "actual_route_coverage=%.3f",
+        "trader_links_ok=%d",
+        "ASAI_TRADE turn=%d evaluated_turn=%d",
+        "route_sensor_ok=%d",
+        "function Diagnostics.CollectCultureInfrastructure(player)",
+        "function Diagnostics.CollectCultureQueue(player)",
+        "function Diagnostics.CollectCulturalGreatPeople(player)",
+        "ASAI_CULTURE turn=%d evaluated_turn=%d",
+        "theaters_inflight=%d",
+        "theater_projects_inflight=%d",
+        "cultural_gpp_balance=%.1f",
+        "infrastructure_sensor_ok=%d",
+        "queue_sensor_ok=%d",
+        "gpp_sensor_ok=%d",
         "local function GetHumanEconomicReference()",
         "local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)",
         "ASAI_ECONOMY turn=%d evaluated_turn=%d",
@@ -617,6 +645,12 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "queue_ok=%d",
         "resource_supported=%d",
         "upgrade_supported=%d",
+        "function Diagnostics.CollectAssaultRoles(player)",
+        "combat_force_gap=%d",
+        "queue_gap=%d",
+        "operation_ranged_gap=%d",
+        "wall_breaker_gap=%d",
+        "assault_roles_ok=%d",
         "local function GetUnitBaseStrength(unitInfo)",
         "local function AddMilitaryRole(profile, unitInfo)",
         "local function CollectDefenseDiagnostics(player)",
