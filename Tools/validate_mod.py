@@ -30,8 +30,9 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.10"
-EXPECTED_MODINFO_VERSION = "32"
+EXPECTED_RELEASE = "0.11.11"
+EXPECTED_MODINFO_VERSION = "33"
+EXPECTED_STRATEGIES = 38
 
 
 def default_database() -> Path:
@@ -535,8 +536,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "local strategicProgress = false",
         "improved = strategicProgress",
         "captureEvents > 0",
-        "enemyLossRatio >= minimumEnemyLoss",
-        "pillageEvents >= minimumPillages",
+        "function Strategic.AssessWarOutcome(",
+        "heldCapture or effectivePillage",
+        "external_enemy_decline=%d",
+        "war_opponents_stable=%d",
         "war_stop_loss_reallocate",
         "ASAI_WAR_STOP_LOSS_COOLDOWN_STANDARD",
         "ASAI_WAR_STOP_LOSS_EXTRA_WAR_STANDARD",
@@ -548,7 +551,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "snapshot.Turn < warCooldownUntil",
         "state.StrategicPlanExecution > 0",
         'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
-        "OUTCOME_SCHEMA = 4",
+        "OUTCOME_SCHEMA = 5",
         "reset_pressure_baseline=%d",
         "reset_war_baseline=%d",
         "reset_expansion_baseline=%d",
@@ -614,8 +617,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ImprovementPipelineCoverage = infrastructureTarget > 0",
         "ResourceSupported = -1",
         "UpgradeSupported = -1",
-        "function Diagnostics.CollectTradeRoutes(player)",
-        "cityTrade:GetOutgoingRoutes()",
+        "actual_route_source=ASAI_UI_TRADE",
         "route_coverage_mode=trader_unit_proxy",
         "actual_route_coverage=%.3f",
         "trader_links_ok=%d",
@@ -623,7 +625,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "route_sensor_ok=%d",
         "function Diagnostics.CollectCultureInfrastructure(player)",
         "function Diagnostics.CollectCultureQueue(player)",
-        "function Diagnostics.CollectCulturalGreatPeople(player)",
+        "gpp_source=ASAI_UI_CULTURE",
         "ASAI_CULTURE turn=%d evaluated_turn=%d",
         "theaters_inflight=%d",
         "theater_projects_inflight=%d",
@@ -2801,6 +2803,69 @@ def validate_relative_pacing(connection: sqlite3.Connection) -> list[str]:
     return errors
 
 
+def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> list[str]:
+    errors: list[str] = []
+    gameplay = (root / "Lua/AdaptiveStrategicAI.lua").read_text(encoding="utf-8")
+    ui = (root / "UI/ASAI_Diagnostics.lua").read_text(encoding="utf-8")
+    for forbidden in ("GetOutgoingRoutes(", "GetGreatPeoplePoints("):
+        if forbidden in gameplay:
+            errors.append(f"UI-only API returned to Gameplay: {forbidden}")
+    for forbidden in (":SetProperty(", "RequestOperation(", "ExposedMembers", "GameEvents."):
+        if forbidden in ui:
+            errors.append(f"read-only UI diagnostics crossed the behavior boundary: {forbidden}")
+    for marker in ("ASAI_UI_TRADE", "ASAI_UI_CULTURE", "ASAI_UI_CITY_QUEUE"):
+        counts = lua_format_counts(ui, marker)
+        if counts is None or counts[0] != counts[1]:
+            errors.append(f"UI format arguments disagree for {marker}: {counts}")
+    for marker in ("ASAI_EXECUTION", "ASAI_CONDITION", "ASAI_STABILITY", "ASAI_CITY_QUEUE"):
+        counts = lua_format_counts(gameplay, marker)
+        if counts is None or counts[0] != counts[1]:
+            errors.append(f"execution format arguments disagree for {marker}: {counts}")
+    if "elseif previousStrategicSupport ~= state.StrategicSupport then\n            Strategic.ResetPlanReviewBaseline" in gameplay:
+        errors.append("support changes still reset the primary review window")
+    for fragment in (
+        "function Execution.HasScienceDeficit(state, wasActive)",
+        'ratios.Techs or 1',
+        "function Execution.MilitarySignals(snapshot, strength, queue, recentAttrition)",
+        "function Execution.ShouldRearm(state, snapshot)",
+        "function Strategic.UpdatePlanReviewForChanges(state, snapshot, strength, turn, planChanged)",
+        'source=registered_callback engine_active=unknown',
+        'continuous_idle=unknown',
+        '"ASAI_EXEC_STABILITY_UNTIL"',
+        'and previousOutcomeSchema < 5',
+        'and previousOutcomeSchema < 4',
+    ):
+        if fragment not in gameplay:
+            errors.append(f"execution contract is missing: {fragment}")
+    expected = {
+        ("ASAI_WritingPrerequisiteTechs", "TECH_WRITING"): 400,
+        ("ASAI_EducationPrerequisiteTechs", "TECH_EDUCATION"): 400,
+        ("ASAI_EducationPrerequisiteTechs", "TECH_MATHEMATICS"): 120,
+        ("ASAI_EducationPrerequisiteTechs", "TECH_APPRENTICESHIP"): 120,
+        ("ASAI_LaboratoryPrerequisiteTechs", "TECH_CHEMISTRY"): 400,
+        ("ASAI_EducationInfrastructureBuildings", "BUILDING_UNIVERSITY"): 160,
+        ("ASAI_LaboratoryInfrastructureBuildings", "BUILDING_RESEARCH_LAB"): 180,
+        ("ASAI_TradeExecutionBuildings", "BUILDING_MARKET"): 180,
+        ("ASAI_TradeExecutionBuildings", "BUILDING_LIGHTHOUSE"): 180,
+        ("ASAI_TradeExecutionDistricts", "DISTRICT_COMMERCIAL_HUB"): 90,
+    }
+    for (list_type, item), value in expected.items():
+        row = connection.execute("SELECT Value FROM AiFavoredItems WHERE ListType=? AND Item=?",
+                                 (list_type, item)).fetchone()
+        if row is None or row[0] != value:
+            errors.append(f"execution preference {list_type}/{item}: expected {value}, got {row}")
+    for list_type, promotion, value in (
+        ("ASAI_RangedReinforcementUnits", "PROMOTION_CLASS_RANGED", 125),
+        ("ASAI_SiegeReinforcementUnits", "PROMOTION_CLASS_SIEGE", 160),
+    ):
+        rows = connection.execute("SELECT u.PromotionClass, f.Value FROM AiFavoredItems f "
+                                  "JOIN Units u ON u.UnitType=f.Item WHERE f.ListType=?",
+                                  (list_type,)).fetchall()
+        if not rows or any(row != (promotion, value) for row in rows):
+            errors.append(f"role-specific reinforcement list is invalid: {list_type}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Adaptive Strategic AI without modifying the game cache.")
     parser.add_argument("--db", type=Path, default=default_database())
@@ -2831,7 +2896,7 @@ def main() -> int:
     if not args.db.is_file():
         errors.append(f"reference database is missing: {args.db}")
     else:
-        with sqlite3.connect(args.db) as source, sqlite3.connect(":memory:") as target:
+        with sqlite3.connect(args.db.resolve().as_uri() + "?mode=ro", uri=True) as source, sqlite3.connect(":memory:") as target:
             source.backup(target)
             register_game_sql_functions(target)
             baseline_fk = foreign_key_errors(target)
@@ -2849,11 +2914,12 @@ def main() -> int:
                 errors.extend(validate_lua_functions(target, lua_file))
                 errors.extend(validate_invariants(target))
                 errors.extend(validate_relative_pacing(target))
+                errors.extend(validate_execution_recovery(target, mod_root))
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]
-                if strategy_count != 31:
-                    errors.append(f"expected 31 adaptive strategies, found {strategy_count}")
+                if strategy_count != EXPECTED_STRATEGIES:
+                    errors.append(f"expected {EXPECTED_STRATEGIES} adaptive strategies, found {strategy_count}")
                 release = target.execute(
                     "SELECT Value FROM GlobalParameters WHERE Name = 'ASAI_VERSION'"
                 ).fetchone()
@@ -2879,7 +2945,7 @@ def main() -> int:
         "+50% Production/Gold, +24% Science/Culture/Faith, +3 combat, +30% XP"
     )
     print(
-        "- adaptive strategies: 31 "
+        f"- adaptive strategies: {EXPECTED_STRATEGIES} "
         "(including rolling plans, coordinated recovery, and milestone-based "
         "science-victory execution)"
     )

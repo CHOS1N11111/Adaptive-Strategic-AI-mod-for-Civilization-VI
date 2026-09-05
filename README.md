@@ -4,7 +4,7 @@
 
 A Civilization VI: Gathering Storm AI overhaul built to keep Deity games competitive from the opening to the victory screen.
 
-**Version 0.11.10** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
+**Version 0.11.11** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
 
 Vanilla Deity concentrates much of its challenge in the opening and often loses pressure later. Adaptive Strategic AI replaces part of that early spike with a smoother era-scaled curve, then helps every major AI turn its economy, military, and victory plans into useful results.
 
@@ -14,8 +14,8 @@ Vanilla Deity concentrates much of its challenge in the opening and often loses 
 
 - **A competitive full game.** Deity remains dangerous early, while its economic, combat, and experience bonuses grow with the world era to preserve later pressure.
 - **Independent adaptive plans.** Every major AI evaluates itself against the human player, the wider field, and its own recent trend. Development, recovery, expansion, defense, pressure, and war plans can change as the situation changes.
-- **Stronger expansion and economy.** The AI values better settlement sites, uses leaner Settler escorts, limits duplicate civilian production, and reacts to missing improvements, trade capacity, infrastructure, or reserves. Relative expansion becomes selective in the Industrial Era and ends in the Modern Era; repeated idle Settlers trigger a reversible stop-loss even after the active plan changes.
-- **More credible military behavior.** Readiness, real combat contact, army composition, city-assault formations, wartime production, and strategic results are evaluated separately. Unproductive wars can fall back to defense or development, while confirmed air or Giant Death Robot attacks trigger focused counter-production when defenses are insufficient.
+- **Stronger expansion and economy.** Research recovery links prerequisite technologies to useful science buildings; stalled trade capacity gets staged infrastructure priorities. Relative expansion becomes selective in the Industrial Era and ends in the Modern Era. Idle Settlers and cities lost to Free Cities trigger bounded expansion pauses.
+- **More credible military behavior.** Attrition, actual army size, ranged and siege roles, and units already in production guide reinforcement. War reviews use held captures and pillaging rather than global enemy losses; changing a support focus does not restart the main review. Unproductive offensives can fall back to defense, while confirmed air or Giant Death Robot attacks trigger focused counter-production.
 - **Better victory conversion.** Science, culture, domination, religion, and diplomacy receive distinct priorities. Persistent project milestones guide the next space project, the randomized Future Era route, and a capped number of parallel Spaceports. After the exoplanet launch, laser stations receive urgent priority over ordinary city projects; an active defense emergency can suspend the sequence.
 - **Bounded recovery, not constant parity.** Targeted decision support handles isolated weaknesses. Reversible yield support is reserved for broad or severe collapse and never penalizes a matched or leading AI.
 
@@ -74,7 +74,7 @@ UI-only mods are generally compatible. Better Balanced Game changes technologies
 
 ## Configuration and Troubleshooting
 
-Most players do not need to configure anything. Advanced pacing, support, and diagnostic settings are defined in [`AI/10_CoreEconomy.sql`](AI/10_CoreEconomy.sql). Metrics are enabled by default so AI state changes can be diagnosed from `Lua.log`.
+Most players do not need to configure anything. Pacing and diagnostic settings are in [`AI/10_CoreEconomy.sql`](AI/10_CoreEconomy.sql); execution-recovery thresholds are in [`AI/25_ExecutionRecovery.sql`](AI/25_ExecutionRecovery.sql). Metrics are enabled by default. A separate read-only UI context records trade routes, cultural Great Person points, and city production alongside the controller's `Lua.log` entries.
 
 For a bug report, include the mod version, game settings, enabled mod list, and the relevant `Database.log`, `Modding.log`, and `Lua.log` files in a [GitHub issue](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/issues).
 
@@ -83,6 +83,8 @@ Repository validation:
 ```powershell
 python .\Tools\validate_mod.py
 ```
+
+Behavioral regression tests require a local Lua 5.3/5.4 runtime: `python .\Tools\run_lua_tests.py --lua lua`.
 
 ## License
 

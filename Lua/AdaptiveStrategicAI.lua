@@ -125,6 +125,7 @@ local Strategic = {
     BASELINE_ENEMY_MILITARY_PROPERTY =
         "ASAI_STRATEGIC_PLAN_BASELINE_ENEMY_MILITARY",
     BASELINE_MAJOR_WARS_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_MAJOR_WARS",
+    BASELINE_OPPONENTS_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_OPPONENTS",
     BASELINE_COMBAT_EVENTS_PROPERTY =
         "ASAI_STRATEGIC_PLAN_BASELINE_COMBAT_EVENTS",
     BASELINE_CAPTURE_EVENTS_PROPERTY =
@@ -137,7 +138,7 @@ local Strategic = {
     STALL_COUNT_PROPERTY = "ASAI_STRATEGIC_PLAN_STALL_COUNT",
     SCORE_PROPERTY = "ASAI_STRATEGIC_PLAN_SCORE_X100",
     SUPPORT_PROPERTY = "ASAI_STRATEGIC_SUPPORT",
-    OUTCOME_SCHEMA = 4,
+    OUTCOME_SCHEMA = 5,
     OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA",
     MAJOR_COMBAT_EVENTS_PROPERTY = "ASAI_MAJOR_COMBAT_EVENTS",
     MAJOR_CAPTURE_EVENTS_PROPERTY = "ASAI_MAJOR_CAPTURE_EVENTS",
@@ -224,6 +225,8 @@ local Diagnostics = {
     UnitAiTypes = nil,
     UnavailableSensors = {}
 };
+-- Outcome helpers share a namespace rather than consuming chunk-level locals.
+local Execution = { Cache = {}, ConditionChecks = {} };
 local RELATIVE_TREND_PROPERTIES = {
     Overall = "ASAI_RELATIVE_TREND_X1000",
     Science = "ASAI_RELATIVE_SCIENCE_TREND_X1000",
@@ -297,6 +300,10 @@ end
 local function RunStrategyCondition(conditionName, evaluator, playerID, threshold)
     local success, result = pcall(evaluator, playerID, threshold);
     if success then
+        -- A condition callback is not the engine's final strategy state.
+        if Execution.TraceCondition ~= nil then
+            pcall(Execution.TraceCondition, conditionName, playerID, result == true);
+        end
         return result == true;
     end
 
@@ -722,6 +729,11 @@ function Diagnostics.UpdateQueueIdleHistory(player, turn, queue, queueOk)
             persistentIdle = persistentIdle + 1;
         end
         maximumIdleStreak = math.max(maximumIdleStreak, idleStreak);
+        if idleStreak > 0 and not sameSample then
+            print(string.format(
+                "ASAI_CITY_QUEUE turn=%d player=%d city=%d x=%d y=%d phase=player_turn_activated current=none empty_sample_streak=%d continuous_idle=unknown",
+                turn, player:GetID(), city:GetID(), city:GetX(), city:GetY(), idleStreak));
+        end
         if not sameSample then
             city:SetProperty(
                 Diagnostics.QUEUE_IDLE_SAMPLE_TURN_PROPERTY,
@@ -744,56 +756,6 @@ function Diagnostics.UpdateQueueIdleHistory(player, turn, queue, queueOk)
     result.PreviousSampleTurn = previousSampleTurn;
     result.PersistentIdle = persistentIdle;
     result.MaximumIdleStreak = maximumIdleStreak;
-    return result;
-end
-
-function Diagnostics.CollectTradeRoutes(player)
-    local result = {
-        Active = 0,
-        Domestic = 0,
-        International = 0,
-        UnknownDestination = 0,
-        IdleTraders = 0,
-        TraderLinksOk = 1
-    };
-    local routedTraderIDs = {};
-    for _, city in player:GetCities():Members() do
-        local cityTrade = city:GetTrade();
-        if cityTrade == nil or cityTrade.GetOutgoingRoutes == nil then
-            error("City:GetTrade():GetOutgoingRoutes() is unavailable");
-        end
-        local routes = cityTrade:GetOutgoingRoutes();
-        if routes == nil then
-            error("City:GetTrade():GetOutgoingRoutes() returned no routes table");
-        end
-        for _, route in ipairs(routes) do
-            result.Active = result.Active + 1;
-            if route.DestinationCityPlayer == player:GetID() then
-                result.Domestic = result.Domestic + 1;
-            elseif route.DestinationCityPlayer == nil
-                or route.DestinationCityPlayer < 0 then
-                result.UnknownDestination = result.UnknownDestination + 1;
-            else
-                result.International = result.International + 1;
-            end
-            if route.TraderUnitID ~= nil and route.TraderUnitID >= 0 then
-                routedTraderIDs[route.TraderUnitID] = true;
-            else
-                result.TraderLinksOk = 0;
-            end
-        end
-    end
-    if result.TraderLinksOk == 1 then
-        for _, unit in player:GetUnits():Members() do
-            local unitInfo = GameInfo.Units[unit:GetType()];
-            if unitInfo ~= nil and unitInfo.MakeTradeRoute
-                and not routedTraderIDs[unit:GetID()] then
-                result.IdleTraders = result.IdleTraders + 1;
-            end
-        end
-    else
-        result.IdleTraders = -1;
-    end
     return result;
 end
 
@@ -905,34 +867,6 @@ function Diagnostics.CollectCultureQueue(player)
         + result.Monuments
         + result.Buildings
         + result.Projects;
-    return result;
-end
-
-function Diagnostics.CollectCulturalGreatPeople(player)
-    local greatPeoplePoints = player:GetGreatPeoplePoints();
-    if greatPeoplePoints == nil
-        or greatPeoplePoints.GetPointsPerTurn == nil
-        or greatPeoplePoints.GetPointsTotal == nil then
-        error("Player:GetGreatPeoplePoints() diagnostics are unavailable");
-    end
-    local result = { PerTurn = 0, Balance = 0 };
-    for _, classType in ipairs({
-        "GREAT_PERSON_CLASS_WRITER",
-        "GREAT_PERSON_CLASS_ARTIST",
-        "GREAT_PERSON_CLASS_MUSICIAN"
-    }) do
-        local classInfo = GameInfo.GreatPersonClasses[classType];
-        if classInfo ~= nil then
-            result.PerTurn = result.PerTurn
-                + (tonumber(greatPeoplePoints:GetPointsPerTurn(
-                    classInfo.Index
-                )) or 0);
-            result.Balance = result.Balance
-                + (tonumber(greatPeoplePoints:GetPointsTotal(
-                    classInfo.Index
-                )) or 0);
-        end
-    end
     return result;
 end
 
@@ -1495,7 +1429,9 @@ local function IsSettlerBudgetReached(playerID, threshold)
     local state = GetRelativeState(playerID);
     local expansionUnavailable = state.ExpansionPlanAllowed ~= 1
         and (state.ExpansionPhase == Strategic.EXPANSION_CLOSED
-            or snapshot.Turn < state.ExpansionBlockedUntil);
+            or snapshot.Turn < state.ExpansionBlockedUntil
+            or (state.Execution ~= nil
+                and snapshot.Turn < state.Execution.StabilityUntil));
     if expansionUnavailable then
         return true;
     end
@@ -2475,6 +2411,7 @@ local function GetNeutralRelativeState()
         StrategicPlanBaselineMilitary = 0,
         StrategicPlanBaselineEnemyMilitary = 0,
         StrategicPlanBaselineMajorWars = 0,
+        StrategicPlanBaselineOpponents = "",
         StrategicPlanBaselineCombatEvents = 0,
         StrategicPlanBaselineCaptureEvents = 0,
         StrategicPlanBaselinePillageEvents = 0,
@@ -2812,6 +2749,9 @@ local function ReadRelativeState(player)
         Strategic.BASELINE_MAJOR_WARS_PROPERTY,
         0
     );
+    state.StrategicPlanBaselineOpponents = tostring(
+        player:GetProperty(Strategic.BASELINE_OPPONENTS_PROPERTY) or ""
+    );
     state.StrategicPlanBaselineCombatEvents = GetStoredNumber(
         player,
         Strategic.BASELINE_COMBAT_EVENTS_PROPERTY,
@@ -3070,6 +3010,10 @@ local function StoreRelativeState(player, state)
     player:SetProperty(
         Strategic.BASELINE_MAJOR_WARS_PROPERTY,
         state.StrategicPlanBaselineMajorWars
+    );
+    player:SetProperty(
+        Strategic.BASELINE_OPPONENTS_PROPERTY,
+        state.StrategicPlanBaselineOpponents
     );
     player:SetProperty(
         Strategic.BASELINE_COMBAT_EVENTS_PROPERTY,
@@ -3494,7 +3438,8 @@ function Strategic.UpdateExpansionState(state, snapshot, turn)
         state.ExpansionSettlerStallCount = 0;
     end
 
-    local blocked = turn < state.ExpansionBlockedUntil;
+    local blocked = turn < state.ExpansionBlockedUntil
+        or (state.Execution ~= nil and turn < state.Execution.StabilityUntil);
     if blocked
         or state.ExpansionPhase == Strategic.EXPANSION_CLOSED
         or snapshot.ActiveMajorWars > 0 then
@@ -3869,12 +3814,8 @@ end
 function Strategic.GetPlanOutcomeScore(state, plan)
     local competitive = state.CompetitiveScores or state.RawScores;
     if plan == Strategic.RECOVER then
-        if state.StrategicSupport == RELATIVE_FOCUS_SCIENCE then
-            return competitive.Science;
-        end
-        if state.StrategicSupport == RELATIVE_FOCUS_CULTURE then
-            return competitive.Culture;
-        end
+        -- The primary objective must not change its yardstick when its
+        -- independently-reviewed support focus changes.
         return math.min(competitive.Science, competitive.Culture);
     end
     if plan == Strategic.EXPAND then
@@ -3910,16 +3851,7 @@ function Strategic.GetPlanExecution(playerID, state, snapshot)
         return queue.Empire;
     end
     if state.StrategicPlan == Strategic.RECOVER then
-        if state.StrategicSupport == RELATIVE_FOCUS_SCIENCE then
-            return queue.Science;
-        end
-        if state.StrategicSupport == RELATIVE_FOCUS_CULTURE then
-            return queue.Culture;
-        end
-        if state.StrategicSupport == RELATIVE_FOCUS_EMPIRE then
-            return queue.Empire;
-        end
-        return queue.Districts + queue.Buildings + queue.Projects;
+        return queue.Science + queue.Culture;
     end
     return queue.Districts + queue.Buildings + queue.Projects + queue.Empire;
 end
@@ -3932,6 +3864,39 @@ function Strategic.GetWarOpponentMilitary(snapshot)
         end
     end
     return total;
+end
+
+function Strategic.GetOpponentKey(snapshot)
+    local opponents = {};
+    for _, playerID in ipairs(snapshot.MajorOpponents or {}) do
+        table.insert(opponents, playerID);
+    end
+    table.sort(opponents);
+    return table.concat(opponents, ":");
+end
+
+function Strategic.AssessWarOutcome(
+    state, snapshot, cityGain, capturedGain, captureEvents, pillageEvents,
+    enemyLossRatio, ownLossRatio
+)
+    local currentOpponents = Strategic.GetOpponentKey(snapshot);
+    local stableOpponents = currentOpponents ~= ""
+        and currentOpponents == state.StrategicPlanBaselineOpponents;
+    local externalImprovement = stableOpponents
+        and enemyLossRatio >= GetNumberParameter(
+            "ASAI_WAR_ENEMY_MILITARY_LOSS_X100", 12
+        ) / 100
+        and enemyLossRatio >= ownLossRatio;
+    -- An opponent's global losses cannot identify who inflicted them. Keep
+    -- that signal diagnostic-only; nearby combat is not kill attribution.
+    local heldCapture = captureEvents > 0 and capturedGain > 0;
+    local effectivePillage = pillageEvents >= math.max(1,
+        GetNumberParameter("ASAI_WAR_PILLAGE_PROGRESS_MIN", 2));
+    local seriousOwnLoss = cityGain < 0 or ownLossRatio >= GetNumberParameter(
+        "ASAI_WAR_SERIOUS_OWN_LOSS_X100", 25
+    ) / 100;
+    return (heldCapture or effectivePillage) and not seriousOwnLoss,
+        externalImprovement, stableOpponents;
 end
 
 function Strategic.StartPlanReview(state, snapshot, strength, turn)
@@ -3951,6 +3916,7 @@ function Strategic.StartPlanReview(state, snapshot, strength, turn)
     state.StrategicPlanBaselineEnemyMilitary =
         Strategic.GetWarOpponentMilitary(snapshot);
     state.StrategicPlanBaselineMajorWars = snapshot.MajorWars;
+    state.StrategicPlanBaselineOpponents = Strategic.GetOpponentKey(snapshot);
     state.StrategicPlanBaselineCombatEvents = snapshot.MajorCombatEvents;
     state.StrategicPlanBaselineCaptureEvents = snapshot.MajorCaptureEvents;
     state.StrategicPlanBaselinePillageEvents = snapshot.MajorPillageEvents;
@@ -3976,9 +3942,16 @@ function Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn)
     state.StrategicPlanBaselineEnemyMilitary =
         Strategic.GetWarOpponentMilitary(snapshot);
     state.StrategicPlanBaselineMajorWars = snapshot.MajorWars;
+    state.StrategicPlanBaselineOpponents = Strategic.GetOpponentKey(snapshot);
     state.StrategicPlanBaselineCombatEvents = snapshot.MajorCombatEvents;
     state.StrategicPlanBaselineCaptureEvents = snapshot.MajorCaptureEvents;
     state.StrategicPlanBaselinePillageEvents = snapshot.MajorPillageEvents;
+end
+
+function Strategic.UpdatePlanReviewForChanges(state, snapshot, strength, turn, planChanged)
+    if planChanged then
+        Strategic.StartPlanReview(state, snapshot, strength, turn);
+    end
 end
 
 function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
@@ -4043,6 +4016,8 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     local minimumGain = GetNumberParameter("ASAI_PLAN_MIN_GAIN_X100", 2) / 100;
     local improved = state.StrategicPlanGain >= minimumGain;
     local strategicProgress = false;
+    local externalWarImprovement = false;
+    local stableWarOpponents = false;
     local foundedExpansion = foundedCityGain > 0 and captureEvents <= 0;
     local persistentSettler = state.StrategicPlanBaselineSettlers > 0
         and snapshot.Settlers > 0;
@@ -4074,25 +4049,11 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     elseif state.StrategicPlan == Strategic.PRESSURE then
         improved = improved or snapshot.ActiveMajorWars > 0 or cityGain > 0;
     elseif state.StrategicPlan == Strategic.WAR then
-        local minimumEnemyLoss = GetNumberParameter(
-            "ASAI_WAR_ENEMY_MILITARY_LOSS_X100",
-            12
-        ) / 100;
-        local minimumPillages = math.max(
-            1,
-            GetNumberParameter("ASAI_WAR_PILLAGE_PROGRESS_MIN", 2)
-        );
-        local stableWarSet = snapshot.MajorWars
-            == state.StrategicPlanBaselineMajorWars;
-        local favorableExchange = stableWarSet
-            and enemyLossRatio >= minimumEnemyLoss
-            and enemyLossRatio >= ownLossRatio;
-        strategicProgress = captureEvents > 0
-            or capturedGain > 0
-            or favorableExchange
-            or pillageEvents >= minimumPillages;
-        -- Generic score growth and combat activity do not prove that an
-        -- offensive war is advancing.
+        strategicProgress, externalWarImprovement, stableWarOpponents =
+            Strategic.AssessWarOutcome(
+                state, snapshot, cityGain, capturedGain, captureEvents,
+                pillageEvents, enemyLossRatio, ownLossRatio
+            );
         improved = strategicProgress;
     end
 
@@ -4107,7 +4068,7 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     end
 
     print(string.format(
-        "ASAI_PLAN_REVIEW turn=%d standard_turn=%.1f player=%d plan=%s result=%s execution=%d stall_count=%d gain=%.3f city_gain=%d founded_city_gain=%d capture_gain=%d settlers_baseline=%d settlers=%d settler_stall_count=%d settler_stalled=%d territory_gain=%d combat_unit_gain=%d combat_events=%d capture_events=%d pillage_events=%d own_military_change=%d enemy_military_change=%d enemy_loss_ratio=%.3f own_loss_ratio=%.3f strategic_progress=%d active_major_wars=%d major_wars=%d",
+        "ASAI_PLAN_REVIEW turn=%d standard_turn=%.1f player=%d plan=%s result=%s execution=%d stall_count=%d gain=%.3f city_gain=%d founded_city_gain=%d capture_gain=%d settlers_baseline=%d settlers=%d settler_stall_count=%d settler_stalled=%d territory_gain=%d combat_unit_gain=%d combat_events=%d capture_events=%d pillage_events=%d own_military_change=%d enemy_military_change=%d enemy_loss_ratio=%.3f own_loss_ratio=%.3f strategic_progress=%d active_major_wars=%d major_wars=%d external_enemy_decline=%d war_opponents_stable=%d",
         turn,
         GetStandardEquivalentTurn(turn),
         playerID,
@@ -4134,7 +4095,9 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         ownLossRatio,
         strategicProgress and 1 or 0,
         snapshot.ActiveMajorWars,
-        snapshot.MajorWars
+        snapshot.MajorWars,
+        externalWarImprovement and 1 or 0,
+        stableWarOpponents and 1 or 0
     ));
 
     local stallLimit = math.max(
@@ -4169,6 +4132,9 @@ function Strategic.GetPlanScores(state, snapshot, turn)
         + math.max(0, competitive.Overall - 1) * 30
         + math.max(0, upper.Overall - 0.9) * 20
         + (state.Band == RELATIVE_CONSOLIDATE and 15 or 0);
+    if state.Execution ~= nil and turn < state.Execution.StabilityUntil then
+        scores[Strategic.DEVELOP] = scores[Strategic.DEVELOP] + 40;
+    end
     scores[Strategic.RECOVER] = 25
         + knowledgeGap * 180
         + overallGap * 45
@@ -4238,6 +4204,7 @@ function Strategic.GetPlanScores(state, snapshot, turn)
         and turn < (state.StrategicPlanCooldownUntil[Strategic.WAR] or -1);
     scores[Strategic.WAR] = snapshot.ActiveMajorWars > 0
         and not warStopLoss
+        and not Execution.ShouldRearm(state, snapshot)
         and 1000 + militaryGap * 100 or 0;
 
     local currentPlan = state.StrategicPlan;
@@ -4260,6 +4227,9 @@ function Strategic.SelectPlan(state, snapshot, scores)
     local warStopLoss = snapshot.ActiveMajorWars > 0
         and snapshot.Turn
             < (state.StrategicPlanCooldownUntil[Strategic.WAR] or -1);
+    if Execution.ShouldRearm(state, snapshot) then
+        return Strategic.DEFEND, "war_rearm";
+    end
     if snapshot.ActiveMajorWars > 0 and not warStopLoss then
         return Strategic.WAR, "active_major_war";
     end
@@ -4394,6 +4364,16 @@ local function EvaluateRelativeState(playerID)
         initialized
     );
     local empireSnapshot = GetSnapshot(playerID);
+    local executionOk, executionStatus = pcall(
+        Execution.Update, playerID, state, empireSnapshot, strengthSnapshot, turn
+    );
+    if executionOk then
+        state.Execution = executionStatus;
+    elseif m_ConditionErrors.ASAI_ExecutionSnapshot == nil then
+        print("ASAI_ERROR condition=ASAI_ExecutionSnapshot fallback=baseline error="
+            .. tostring(executionStatus));
+        m_ConditionErrors.ASAI_ExecutionSnapshot = true;
+    end
     local plannedExpansion = (empireSnapshot.Settlers
         + empireSnapshot.InFlightSettlers > 0) and 1 or 0;
     state.MilitaryPlannedCities = strengthSnapshot.Cities + plannedExpansion;
@@ -4608,12 +4588,15 @@ local function EvaluateRelativeState(playerID)
             local resetPressureBaseline = 0;
             local resetWarBaseline = 0;
             local resetExpansionBaseline = 0;
+            local resetRecoveryBaseline = 0;
             local resetOutcomeBaseline = (state.StrategicPlan == Strategic.PRESSURE
                     and previousOutcomeSchema < 1)
                 or (state.StrategicPlan == Strategic.WAR
-                    and previousOutcomeSchema < 3)
+                    and previousOutcomeSchema < 5)
+                or (state.StrategicPlan == Strategic.RECOVER
+                    and previousOutcomeSchema < 5)
                 or (state.StrategicPlan == Strategic.EXPAND
-                    and previousOutcomeSchema < Strategic.OUTCOME_SCHEMA);
+                    and previousOutcomeSchema < 4);
             if resetOutcomeBaseline
                 and state.StrategicPlanStartedTurn >= 0 then
                 Strategic.ResetPlanReviewBaseline(
@@ -4630,13 +4613,15 @@ local function EvaluateRelativeState(playerID)
                     resetPressureBaseline = 1;
                 elseif state.StrategicPlan == Strategic.WAR then
                     resetWarBaseline = 1;
+                elseif state.StrategicPlan == Strategic.RECOVER then
+                    resetRecoveryBaseline = 1;
                 else
                     resetExpansionBaseline = 1;
                 end
             end
             state.StrategicPlanOutcomeSchema = Strategic.OUTCOME_SCHEMA;
             print(string.format(
-                "ASAI_PLAN_MIGRATION turn=%d standard_turn=%.1f player=%d plan=%s from_schema=%d to_schema=%d reset_pressure_baseline=%d reset_war_baseline=%d reset_expansion_baseline=%d",
+                "ASAI_PLAN_MIGRATION turn=%d standard_turn=%.1f player=%d plan=%s from_schema=%d to_schema=%d reset_pressure_baseline=%d reset_war_baseline=%d reset_expansion_baseline=%d reset_recovery_baseline=%d",
                 turn,
                 GetStandardEquivalentTurn(turn),
                 playerID,
@@ -4645,7 +4630,8 @@ local function EvaluateRelativeState(playerID)
                 state.StrategicPlanOutcomeSchema,
                 resetPressureBaseline,
                 resetWarBaseline,
-                resetExpansionBaseline
+                resetExpansionBaseline,
+                resetRecoveryBaseline
             ));
         end
 
@@ -4746,6 +4732,7 @@ local function EvaluateRelativeState(playerID)
             GetNumberParameter("ASAI_PLAN_MIN_DWELL_STANDARD", 12)
         );
         local forcedStrategicPlan = strategicPlanReason == "active_major_war"
+            or strategicPlanReason == "war_rearm"
             or strategicPlanReason == "military_emergency"
             or strategicPlanReason == "war_stop_loss_military_emergency"
             or strategicPlanReason == "expansion_era_closed"
@@ -4860,16 +4847,10 @@ local function EvaluateRelativeState(playerID)
         end
 
         Strategic.UpdateSupport(state);
-        if strategicPlanChanged then
-            Strategic.StartPlanReview(state, empireSnapshot, strengthSnapshot, turn);
-        elseif previousStrategicSupport ~= state.StrategicSupport then
-            Strategic.ResetPlanReviewBaseline(
-                state,
-                empireSnapshot,
-                strengthSnapshot,
-                turn
-            );
-        end
+        Strategic.UpdatePlanReviewForChanges(state, empireSnapshot,
+            strengthSnapshot, turn, strategicPlanChanged);
+        -- The focus has its own review window. Changing support must not
+        -- postpone the primary plan review or discard its combat evidence.
         state.LastEvaluationTurn = turn;
         state.EvaluatedThisTurn = true;
 
@@ -5224,7 +5205,8 @@ local function GetMilitaryExecutionStatus(playerID)
     local failedWarReview = state.StrategicPlan == Strategic.WAR
         and (state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_EXECUTING
             or state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_STALLED);
-    if (state.StrategicPlan ~= Strategic.DEFEND and not failedWarReview)
+    local emergency = Execution.GetStatus(playerID).Emergency;
+    if (state.StrategicPlan ~= Strategic.DEFEND and not failedWarReview and not emergency)
         or target <= 0 then
         return false, target;
     end
@@ -5344,7 +5326,10 @@ local function IsFocusExecutionRecovery(playerID, focus)
 end
 
 local function IsScienceExecutionRecovery(playerID, threshold)
-    return IsFocusExecutionRecovery(playerID, RELATIVE_FOCUS_SCIENCE);
+    local status = Execution.GetStatus(playerID);
+    return not status.Emergency and (status.ScienceStage == "infrastructure"
+        or (status.ScienceStage == "none"
+            and IsFocusExecutionRecovery(playerID, RELATIVE_FOCUS_SCIENCE)));
 end
 function ASAI_IsScienceExecutionRecovery(playerID, threshold)
     return RunStrategyCondition(
@@ -5920,12 +5905,10 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         PersistentIdle = -1,
         MaximumIdleStreak = -1
     };
-    local tradeRoutes, tradeRoutesOk = TryDiagnosticSensor(
-        "trade_routes",
-        function() return Diagnostics.CollectTradeRoutes(player); end,
-        true
-    );
-    tradeRoutes = tradeRoutes or {
+    -- Actual routes are independently sampled in ASAI_UI_TRADE. Never read
+    -- UI objects from Gameplay or let their availability affect AI decisions.
+    local tradeRoutesOk = 0;
+    local tradeRoutes = {
         Active = -1,
         Domestic = -1,
         International = -1,
@@ -5955,7 +5938,7 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
             human.ProductionPerCity
         ) or -1;
     print(string.format(
-        "ASAI_ECONOMY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d production=%.1f production_per_city=%.2f production_per_pop=%.2f production_ratio=%.3f production_per_city_ratio=%.3f district_used=%d district_completed=%d district_estimated_slots=%d district_util=%.3f district_slot_mode=population_formula route_capacity=%d route_coverage=%.3f route_pipeline=%.3f route_coverage_mode=trader_unit_proxy active_routes=%d actual_route_coverage=%.3f idle_traders=%d trader_links_ok=%d domestic_routes=%d international_routes=%d unknown_routes=%d route_gap=%d route_sensor_ok=%d improvement_coverage=%.3f improvement_pipeline=%.3f improved_land=%.3f production_ok=%d district_ok=%d",
+        "ASAI_ECONOMY turn=%d evaluated_turn=%d standard_turn=%.1f player=%d production=%.1f production_per_city=%.2f production_per_pop=%.2f production_ratio=%.3f production_per_city_ratio=%.3f district_used=%d district_completed=%d district_estimated_slots=%d district_util=%.3f district_slot_mode=population_formula route_capacity=%d route_coverage=%.3f route_pipeline=%.3f route_coverage_mode=trader_unit_proxy active_routes=%d actual_route_coverage=%.3f idle_traders=%d trader_links_ok=%d domestic_routes=%d international_routes=%d unknown_routes=%d route_gap=%d route_sensor_ok=%d improvement_coverage=%.3f improvement_pipeline=%.3f improved_land=%.3f production_ok=%d district_ok=%d actual_route_source=ASAI_UI_TRADE",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -6018,7 +6001,7 @@ local function WriteEconomicDiagnostics(playerID, firstTimeThisTurn)
         economic.UpgradeSupported
     ));
     print(string.format(
-        "ASAI_TRADE turn=%d evaluated_turn=%d standard_turn=%.1f player=%d capacity=%d capacity_target=%d capacity_gap=%d traders=%d traders_inflight=%d trader_pipeline_gap=%d active_routes=%d route_gap=%d idle_traders=%d trader_links_ok=%d domestic_routes=%d international_routes=%d unknown_routes=%d trader_recovery=%d capacity_recovery=%d route_sensor_ok=%d",
+        "ASAI_TRADE turn=%d evaluated_turn=%d standard_turn=%.1f player=%d capacity=%d capacity_target=%d capacity_gap=%d traders=%d traders_inflight=%d trader_pipeline_gap=%d active_routes=%d route_gap=%d idle_traders=%d trader_links_ok=%d domestic_routes=%d international_routes=%d unknown_routes=%d trader_recovery=%d capacity_recovery=%d route_sensor_ok=%d actual_route_source=ASAI_UI_TRADE",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -6079,14 +6062,10 @@ function Diagnostics.WriteCultureDiagnostics(playerID, firstTimeThisTurn)
         Projects = -1,
         Total = -1
     };
-    local greatPeople, greatPeopleOk = TryDiagnosticSensor(
-        "culture_great_people",
-        function() return Diagnostics.CollectCulturalGreatPeople(player); end,
-        true
-    );
-    greatPeople = greatPeople or { PerTurn = -1, Balance = -1 };
+    local greatPeopleOk = 0;
+    local greatPeople = { PerTurn = -1, Balance = -1 };
     print(string.format(
-        "ASAI_CULTURE turn=%d evaluated_turn=%d standard_turn=%.1f player=%d culture=%.1f civics=%d theaters=%d theaters_inflight=%d monuments=%d monuments_inflight=%d theater_buildings=%d theater_buildings_inflight=%d theater_projects_inflight=%d culture_queue_total=%d cultural_gpp_per_turn=%.1f cultural_gpp_balance=%.1f recovery_active=%d focus_active=%d support_active=%d focus_result=%s focus_execution=%d infrastructure_sensor_ok=%d queue_sensor_ok=%d gpp_sensor_ok=%d",
+        "ASAI_CULTURE turn=%d evaluated_turn=%d standard_turn=%.1f player=%d culture=%.1f civics=%d theaters=%d theaters_inflight=%d monuments=%d monuments_inflight=%d theater_buildings=%d theater_buildings_inflight=%d theater_projects_inflight=%d culture_queue_total=%d cultural_gpp_per_turn=%.1f cultural_gpp_balance=%.1f recovery_active=%d focus_active=%d support_active=%d focus_result=%s focus_execution=%d infrastructure_sensor_ok=%d queue_sensor_ok=%d gpp_sensor_ok=%d gpp_source=ASAI_UI_CULTURE",
         snapshot.Turn,
         relativeState.LastEvaluationTurn,
         GetStandardEquivalentTurn(snapshot.Turn),
@@ -6106,8 +6085,9 @@ function Diagnostics.WriteCultureDiagnostics(playerID, firstTimeThisTurn)
         relativeState.Recovery.Culture and 1 or 0,
         relativeState.Focus == RELATIVE_FOCUS_CULTURE and 1 or 0,
         relativeState.StrategicSupport == RELATIVE_FOCUS_CULTURE and 1 or 0,
-        GetFocusResultName(relativeState.FocusResult),
-        relativeState.FocusExecution,
+        GetFocusResultName(relativeState.Focus == RELATIVE_FOCUS_CULTURE
+            and relativeState.FocusResult or RELATIVE_FOCUS_RESULT_NONE),
+        relativeState.Focus == RELATIVE_FOCUS_CULTURE and relativeState.FocusExecution or 0,
         infrastructureOk,
         cultureQueueOk,
         greatPeopleOk
@@ -6316,6 +6296,13 @@ function ThreatResponse.WriteDiagnostics(playerID, firstTimeThisTurn)
 end
 
 local function LogMetrics(playerID, firstTimeThisTurn)
+    local executionSuccess, executionError = pcall(
+        Execution.WriteDiagnostics, playerID, firstTimeThisTurn);
+    if not executionSuccess and m_ConditionErrors.ASAI_LogExecution == nil then
+        print("ASAI_ERROR condition=ASAI_LogExecution fallback=skip error="
+            .. tostring(executionError));
+        m_ConditionErrors.ASAI_LogExecution = true;
+    end
     if firstTimeThisTurn and IsMajorAI(playerID) then
         local evaluationSuccess, evaluationError = pcall(EvaluateRelativeState, playerID);
         if not evaluationSuccess then
@@ -6487,6 +6474,501 @@ function Strategic.OnPillage(
         m_ConditionErrors.ASAI_RecordMajorPillage = true;
     end
 end
+function Execution.EmptyStatus(turn)
+    return {
+        Turn = turn, Emergency = false, RecentAttrition = false,
+        ThinArmy = false, RangedNeeded = false, SiegeNeeded = false,
+        ScienceStage = "none", ScienceGoal = "none", ScienceAge = 0,
+        TradeStage = "none", TradeAge = 0, StabilityUntil = -1,
+        ScienceQueueTarget = 0, TradeQueueTarget = 0,
+        RangedTarget = 0, SiegeTarget = 0, AssetsOk = 0,
+        BuildabilityOk = -1, StabilityOk = 0, LostFreeCities = 0
+    };
+end
+
+function Execution.GetDefinitions()
+    if Execution.Definitions ~= nil then return Execution.Definitions; end
+    local result = { ByType = {}, ByRole = {} };
+    local function add(info, kind, role)
+        if role == nil then return; end
+        local entry = { Info = info, Kind = kind, Role = role };
+        local typeName = info.BuildingType or info.DistrictType or info.UnitType;
+        result.ByType[typeName] = entry;
+        result.ByRole[role] = result.ByRole[role] or {};
+        table.insert(result.ByRole[role], entry);
+    end
+    for info in GameInfo.Buildings() do
+        local role = nil;
+        if IsBuildingRole(info.BuildingType, "BUILDING_LIBRARY") then
+            role = "library";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_UNIVERSITY") then
+            role = "university";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_RESEARCH_LAB") then
+            role = "laboratory";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_MARKET")
+            or IsBuildingRole(info.BuildingType, "BUILDING_LIGHTHOUSE") then
+            role = "trade_building";
+        end
+        add(info, "building", role);
+    end
+    for info in GameInfo.Districts() do
+        local role = nil;
+        if IsDistrictRole(info.DistrictType, "DISTRICT_CAMPUS") then
+            role = "campus";
+        elseif IsDistrictRole(info.DistrictType, "DISTRICT_COMMERCIAL_HUB")
+            or IsDistrictRole(info.DistrictType, "DISTRICT_HARBOR") then
+            role = "trade_district";
+        elseif IsDistrictRole(info.DistrictType, "DISTRICT_SPACEPORT") then
+            role = "spaceport";
+        end
+        add(info, "district", role);
+    end
+    for info in GameInfo.Units() do
+        local role = nil;
+        if GetUnitBaseStrength(info) > 0 then
+            if info.PromotionClass == "PROMOTION_CLASS_RANGED" then
+                role = "ranged";
+            elseif info.PromotionClass == "PROMOTION_CLASS_SIEGE"
+                and (tonumber(info.Bombard) or 0) > 0 then
+                role = "siege";
+            end
+        end
+        add(info, "unit", role);
+    end
+    Execution.Definitions = result;
+    return result;
+end
+
+function Execution.CollectAssets(player)
+    local definitions = Execution.GetDefinitions();
+    local result = {
+        Counts = {}, Queued = {}, Cities = {}, CityPlots = {},
+        Probes = {}, BuildabilityOk = -1
+    };
+    for role in pairs(definitions.ByRole) do
+        result.Counts[role], result.Queued[role] = 0, 0;
+    end
+    for _, city in player:GetCities():Members() do
+        local row = { City = city, TradeBuildings = 0 };
+        local buildings = city:GetBuildings();
+        for _, role in ipairs({ "library", "university", "laboratory", "trade_building" }) do
+            for _, entry in ipairs(definitions.ByRole[role] or {}) do
+                if buildings:HasBuilding(entry.Info.Index) then
+                    result.Counts[role] = result.Counts[role] + 1;
+                    if role == "trade_building" then
+                        row.TradeBuildings = row.TradeBuildings + 1;
+                    end
+                end
+            end
+        end
+        local current = GetCurrentProductionType(city);
+        local entry = current ~= nil and definitions.ByType[current] or nil;
+        if entry ~= nil then
+            result.Queued[entry.Role] = result.Queued[entry.Role] + 1;
+        end
+        local plot = Map.GetPlot(city:GetX(), city:GetY());
+        if plot ~= nil then table.insert(result.CityPlots, plot:GetIndex()); end
+        table.insert(result.Cities, row);
+    end
+    for _, district in player:GetDistricts():Members() do
+        local info = GameInfo.Districts[district:GetType()];
+        local entry = info ~= nil and definitions.ByType[info.DistrictType] or nil;
+        if entry ~= nil and district:IsComplete() then
+            result.Counts[entry.Role] = result.Counts[entry.Role] + 1;
+        end
+    end
+    table.sort(result.CityPlots);
+    return result;
+end
+
+function Execution.CanBuild(assets, role)
+    if assets.Probes[role] ~= nil then return assets.Probes[role]; end
+    for _, row in ipairs(assets.Cities) do
+        -- Market + Lighthouse normally provide one capacity per city. Do not
+        -- count another building in an already-served city as extra capacity.
+        if role ~= "trade_building" or row.TradeBuildings == 0 then
+            local queue = row.City:GetBuildQueue();
+            if queue == nil or queue.CanProduce == nil then
+                assets.BuildabilityOk = 0;
+                assets.Probes[role] = false;
+                return false;
+            end
+            for _, entry in ipairs(Execution.GetDefinitions().ByRole[role] or {}) do
+                local success, allowed = pcall(queue.CanProduce, queue,
+                    entry.Info.Hash, false);
+                if not success or type(allowed) ~= "boolean" then
+                    assets.BuildabilityOk = 0;
+                    assets.Probes[role] = false;
+                    return false;
+                end
+                if assets.BuildabilityOk ~= 0 then assets.BuildabilityOk = 1; end
+                if allowed then
+                    assets.Probes[role] = true;
+                    return true;
+                end
+            end
+        end
+    end
+    assets.Probes[role] = false;
+    return false;
+end
+
+function Execution.HasTech(player, typeName)
+    local info = GameInfo.Technologies[typeName];
+    return info ~= nil and player:GetTechs():HasTech(info.Index);
+end
+
+function Execution.UpdateTimer(player, property, active, turn, reset)
+    local since = GetStoredNumber(player, property, -1);
+    if not active then
+        since = -1;
+    elseif since < 0 or since > turn or reset then
+        since = turn;
+    end
+    player:SetProperty(property, since);
+    return since >= 0 and math.max(0, turn - since) or 0;
+end
+
+function Execution.HasScienceDeficit(state, wasActive)
+    local ratios = state.RawRatios or {};
+    -- Completed knowledge protects Eureka-based civilizations from a
+    -- per-turn-yield-only rubber band. No civilization name is hard-coded.
+    local progressRatio = ratios.Techs or 1;
+    local score = (state.CompetitiveScores or state.RawScores).Science;
+    local threshold = wasActive and 0.96 or 0.88;
+    return progressRatio < (wasActive and 1.0 or 0.98) and score < threshold;
+end
+
+function Execution.SelectScienceGoal(hasTech, counts, era, cities)
+    if (counts.spaceport or 0) > 0 then return "none", "space_race"; end
+    if not hasTech("TECH_WRITING") then return "writing", "campus"; end
+    if (counts.campus or 0) <= 0 then return "infrastructure", "campus"; end
+    local classical = GameInfo.Eras["ERA_CLASSICAL"];
+    if not hasTech("TECH_EDUCATION") and classical ~= nil and era >= classical.Index then
+        return "education", "university";
+    end
+    local campusGoal = math.max(1, math.ceil(cities * 0.60));
+    local buildingGoal = math.max(1, math.ceil(counts.campus * 0.65));
+    if (counts.library or 0) < buildingGoal then return "infrastructure", "library"; end
+    if hasTech("TECH_EDUCATION") and (counts.university or 0) < buildingGoal then
+        return "infrastructure", "university";
+    end
+    if counts.campus < campusGoal then return "infrastructure", "campus"; end
+    local industrial = GameInfo.Eras["ERA_INDUSTRIAL"];
+    if industrial ~= nil and era >= industrial.Index then
+        if not hasTech("TECH_CHEMISTRY") then return "laboratory_tech", "laboratory"; end
+        if (counts.laboratory or 0) < buildingGoal then return "infrastructure", "laboratory"; end
+    end
+    return "none", "covered";
+end
+
+function Execution.MilitarySignals(snapshot, strength, queue, recentAttrition)
+    local active = snapshot.ActiveMajorWars > 0 and snapshot.Cities > 0;
+    local density = strength.CombatUnits / math.max(1, snapshot.Cities);
+    local thin = active and density < GetNumberParameter(
+        "ASAI_WAR_SURVIVAL_UNITS_PER_CITY_X100", 85) / 100;
+    local sufficient = strength.CombatUnits + math.max(0, queue.Combat or 0)
+        >= math.ceil(snapshot.Cities * GetNumberParameter(
+            "ASAI_WAR_REINFORCED_UNITS_PER_CITY_X100", 125) / 100);
+    local rangedTarget = active and math.min(3, math.max(1,
+        math.ceil(snapshot.Cities / 6))) or 0;
+    local siegeTarget = active and strength.CombatUnits >= 4
+        and math.min(2, math.max(1, math.ceil(snapshot.Cities / 8))) or 0;
+    local emergency = active and (thin or recentAttrition) and not sufficient;
+    return {
+        Emergency = emergency, ThinArmy = thin, RecentAttrition = recentAttrition,
+        Density = density,
+        RangedTarget = rangedTarget, SiegeTarget = siegeTarget,
+        RangedNeeded = active
+            and strength.RangedUnits + math.max(0, queue.Ranged or 0) < rangedTarget,
+        SiegeNeeded = active and not emergency and siegeTarget > 0
+            and strength.SiegeUnits + math.max(0, queue.Siege or 0) < siegeTarget
+    };
+end
+
+function Execution.ShouldRearm(state, snapshot)
+    local status = state.Execution;
+    if status == nil or snapshot.ActiveMajorWars <= 0 then return false; end
+    local previousStopLoss = (state.StrategicPlanCooldownUntil[Strategic.WAR] or -1) >= 0;
+    return status.Emergency or status.ThinArmy
+        or (previousStopLoss and (status.Density or 0) < 1.0);
+end
+
+function Execution.IsFreeCityPlayer(ownerID)
+    local owner = Players[ownerID];
+    if owner ~= nil and owner.IsFreeCities ~= nil then
+        return owner:IsFreeCities();
+    end
+    local config = PlayerConfigurations ~= nil and PlayerConfigurations[ownerID] or nil;
+    return config ~= nil and config.GetCivilizationTypeName ~= nil
+        and config:GetCivilizationTypeName() == "CIVILIZATION_FREE_CITIES";
+end
+
+function Execution.UpdateStability(player, assets, turn)
+    local untilTurn = GetStoredNumber(player, "ASAI_EXEC_STABILITY_UNTIL", -1);
+    local storedPlots = player:GetProperty("ASAI_EXEC_CITY_PLOTS");
+    local previous = tostring(storedPlots or "");
+    local current = {};
+    for _, index in ipairs(assets.CityPlots) do current[index] = true; end
+    local losses = 0;
+    for text in string.gmatch(previous, "%d+") do
+        local index = tonumber(text);
+        if not current[index] then
+            local plot = Map.GetPlotByIndex(index);
+            local ownerID = plot ~= nil and plot:GetOwner() or -1;
+            if Execution.IsFreeCityPlayer(ownerID) and plot:IsCity() then losses = losses + 1; end
+        end
+    end
+    -- One bounded old-save audit: existing free cities founded by this AI are
+    -- evidence of unresolved instability, not proof that they flipped now.
+    local seeded = 0;
+    if storedPlots == nil then
+        for _, ownerID in ipairs(PlayerManager.GetAliveIDs()) do
+            if Execution.IsFreeCityPlayer(ownerID) then
+                for _, city in Players[ownerID]:GetCities():Members() do
+                    if city:GetOriginalOwner() == player:GetID() then seeded = seeded + 1; end
+                end
+            end
+        end
+    end
+    if losses > 0 or seeded > 0 then
+        untilTurn = math.max(untilTurn, turn + ScaleStandardTurns(
+            GetNumberParameter("ASAI_LOYALTY_STABILIZE_STANDARD", 16)));
+        print(string.format(
+            "ASAI_STABILITY turn=%d player=%d free_city_losses=%d existing_free_cities=%d blocked_until=%d",
+            turn, player:GetID(), losses, seeded, untilTurn));
+    end
+    player:SetProperty("ASAI_EXEC_CITY_PLOTS", table.concat(assets.CityPlots, ","));
+    player:SetProperty("ASAI_EXEC_STABILITY_UNTIL", untilTurn);
+    return untilTurn, losses;
+end
+
+function Execution.Update(playerID, state, snapshot, strength, turn)
+    local cached = Execution.Cache[playerID];
+    if cached ~= nil and cached.Turn == turn then return cached; end
+    local player = Players[playerID];
+    local result = Execution.EmptyStatus(turn);
+    local previousTurn = GetStoredNumber(player, "ASAI_EXEC_SAMPLE_TURN", -1);
+    local previousUnits = GetStoredNumber(player, "ASAI_EXEC_COMBAT_UNITS", strength.CombatUnits);
+    local previousMilitary = GetStoredNumber(player, "ASAI_EXEC_MILITARY", strength.Military);
+    local attritionUntil = GetStoredNumber(player, "ASAI_EXEC_ATTRITION_UNTIL", -1);
+    local lossWindow = ScaleStandardTurns(GetNumberParameter(
+        "ASAI_WAR_ATTRITION_WINDOW_STANDARD", 8));
+    if snapshot.ActiveMajorWars > 0 and previousTurn >= 0
+        and turn > previousTurn and turn - previousTurn <= lossWindow then
+        local lostUnits = previousUnits - strength.CombatUnits;
+        local lostStrength = previousMilitary > 0
+            and (previousMilitary - strength.Military) / previousMilitary or 0;
+        if lostUnits >= 2 or (lostUnits > 0 and lostStrength >= 0.20) then
+            attritionUntil = math.max(attritionUntil, turn + lossWindow);
+        end
+    end
+    if snapshot.MajorWars <= 0 then attritionUntil = -1; end
+    local economic = GetEconomicSnapshot(playerID);
+    local military = Execution.MilitarySignals(snapshot, strength,
+        economic.Queue, turn < attritionUntil);
+    for key, value in pairs(military) do result[key] = value; end
+
+    local assetSuccess, assets = pcall(Execution.CollectAssets, player);
+    if assetSuccess then
+        result.AssetsOk = 1;
+        local spaceRace = (assets.Counts.spaceport or 0)
+            + (assets.Queued.spaceport or 0) > 0;
+        local stabilityOk, untilTurn, losses = pcall(
+            Execution.UpdateStability, player, assets, turn);
+        if stabilityOk then
+            result.StabilityUntil, result.LostFreeCities = untilTurn, losses;
+            result.StabilityOk = 1;
+        else
+            result.StabilityUntil = GetStoredNumber(player, "ASAI_EXEC_STABILITY_UNTIL", -1);
+            if m_ConditionErrors.ASAI_Stability == nil then
+                print("ASAI_DIAGNOSTIC_ERROR sensor=stability fallback=previous error=" .. tostring(untilTurn));
+                m_ConditionErrors.ASAI_Stability = true;
+            end
+        end
+        local scienceSince = GetStoredNumber(player, "ASAI_EXEC_SCIENCE_SINCE", -1);
+        local scienceDeficit = snapshot.Cities >= 2
+            and Execution.HasScienceDeficit(state, scienceSince >= 0);
+        result.ScienceAge = Execution.UpdateTimer(player,
+            "ASAI_EXEC_SCIENCE_SINCE", scienceDeficit, turn, false);
+        result.ScienceQueueTarget = math.max(1, math.ceil(snapshot.Cities * 0.25));
+        if scienceDeficit and result.ScienceAge >= ScaleStandardTurns(
+                GetNumberParameter("ASAI_SCIENCE_BOTTLENECK_DELAY_STANDARD", 8))
+            and not result.Emergency and not spaceRace then
+            result.ScienceStage, result.ScienceGoal = Execution.SelectScienceGoal(
+                function(name) return Execution.HasTech(player, name); end,
+                assets.Counts, snapshot.Era, snapshot.Cities);
+            if result.ScienceStage == "infrastructure" then
+                if economic.QueueOk ~= 1 then
+                    result.ScienceStage = "unknown";
+                elseif economic.Queue.Science >= result.ScienceQueueTarget then
+                    result.ScienceStage = "inflight";
+                elseif not Execution.CanBuild(assets, result.ScienceGoal) then
+                    result.ScienceStage = "blocked";
+                end
+            end
+        end
+        local previousCapacity = GetStoredNumber(player,
+            "ASAI_EXEC_TRADE_CAPACITY", snapshot.RouteCapacity);
+        local capacityGap = math.max(0, GetTradeCapacityTarget(snapshot) - snapshot.RouteCapacity);
+        result.TradeAge = Execution.UpdateTimer(player, "ASAI_EXEC_TRADE_SINCE",
+            capacityGap > 0, turn, snapshot.RouteCapacity > previousCapacity);
+        result.TradeQueueTarget = math.min(2, capacityGap);
+        if capacityGap > 0 and not result.Emergency
+            and not spaceRace
+            and result.TradeAge >= ScaleStandardTurns(GetNumberParameter(
+                "ASAI_TRADE_EXECUTION_DELAY_STANDARD", 12)) then
+            local queuedBuildings = assets.Queued.trade_building or 0;
+            local queuedDistricts = assets.Queued.trade_district or 0;
+            if queuedBuildings >= result.TradeQueueTarget then
+                result.TradeStage = "inflight";
+            elseif Execution.CanBuild(assets, "trade_building") then
+                result.TradeStage = "building";
+            elseif queuedBuildings + queuedDistricts >= result.TradeQueueTarget then
+                result.TradeStage = "inflight";
+            elseif Execution.CanBuild(assets, "trade_district") then
+                result.TradeStage = "district";
+            elseif not Execution.HasTech(player, "TECH_CURRENCY") then
+                result.TradeStage = "research";
+            else
+                result.TradeStage = "blocked";
+            end
+        end
+        if spaceRace then
+            result.ScienceGoal = "space_race";
+            result.TradeStage = "space_race";
+        end
+        -- Real siege combat roles, not the broad UNITTYPE_SIEGE_ALL tag.
+        result.RangedNeeded = result.RangedNeeded
+            and economic.QueueOk == 1 and Execution.CanBuild(assets, "ranged");
+        result.SiegeNeeded = result.SiegeNeeded
+            and economic.QueueOk == 1 and Execution.CanBuild(assets, "siege");
+        result.BuildabilityOk = assets.BuildabilityOk;
+        player:SetProperty("ASAI_EXEC_TRADE_CAPACITY", snapshot.RouteCapacity);
+    else
+        result.RangedNeeded, result.SiegeNeeded = false, false;
+        result.StabilityUntil = GetStoredNumber(player, "ASAI_EXEC_STABILITY_UNTIL", -1);
+        if m_ConditionErrors.ASAI_ExecutionAssets == nil then
+            print("ASAI_DIAGNOSTIC_ERROR sensor=execution_assets fallback=baseline error="
+                .. tostring(assets));
+            m_ConditionErrors.ASAI_ExecutionAssets = true;
+        end
+    end
+    player:SetProperty("ASAI_EXEC_SAMPLE_TURN", turn);
+    player:SetProperty("ASAI_EXEC_COMBAT_UNITS", strength.CombatUnits);
+    player:SetProperty("ASAI_EXEC_MILITARY", strength.Military);
+    player:SetProperty("ASAI_EXEC_ATTRITION_UNTIL", attritionUntil);
+    Execution.Cache[playerID] = result;
+    return result;
+end
+
+function Execution.GetStatus(playerID)
+    if not IsMajorAI(playerID)
+        or GetNumberParameter("ASAI_RELATIVE_PACING_ENABLED", 1) ~= 1 then
+        return Execution.EmptyStatus(Game.GetCurrentGameTurn());
+    end
+    local state = GetRelativeState(playerID);
+    local turn = Game.GetCurrentGameTurn();
+    if turn < ScaleStandardTurns(GetNumberParameter(
+            "ASAI_RELATIVE_START_TURN_STANDARD", 35)) then
+        return Execution.EmptyStatus(turn);
+    end
+    if state.Execution == nil then
+        state.Execution = Execution.Update(playerID, state, GetSnapshot(playerID),
+            GetStrengthSnapshot(playerID), turn);
+    end
+    return state.Execution;
+end
+
+function Execution.TraceCondition(name, playerID, result)
+    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 or not IsMajorAI(playerID) then return; end
+    if not string.find(name, "Execution") and not string.find(name, "Prerequisite")
+        and not string.find(name, "Reinforcement") then return; end
+    local turn = Game.GetCurrentGameTurn();
+    local key = name .. ":" .. tostring(playerID);
+    local last = Execution.ConditionChecks[key];
+    if last ~= nil and last.Turn == turn and last.Result == result then return; end
+    Execution.ConditionChecks[key] = { Turn = turn, Result = result };
+    print(string.format(
+        "ASAI_CONDITION turn=%d player=%d condition=%s result=%d source=registered_callback engine_active=unknown",
+        turn, playerID, name, result and 1 or 0));
+end
+
+function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
+    if not firstTimeThisTurn or not IsMajorAI(playerID)
+        or GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 then return; end
+    local state = GetRelativeState(playerID);
+    if not state.EvaluatedThisTurn then return; end
+    local result = Execution.GetStatus(playerID);
+    print(string.format(
+        "ASAI_EXECUTION turn=%d player=%d science_stage=%s science_goal=%s science_age=%d science_queue_target=%d trade_stage=%s trade_age=%d trade_queue_target=%d recent_attrition=%d thin_army=%d military_emergency=%d ranged_needed=%d ranged_target=%d siege_needed=%d siege_target=%d stability_until=%d assets_ok=%d build_sensor_ok=%d stability_sensor_ok=%d",
+        result.Turn, playerID, result.ScienceStage, result.ScienceGoal,
+        result.ScienceAge, result.ScienceQueueTarget, result.TradeStage,
+        result.TradeAge, result.TradeQueueTarget, result.RecentAttrition and 1 or 0,
+        result.ThinArmy and 1 or 0, result.Emergency and 1 or 0,
+        result.RangedNeeded and 1 or 0, result.RangedTarget,
+        result.SiegeNeeded and 1 or 0, result.SiegeTarget, result.StabilityUntil,
+        result.AssetsOk, result.BuildabilityOk, result.StabilityOk));
+end
+
+function Execution.IsWriting(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.ScienceStage == "writing"
+        or (status.ScienceStage == "infrastructure"
+            and (status.ScienceGoal == "campus" or status.ScienceGoal == "library"));
+end
+function Execution.IsEducation(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.ScienceStage == "education"
+        or (status.ScienceStage == "infrastructure" and status.ScienceGoal == "university");
+end
+function Execution.IsLaboratory(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.ScienceStage == "laboratory_tech"
+        or (status.ScienceStage == "infrastructure" and status.ScienceGoal == "laboratory");
+end
+function Execution.IsRanged(playerID)
+    return Execution.GetStatus(playerID).RangedNeeded;
+end
+function Execution.IsSiege(playerID)
+    return Execution.GetStatus(playerID).SiegeNeeded;
+end
+function Execution.IsTradeDistrict(playerID)
+    local stage = Execution.GetStatus(playerID).TradeStage;
+    return stage == "district" or stage == "research";
+end
+function Execution.IsTradeBuilding(playerID)
+    return Execution.GetStatus(playerID).TradeStage == "building";
+end
+function ASAI_IsWritingPrerequisite(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsWritingPrerequisite", Execution.IsWriting, playerID, threshold);
+end
+function ASAI_IsEducationPrerequisite(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsEducationPrerequisite", Execution.IsEducation, playerID, threshold);
+end
+function ASAI_IsLaboratoryPrerequisite(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsLaboratoryPrerequisite", Execution.IsLaboratory, playerID, threshold);
+end
+function ASAI_IsRangedReinforcement(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsRangedReinforcement", Execution.IsRanged, playerID, threshold);
+end
+function ASAI_IsSiegeReinforcement(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsSiegeReinforcement", Execution.IsSiege, playerID, threshold);
+end
+function ASAI_IsTradeDistrictExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsTradeDistrictExecution", Execution.IsTradeDistrict, playerID, threshold);
+end
+function ASAI_IsTradeBuildingExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsTradeBuildingExecution", Execution.IsTradeBuilding, playerID, threshold);
+end
+GameEvents.ASAI_IsWritingPrerequisite.Add(ASAI_IsWritingPrerequisite);
+GameEvents.ASAI_IsEducationPrerequisite.Add(ASAI_IsEducationPrerequisite);
+GameEvents.ASAI_IsLaboratoryPrerequisite.Add(ASAI_IsLaboratoryPrerequisite);
+GameEvents.ASAI_IsRangedReinforcement.Add(ASAI_IsRangedReinforcement);
+GameEvents.ASAI_IsSiegeReinforcement.Add(ASAI_IsSiegeReinforcement);
+GameEvents.ASAI_IsTradeDistrictExecution.Add(ASAI_IsTradeDistrictExecution);
+GameEvents.ASAI_IsTradeBuildingExecution.Add(ASAI_IsTradeBuildingExecution);
+
 Events.PlayerTurnActivated.Add(LogMetrics);
 Events.UnitDamageChanged.Add(OnUnitDamageChanged);
 Events.DistrictDamageChanged.Add(ThreatResponse.OnDistrictDamageChanged);
