@@ -4,7 +4,7 @@
 
 A Civilization VI: Gathering Storm AI overhaul built to keep Deity games competitive from the opening to the victory screen.
 
-**Version 0.11.11** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
+**Version 0.11.12** | **Gathering Storm required** | **Designed for Deity** | **New game recommended**
 
 Vanilla Deity concentrates much of its challenge in the opening and often loses pressure later. Adaptive Strategic AI replaces part of that early spike with a smoother era-scaled curve, then helps every major AI turn its economy, military, and victory plans into useful results.
 
@@ -14,12 +14,14 @@ Vanilla Deity concentrates much of its challenge in the opening and often loses 
 
 - **A competitive full game.** Deity remains dangerous early, while its economic, combat, and experience bonuses grow with the world era to preserve later pressure.
 - **Independent adaptive plans.** Every major AI evaluates itself against the human player, the wider field, and its own recent trend. Development, recovery, expansion, defense, pressure, and war plans can change as the situation changes.
-- **Stronger expansion and economy.** Research recovery links prerequisite technologies to useful science buildings; stalled trade capacity gets staged infrastructure priorities. Relative expansion becomes selective in the Industrial Era and ends in the Modern Era. Idle Settlers and cities lost to Free Cities trigger bounded expansion pauses.
-- **More credible military behavior.** Attrition, actual army size, ranged and siege roles, and units already in production guide reinforcement. War reviews use held captures and pillaging rather than global enemy losses; changing a support focus does not restart the main review. Unproductive offensives can fall back to defense, while confirmed air or Giant Death Robot attacks trigger focused counter-production.
-- **Better victory conversion.** Science, culture, domination, religion, and diplomacy receive distinct priorities. Persistent project milestones guide the next space project, the randomized Future Era route, and a capped number of parallel Spaceports. After the exoplanet launch, laser stations receive urgent priority over ordinary city projects; an active defense emergency can suspend the sequence.
+- **Stronger expansion and economy.** Research recovery connects prerequisites to science buildings. Trade recovery distinguishes missing capacity from missing Traders, with separate production budgets. Relative expansion becomes selective in the Industrial Era and ends in the Modern Era; idle Settlers and cities lost to Free Cities trigger bounded pauses.
+- **More credible military behavior.** Reinforcement considers fielded land forces, ranged and siege gaps, and existing queues. Persistent defense failures increase land-unit priority without indefinitely blocking economic recovery. Reviews distinguish partial recovery from restored safety, and held captures or effective pillaging from global enemy losses.
+- **Better victory conversion.** Victory priorities can change with the situation. Science execution now covers Rocketry, the first Spaceport and satellite, then subsequent milestones, Future Era research and urgent laser projects. Pre-satellite Spaceport priorities consider empire size and productive cores; acute defensive combat can interrupt the sequence.
 - **Bounded recovery, not constant parity.** Targeted decision support handles isolated weaknesses. Reversible yield support is reserved for broad or severe collapse and never penalizes a matched or leading AI.
 
 The mod does **not** spawn units or grant technologies, civics, resources, cities, or stored progress.
+
+Production budgets control additional priorities, not hard unit or district limits. The native AI still chooses legal locations and production orders, and its strategy refresh can lag behind the mod's conditions.
 
 ## Adaptive Support
 

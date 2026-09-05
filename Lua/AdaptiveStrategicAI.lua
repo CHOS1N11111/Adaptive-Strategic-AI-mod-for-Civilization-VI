@@ -120,6 +120,7 @@ local Strategic = {
     BASELINE_ACTIVE_WARS_PROPERTY =
         "ASAI_STRATEGIC_PLAN_BASELINE_ACTIVE_MAJOR_WARS",
     BASELINE_COMBAT_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_COMBAT",
+    BASELINE_LAND_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_LAND",
     BASELINE_OWNED_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_OWNED",
     BASELINE_MILITARY_PROPERTY = "ASAI_STRATEGIC_PLAN_BASELINE_MILITARY",
     BASELINE_ENEMY_MILITARY_PROPERTY =
@@ -138,7 +139,7 @@ local Strategic = {
     STALL_COUNT_PROPERTY = "ASAI_STRATEGIC_PLAN_STALL_COUNT",
     SCORE_PROPERTY = "ASAI_STRATEGIC_PLAN_SCORE_X100",
     SUPPORT_PROPERTY = "ASAI_STRATEGIC_SUPPORT",
-    OUTCOME_SCHEMA = 5,
+    OUTCOME_SCHEMA = 6,
     OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA",
     MAJOR_COMBAT_EVENTS_PROPERTY = "ASAI_MAJOR_COMBAT_EVENTS",
     MAJOR_CAPTURE_EVENTS_PROPERTY = "ASAI_MAJOR_CAPTURE_EVENTS",
@@ -1815,15 +1816,17 @@ function ScienceExecution.GetCompletedSpaceports(player)
         error("Player:GetDistricts() is unavailable");
     end
     local completed = 0;
+    local usable = 0;
     for _, district in districts:Members() do
         local districtInfo = GameInfo.Districts[district:GetType()];
         if districtInfo ~= nil
             and districtInfo.DistrictType == "DISTRICT_SPACEPORT"
             and district:IsComplete() then
             completed = completed + 1;
+            if not district:IsPillaged() then usable = usable + 1; end
         end
     end
-    return completed;
+    return completed, usable;
 end
 
 function ScienceExecution.GetQueueState(player)
@@ -1862,51 +1865,10 @@ function ScienceExecution.GetQueueState(player)
 end
 
 function ScienceExecution.GetLegacyAvailableStage(player)
-    local candidates = {
-        {
-            Project = ScienceExecution.PROJECTS.OrbitalLaser,
-            Stage = ScienceExecution.EXOPLANET
-        },
-        {
-            Project = ScienceExecution.PROJECTS.TerrestrialLaser,
-            Stage = ScienceExecution.EXOPLANET
-        },
-        {
-            Project = ScienceExecution.PROJECTS.Exoplanet,
-            Stage = ScienceExecution.MARS
-        },
-        {
-            Project = ScienceExecution.PROJECTS.Mars,
-            Stage = ScienceExecution.MOON
-        },
-        {
-            Project = ScienceExecution.PROJECTS.Moon,
-            Stage = ScienceExecution.SATELLITE
-        }
-    };
-    for _, city in player:GetCities():Members() do
-        local buildQueue = city:GetBuildQueue();
-        if buildQueue ~= nil and buildQueue.CanProduce ~= nil then
-            for _, candidate in ipairs(candidates) do
-                local projectInfo = GameInfo.Projects[candidate.Project];
-                if projectInfo ~= nil and projectInfo.Hash ~= nil then
-                    local success, canProduce = pcall(
-                        buildQueue.CanProduce,
-                        buildQueue,
-                        projectInfo.Hash,
-                        true
-                    );
-                    if not success then
-                        return ScienceExecution.NONE, 0;
-                    end
-                    if canProduce then
-                        return candidate.Stage, 1;
-                    end
-                end
-            end
-        end
-    end
-    return ScienceExecution.NONE, 1;
+    -- Visibility is not proof of a completed milestone. Old saves use
+    -- persisted counts and an actual successor project in queue; otherwise
+    -- the missing history stays unknown instead of fabricating progress.
+    return ScienceExecution.NONE, 0;
 end
 
 function ScienceExecution.CountFrontierTechs(player)
@@ -1968,6 +1930,32 @@ function ScienceExecution.GetSpaceportTarget(stage, cities)
     return math.min(cities, cap, math.max(2, math.floor(cities / 4)));
 end
 
+function ScienceExecution.PreparationBudget(cities, production, cost)
+    table.sort(production, function(a, b) return a > b; end);
+    local horizon = ScaleStandardTurns(GetNumberParameter(
+        "ASAI_SCIENCE_FIRST_PORT_HORIZON_STANDARD", 24));
+    -- A second pre-satellite port requires two sufficiently productive cores.
+    return cities >= 10 and #production >= 2 and cost > 0
+        and production[2] * horizon >= cost and 2 or math.min(1, cities);
+end
+
+function ScienceExecution.GetPreparationBudget(player, cities)
+    local production = {};
+    for _, city in player:GetCities():Members() do
+        table.insert(production, city:GetYield(GameInfo.Yields["YIELD_PRODUCTION"].Index));
+    end
+    local speed = GameInfo.GameSpeeds[GameConfiguration.GetGameSpeedType()];
+    local multiplier = speed ~= nil and tonumber(speed.CostMultiplier) or 100;
+    if multiplier <= 0 then multiplier = 100; end
+    local info = GameInfo.Districts["DISTRICT_SPACEPORT"];
+    return ScienceExecution.PreparationBudget(cities, production,
+        (info ~= nil and tonumber(info.Cost) or 1800) * multiplier / 100);
+end
+
+function ScienceExecution.IsPreparing(stage, rocketry, cities, enabled)
+    return stage == ScienceExecution.NONE and rocketry and cities > 0 and enabled;
+end
+
 function ScienceExecution.Collect(playerID)
     if not IsMajorAI(playerID) then
         return {
@@ -1975,6 +1963,8 @@ function ScienceExecution.Collect(playerID)
             Plan = Strategic.DEVELOP,
             Stage = ScienceExecution.NONE,
             Active = false,
+            Preparing = false,
+            PreparationAge = 0,
             Suspended = false,
             LastProgressTurn = -1,
             ProgressAge = 0,
@@ -1984,6 +1974,7 @@ function ScienceExecution.Collect(playerID)
             Exoplanet = 0,
             Lasers = 0,
             Spaceports = 0,
+            UsableSpaceports = 0,
             SpaceportsInFlight = 0,
             SpaceportTarget = 0,
             ActiveProjects = 0,
@@ -2102,8 +2093,15 @@ function ScienceExecution.Collect(playerID)
         lastProgressTurn = turn;
     end
 
-    local spaceports = ScienceExecution.GetCompletedSpaceports(player);
+    local spaceports, usableSpaceports = ScienceExecution.GetCompletedSpaceports(player);
     local spaceportTarget = ScienceExecution.GetSpaceportTarget(stage, snapshot.Cities);
+    local victoryEnabled = Game.IsVictoryEnabled == nil
+        or Game.IsVictoryEnabled("VICTORY_TECHNOLOGY");
+    local preparing = ScienceExecution.IsPreparing(stage,
+        Execution.HasTech(player, "TECH_ROCKETRY"), snapshot.Cities, victoryEnabled);
+    local preparationAge = Execution.UpdateTimer(player, "ASAI_SCIENCE_PREPARATION_SINCE",
+        preparing, turn, false);
+    if preparing then spaceportTarget = ScienceExecution.GetPreparationBudget(player, snapshot.Cities); end
     local defenseWindow = ScaleStandardTurns(GetNumberParameter(
         "ASAI_SCIENCE_DEFENSE_COMBAT_STANDARD",
         8
@@ -2115,11 +2113,11 @@ function ScienceExecution.Collect(playerID)
         and GetNumberParameter("ASAI_SCIENCE_MARS_TIMEOUT_STANDARD", 20)
         or GetNumberParameter("ASAI_SCIENCE_STAGE_TIMEOUT_STANDARD", 16);
     local recentProgress = turn - lastProgressTurn <= ScaleStandardTurns(timeoutStandard);
-    local active = stage > ScienceExecution.NONE
-        and not suspended
-        and (stage == ScienceExecution.EXOPLANET
+    local active = victoryEnabled and not suspended
+        and (preparing or (stage > ScienceExecution.NONE
+            and (stage == ScienceExecution.EXOPLANET
             or activeProjects > 0
-            or recentProgress);
+            or recentProgress)));
 
     local culture = player:GetCulture();
     local policySuccess, integrated, agency = pcall(
@@ -2143,15 +2141,19 @@ function ScienceExecution.Collect(playerID)
         Plan = plan,
         Stage = stage,
         Active = active,
+        Preparing = preparing,
+        PreparationAge = GetStandardEquivalentTurn(preparationAge),
         Suspended = suspended,
         LastProgressTurn = lastProgressTurn,
-        ProgressAge = GetStandardEquivalentTurn(turn - lastProgressTurn),
+        ProgressAge = stage == ScienceExecution.NONE and 0
+            or GetStandardEquivalentTurn(turn - lastProgressTurn),
         Satellite = satellite,
         Moon = moon,
         Mars = mars,
         Exoplanet = exoplanet,
         Lasers = orbitalLasers + terrestrialLasers,
         Spaceports = spaceports,
+        UsableSpaceports = usableSpaceports,
         SpaceportsInFlight = inFlightSpaceports,
         SpaceportTarget = spaceportTarget,
         ActiveProjects = activeProjects,
@@ -2407,6 +2409,7 @@ local function GetNeutralRelativeState()
         StrategicPlanBaselineSettlers = 0,
         StrategicPlanBaselineActiveWars = 0,
         StrategicPlanBaselineCombat = 0,
+        StrategicPlanBaselineLand = 0,
         StrategicPlanBaselineOwned = 0,
         StrategicPlanBaselineMilitary = 0,
         StrategicPlanBaselineEnemyMilitary = 0,
@@ -2724,6 +2727,8 @@ local function ReadRelativeState(player)
         Strategic.BASELINE_ACTIVE_WARS_PROPERTY,
         0
     );
+    state.StrategicPlanBaselineLand = GetStoredNumber(player,
+        Strategic.BASELINE_LAND_PROPERTY, 0);
     state.StrategicPlanBaselineCombat = GetStoredNumber(
         player,
         Strategic.BASELINE_COMBAT_PROPERTY,
@@ -2995,6 +3000,7 @@ local function StoreRelativeState(player, state)
         Strategic.BASELINE_COMBAT_PROPERTY,
         state.StrategicPlanBaselineCombat
     );
+    player:SetProperty(Strategic.BASELINE_LAND_PROPERTY, state.StrategicPlanBaselineLand);
     player:SetProperty(
         Strategic.BASELINE_OWNED_PROPERTY,
         state.StrategicPlanBaselineOwned
@@ -3911,6 +3917,7 @@ function Strategic.StartPlanReview(state, snapshot, strength, turn)
     state.StrategicPlanBaselineSettlers = snapshot.Settlers;
     state.StrategicPlanBaselineActiveWars = snapshot.ActiveMajorWars;
     state.StrategicPlanBaselineCombat = strength.CombatUnits;
+    state.StrategicPlanBaselineLand = Execution.LandUnits(strength);
     state.StrategicPlanBaselineOwned = snapshot.OwnedPlots;
     state.StrategicPlanBaselineMilitary = strength.Military;
     state.StrategicPlanBaselineEnemyMilitary =
@@ -3937,6 +3944,7 @@ function Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn)
     state.StrategicPlanBaselineSettlers = snapshot.Settlers;
     state.StrategicPlanBaselineActiveWars = snapshot.ActiveMajorWars;
     state.StrategicPlanBaselineCombat = strength.CombatUnits;
+    state.StrategicPlanBaselineLand = Execution.LandUnits(strength);
     state.StrategicPlanBaselineOwned = snapshot.OwnedPlots;
     state.StrategicPlanBaselineMilitary = strength.Military;
     state.StrategicPlanBaselineEnemyMilitary =
@@ -3952,6 +3960,19 @@ function Strategic.UpdatePlanReviewForChanges(state, snapshot, strength, turn, p
     if planChanged then
         Strategic.StartPlanReview(state, snapshot, strength, turn);
     end
+end
+
+function Strategic.AssessDefenseOutcome(snapshot, status, cityGain, landGain, ownLossRatio)
+    local safeWindow = cityGain >= 0 and ownLossRatio < GetNumberParameter(
+        "ASAI_WAR_SERIOUS_OWN_LOSS_X100", 25) / 100;
+    local recovered = snapshot.ActiveMajorWars <= 0 or (status ~= nil
+        and not status.Emergency and not status.ThinArmy);
+    return safeWindow and recovered, safeWindow and landGain > 0;
+end
+
+function Strategic.ShouldRetainDefense(state, snapshot)
+    return state.StrategicPlan == Strategic.DEFEND
+        and Execution.ShouldRearm(state, snapshot);
 end
 
 function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
@@ -3983,6 +4004,7 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         - (state.StrategicPlanBaselineCities
             - state.StrategicPlanBaselineCaptured);
     local combatGain = strength.CombatUnits - state.StrategicPlanBaselineCombat;
+    local landGain = Execution.LandUnits(strength) - (state.StrategicPlanBaselineLand or 0);
     local territoryGain = snapshot.OwnedPlots
         - state.StrategicPlanBaselineOwned;
     local combatEvents = math.max(
@@ -4018,6 +4040,7 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     local strategicProgress = false;
     local externalWarImprovement = false;
     local stableWarOpponents = false;
+    local defensePartial = false;
     local foundedExpansion = foundedCityGain > 0 and captureEvents <= 0;
     local persistentSettler = state.StrategicPlanBaselineSettlers > 0
         and snapshot.Settlers > 0;
@@ -4045,7 +4068,8 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     if state.StrategicPlan == Strategic.EXPAND then
         improved = improved or foundedExpansion;
     elseif state.StrategicPlan == Strategic.DEFEND then
-        improved = improved or combatGain > 0;
+        improved, defensePartial = Strategic.AssessDefenseOutcome(
+            snapshot, state.Execution, cityGain, landGain, ownLossRatio);
     elseif state.StrategicPlan == Strategic.PRESSURE then
         improved = improved or snapshot.ActiveMajorWars > 0 or cityGain > 0;
     elseif state.StrategicPlan == Strategic.WAR then
@@ -4060,6 +4084,10 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     if improved then
         state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_IMPROVING;
         state.StrategicPlanStallCount = 0;
+    elseif defensePartial then
+        -- Actual land recovery is useful progress, but does not clear the
+        -- persistent failure escalation while the empire remains unsafe.
+        state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_EXECUTING;
     else
         state.StrategicPlanStallCount = state.StrategicPlanStallCount + 1;
         state.StrategicPlanResult = state.StrategicPlanExecution > 0
@@ -4100,6 +4128,13 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         stableWarOpponents and 1 or 0
     ));
 
+    if state.StrategicPlan == Strategic.DEFEND then
+        print(string.format(
+            "ASAI_DEFENSE_REVIEW turn=%d player=%d land_gain=%d recovered=%d partial=%d emergency=%d retained=%d",
+            turn, playerID, landGain, improved and 1 or 0, defensePartial and 1 or 0,
+            state.Execution ~= nil and state.Execution.Emergency and 1 or 0,
+            Strategic.ShouldRetainDefense(state, snapshot) and 1 or 0));
+    end
     local stallLimit = math.max(
         1,
         GetNumberParameter("ASAI_PLAN_STALL_LIMIT", 2)
@@ -4109,6 +4144,9 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         or (state.StrategicPlan ~= Strategic.DEVELOP
             and state.StrategicPlanResult ~= RELATIVE_FOCUS_RESULT_IMPROVING
             and state.StrategicPlanStallCount >= stallLimit);
+    -- Retiring DEFEND while war_rearm immediately selects the same plan left
+    -- the old baseline live. Retain the job, not the stale review window.
+    if Strategic.ShouldRetainDefense(state, snapshot) then retirePlan = false; end
     if not retirePlan then
         Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn);
     end
@@ -4589,6 +4627,7 @@ local function EvaluateRelativeState(playerID)
             local resetWarBaseline = 0;
             local resetExpansionBaseline = 0;
             local resetRecoveryBaseline = 0;
+            local resetDefenseBaseline = 0;
             local resetOutcomeBaseline = (state.StrategicPlan == Strategic.PRESSURE
                     and previousOutcomeSchema < 1)
                 or (state.StrategicPlan == Strategic.WAR
@@ -4596,7 +4635,9 @@ local function EvaluateRelativeState(playerID)
                 or (state.StrategicPlan == Strategic.RECOVER
                     and previousOutcomeSchema < 5)
                 or (state.StrategicPlan == Strategic.EXPAND
-                    and previousOutcomeSchema < 4);
+                    and previousOutcomeSchema < 4)
+                or (state.StrategicPlan == Strategic.DEFEND
+                    and previousOutcomeSchema < 6);
             if resetOutcomeBaseline
                 and state.StrategicPlanStartedTurn >= 0 then
                 Strategic.ResetPlanReviewBaseline(
@@ -4608,20 +4649,24 @@ local function EvaluateRelativeState(playerID)
                 state.StrategicPlanGain = 0;
                 state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_NONE;
                 state.StrategicPlanExecution = 0;
-                state.StrategicPlanStallCount = 0;
+                if state.StrategicPlan ~= Strategic.DEFEND then
+                    state.StrategicPlanStallCount = 0;
+                end
                 if state.StrategicPlan == Strategic.PRESSURE then
                     resetPressureBaseline = 1;
                 elseif state.StrategicPlan == Strategic.WAR then
                     resetWarBaseline = 1;
                 elseif state.StrategicPlan == Strategic.RECOVER then
                     resetRecoveryBaseline = 1;
+                elseif state.StrategicPlan == Strategic.DEFEND then
+                    resetDefenseBaseline = 1;
                 else
                     resetExpansionBaseline = 1;
                 end
             end
             state.StrategicPlanOutcomeSchema = Strategic.OUTCOME_SCHEMA;
             print(string.format(
-                "ASAI_PLAN_MIGRATION turn=%d standard_turn=%.1f player=%d plan=%s from_schema=%d to_schema=%d reset_pressure_baseline=%d reset_war_baseline=%d reset_expansion_baseline=%d reset_recovery_baseline=%d",
+                "ASAI_PLAN_MIGRATION turn=%d standard_turn=%.1f player=%d plan=%s from_schema=%d to_schema=%d reset_pressure_baseline=%d reset_war_baseline=%d reset_expansion_baseline=%d reset_recovery_baseline=%d reset_defense_baseline=%d",
                 turn,
                 GetStandardEquivalentTurn(turn),
                 playerID,
@@ -4631,7 +4676,8 @@ local function EvaluateRelativeState(playerID)
                 resetPressureBaseline,
                 resetWarBaseline,
                 resetExpansionBaseline,
-                resetRecoveryBaseline
+                resetRecoveryBaseline,
+                resetDefenseBaseline
             ));
         end
 
@@ -5327,7 +5373,7 @@ end
 
 local function IsScienceExecutionRecovery(playerID, threshold)
     local status = Execution.GetStatus(playerID);
-    return not status.Emergency and (status.ScienceStage == "infrastructure"
+    return status.EconomyAllowed and (status.ScienceStage == "infrastructure"
         or (status.ScienceStage == "none"
             and IsFocusExecutionRecovery(playerID, RELATIVE_FOCUS_SCIENCE)));
 end
@@ -5402,6 +5448,28 @@ function ScienceExecution.IsSpaceportScale(playerID, threshold)
     return state.Active
         and state.Spaceports + state.SpaceportsInFlight < state.SpaceportTarget;
 end
+function ScienceExecution.IsSatellite(playerID)
+    local state = ScienceExecution.Collect(playerID);
+    return state.Active and state.Preparing and state.UsableSpaceports > 0
+        and state.ActiveProjects == 0;
+end
+function ScienceExecution.IsPreparationBudgetReached(playerID)
+    local state = ScienceExecution.Collect(playerID);
+    return state.Preparing and state.SpaceportTarget > 0
+        and (state.Spaceports == 0 or state.UsableSpaceports > 0)
+        and state.Spaceports + state.SpaceportsInFlight >= state.SpaceportTarget;
+end
+function ASAI_IsScienceSatelliteExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsScienceSatelliteExecution", ScienceExecution.IsSatellite,
+        playerID, threshold);
+end
+function ASAI_IsSciencePreparationBudget(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsSciencePreparationBudget", ScienceExecution.IsPreparationBudgetReached,
+        playerID, threshold);
+end
+GameEvents.ASAI_IsScienceSatelliteExecution.Add(ASAI_IsScienceSatelliteExecution);
+GameEvents.ASAI_IsSciencePreparationBudget.Add(ASAI_IsSciencePreparationBudget);
+
 function ASAI_IsScienceSpaceportScale(playerID, threshold)
     return RunStrategyCondition(
         "ASAI_IsScienceSpaceportScale",
@@ -6258,6 +6326,15 @@ function ScienceExecution.WriteDiagnostics(playerID, firstTimeThisTurn)
         state.IntegratedSpaceCell,
         state.InternationalSpaceAgency
     ));
+    print(string.format(
+        "ASAI_SCIENCE_PREPARATION turn=%d player=%d preparing=%d preparation_age=%.1f phase=%s port_target=%d port_committed=%d usable_ports=%d budget_reached=%d",
+        state.Turn, playerID, state.Preparing and 1 or 0, state.PreparationAge,
+        state.Preparing and (state.UsableSpaceports > 0 and "first_satellite"
+            or (state.Spaceports > 0 and "repair_first_spaceport" or "first_spaceport"))
+            or "milestones_or_locked",
+        state.SpaceportTarget, state.Spaceports + state.SpaceportsInFlight,
+        state.UsableSpaceports,
+        ScienceExecution.IsPreparationBudgetReached(playerID) and 1 or 0));
 end
 
 function ThreatResponse.WriteDiagnostics(playerID, firstTimeThisTurn)
@@ -6482,13 +6559,18 @@ function Execution.EmptyStatus(turn)
         TradeStage = "none", TradeAge = 0, StabilityUntil = -1,
         ScienceQueueTarget = 0, TradeQueueTarget = 0,
         RangedTarget = 0, SiegeTarget = 0, AssetsOk = 0,
-        BuildabilityOk = -1, StabilityOk = 0, LostFreeCities = 0
+        BuildabilityOk = -1, StabilityOk = 0, LostFreeCities = 0,
+        CandidateReason = "unprobed", EmergencyAge = 0, EmergencyLevel = 0,
+        EconomyAllowed = true, LandNeeded = false, LandQueueTarget = 0,
+        TraderStage = "none", TraderAge = 0, TraderGap = 0, TraderQueueTarget = 0
     };
 end
 
 function Execution.GetDefinitions()
     if Execution.Definitions ~= nil then return Execution.Definitions; end
-    local result = { ByType = {}, ByRole = {} };
+    local result = { ByType = {}, ByRole = {}, Replacements = {},
+        BuildingPrereqs = {}, UnitPrereqs = {}, ExclusiveBuildings = {},
+        ExcludedDistricts = {} };
     local function add(info, kind, role)
         if role == nil then return; end
         local entry = { Info = info, Kind = kind, Role = role };
@@ -6525,7 +6607,9 @@ function Execution.GetDefinitions()
     end
     for info in GameInfo.Units() do
         local role = nil;
-        if GetUnitBaseStrength(info) > 0 then
+        if info.MakeTradeRoute == true or info.MakeTradeRoute == 1 then
+            role = "trader";
+        elseif GetUnitBaseStrength(info) > 0 then
             if info.PromotionClass == "PROMOTION_CLASS_RANGED" then
                 role = "ranged";
             elseif info.PromotionClass == "PROMOTION_CLASS_SIEGE"
@@ -6534,7 +6618,26 @@ function Execution.GetDefinitions()
             end
         end
         add(info, "unit", role);
+        if info.Domain == "DOMAIN_LAND" and GetUnitBaseStrength(info) > 0
+            and info.PromotionClass ~= "PROMOTION_CLASS_SIEGE"
+            and info.PromotionClass ~= "PROMOTION_CLASS_GIANT_DEATH_ROBOT" then
+            result.ByRole.land = result.ByRole.land or {};
+            table.insert(result.ByRole.land, { Info = info, Kind = "unit", Role = "land" });
+        end
     end
+    local function group(tableName, key, value, target)
+        for row in GameInfo[tableName]() do
+            target[row[key]] = target[row[key]] or {};
+            table.insert(target[row[key]], row[value]);
+        end
+    end
+    group("BuildingReplaces", "ReplacesBuildingType", "CivUniqueBuildingType", result.Replacements);
+    group("DistrictReplaces", "ReplacesDistrictType", "CivUniqueDistrictType", result.Replacements);
+    group("UnitReplaces", "ReplacesUnitType", "CivUniqueUnitType", result.Replacements);
+    group("BuildingPrereqs", "Building", "PrereqBuilding", result.BuildingPrereqs);
+    group("Unit_BuildingPrereqs", "Unit", "PrereqBuilding", result.UnitPrereqs);
+    group("MutuallyExclusiveBuildings", "Building", "MutuallyExclusiveBuilding", result.ExclusiveBuildings);
+    group("ExcludedDistricts", "DistrictType", "TraitType", result.ExcludedDistricts);
     Execution.Definitions = result;
     return result;
 end
@@ -6543,13 +6646,15 @@ function Execution.CollectAssets(player)
     local definitions = Execution.GetDefinitions();
     local result = {
         Counts = {}, Queued = {}, Cities = {}, CityPlots = {},
-        Probes = {}, BuildabilityOk = -1
+        Player = player, Probes = {}, ProbeReasons = {}, CandidateCities = {},
+        BuildabilityOk = -1, CandidateReason = "unprobed", ByCity = {}
     };
     for role in pairs(definitions.ByRole) do
         result.Counts[role], result.Queued[role] = 0, 0;
     end
     for _, city in player:GetCities():Members() do
-        local row = { City = city, TradeBuildings = 0 };
+        local row = { City = city, TradeBuildings = 0, Districts = {}, Placed = {},
+            Production = city:GetYield(GameInfo.Yields["YIELD_PRODUCTION"].Index) };
         local buildings = city:GetBuildings();
         for _, role in ipairs({ "library", "university", "laboratory", "trade_building" }) do
             for _, entry in ipairs(definitions.ByRole[role] or {}) do
@@ -6562,6 +6667,7 @@ function Execution.CollectAssets(player)
             end
         end
         local current = GetCurrentProductionType(city);
+        row.Current = current;
         local entry = current ~= nil and definitions.ByType[current] or nil;
         if entry ~= nil then
             result.Queued[entry.Role] = result.Queued[entry.Role] + 1;
@@ -6569,48 +6675,171 @@ function Execution.CollectAssets(player)
         local plot = Map.GetPlot(city:GetX(), city:GetY());
         if plot ~= nil then table.insert(result.CityPlots, plot:GetIndex()); end
         table.insert(result.Cities, row);
+        result.ByCity[city:GetID()] = row;
     end
     for _, district in player:GetDistricts():Members() do
         local info = GameInfo.Districts[district:GetType()];
+        local ownerCity = district:GetCity();
+        local row = ownerCity ~= nil and result.ByCity[ownerCity:GetID()] or nil;
+        if row ~= nil and info ~= nil then
+            row.Placed[info.DistrictType] = true;
+            if district:IsComplete() and not district:IsPillaged() then
+                row.Districts[info.DistrictType] = true;
+            end
+        end
         local entry = info ~= nil and definitions.ByType[info.DistrictType] or nil;
         if entry ~= nil and district:IsComplete() then
             result.Counts[entry.Role] = result.Counts[entry.Role] + 1;
         end
     end
     table.sort(result.CityPlots);
+    table.sort(result.Cities, function(a, b)
+        if a.Production ~= b.Production then return a.Production > b.Production; end
+        return a.City:GetID() < b.City:GetID();
+    end);
     return result;
 end
 
+function Execution.GetTraits(player)
+    local config = PlayerConfigurations[player:GetID()];
+    if config == nil then error("candidate: missing player configuration"); end
+    local civ, leader = config:GetCivilizationTypeName(), config:GetLeaderTypeName();
+    local traits, leaders = {}, {};
+    while leader ~= nil and not leaders[leader] do
+        leaders[leader] = true;
+        local info = GameInfo.Leaders[leader];
+        leader = info ~= nil and info.InheritFrom or nil;
+    end
+    for info in GameInfo.CivilizationTraits() do
+        if info.CivilizationType == civ then traits[info.TraitType] = true; end
+    end
+    for info in GameInfo.LeaderTraits() do
+        if leaders[info.LeaderType] then traits[info.TraitType] = true; end
+    end
+    return traits, leaders;
+end
+
+function Execution.HasEquivalent(typeName, predicate)
+    if predicate(typeName) then return true; end
+    for _, replacement in ipairs(Execution.GetDefinitions().Replacements[typeName] or {}) do
+        if predicate(replacement) then return true; end
+    end
+    return false;
+end
+
+function Execution.IsCandidate(assets, row, entry)
+    local info, player = entry.Info, assets.Player;
+    local name = info.BuildingType or info.DistrictType or info.UnitType;
+    if assets.Traits == nil then assets.Traits, assets.Leaders = Execution.GetTraits(player); end
+    local traits = assets.Traits;
+    if info.TraitType ~= nil and not traits[info.TraitType] then return false; end
+    if info.LeaderType ~= nil and not assets.Leaders[info.LeaderType] then return false; end
+    if info.InternalOnly == true or info.InternalOnly == 1
+        or info.MustPurchase == true or info.MustPurchase == 1 then return false; end
+    local function hasTech(tech) return Execution.HasTech(player, tech); end
+    local function hasCivic(civic)
+        return ScienceExecution.HasCivic(player:GetCulture(), civic);
+    end
+    if info.PrereqTech ~= nil and not hasTech(info.PrereqTech) then return false; end
+    if info.PrereqCivic ~= nil and not hasCivic(info.PrereqCivic) then return false; end
+    local definitions = Execution.GetDefinitions();
+    for _, replacement in ipairs(definitions.Replacements[name] or {}) do
+        local unique = GameInfo.Units[replacement] or GameInfo.Buildings[replacement]
+            or GameInfo.Districts[replacement];
+        if unique ~= nil and (unique.TraitType == nil or traits[unique.TraitType])
+            and (unique.LeaderType == nil or assets.Leaders[unique.LeaderType]) then
+            return false;
+        end
+    end
+    local function hasBuilding(buildingType)
+        return Execution.HasEquivalent(buildingType, function(value)
+            local building = GameInfo.Buildings[value];
+            return building ~= nil and row.City:GetBuildings():HasBuilding(building.Index);
+        end);
+    end
+    if info.PrereqDistrict ~= nil and not Execution.HasEquivalent(info.PrereqDistrict,
+        function(value) return row.Districts[value] == true; end) then return false; end
+    if entry.Kind == "building" then
+        if hasBuilding(name) then return false; end
+        local prereqs = definitions.BuildingPrereqs[name] or {};
+        -- BuildingPrereqs are alternatives (e.g. barracks OR stable).
+        local matched = #prereqs == 0;
+        for _, building in ipairs(prereqs) do matched = matched or hasBuilding(building); end
+        if not matched then return false; end
+        for _, other in ipairs(definitions.ExclusiveBuildings[name] or {}) do
+            if hasBuilding(other) then return false; end
+        end
+    elseif entry.Kind == "district" then
+        if Execution.HasEquivalent(name, function(value) return row.Placed[value] == true; end)
+            then return false; end
+        for _, trait in ipairs(definitions.ExcludedDistricts[name] or {}) do
+            if traits[trait] then return false; end
+        end
+        -- Population bonuses, terrain, adjacency and placement remain native
+        -- decisions. A candidate is NOT a CanProduce/valid-plot assertion.
+    elseif entry.Kind == "unit" then
+        if info.CanTrain == false or info.CanTrain == 0 then return false; end
+        if (info.ObsoleteTech ~= nil and hasTech(info.ObsoleteTech))
+            or (info.MandatoryObsoleteTech ~= nil and hasTech(info.MandatoryObsoleteTech))
+            or (info.ObsoleteCivic ~= nil and hasCivic(info.ObsoleteCivic))
+            or (info.MandatoryObsoleteCivic ~= nil and hasCivic(info.MandatoryObsoleteCivic)) then
+            return false;
+        end
+        if row.City:GetPopulation() < math.max(tonumber(info.PrereqPopulation) or 0,
+            (tonumber(info.PopulationCost) or 0) + 1) then return false; end
+        local prereqs = definitions.UnitPrereqs[name] or {};
+        local matched = #prereqs == 0;
+        for _, building in ipairs(prereqs) do matched = matched or hasBuilding(building); end
+        if not matched then return false; end
+        if info.StrategicResource ~= nil then
+            local resource = GameInfo.Resources[info.StrategicResource];
+            local resources = player:GetResources();
+            local amount = resource ~= nil and tonumber(resources:GetResourceAmount(resource.Index));
+            if amount == nil then error("candidate: resource stockpile unreadable"); end
+            -- Costs can be discounted locally. Require access, not the
+            -- undiscounted DB cost; the engine decides final affordability.
+            if amount <= 0 then return false; end
+        end
+    end
+    return true;
+end
+
 function Execution.CanBuild(assets, role)
-    if assets.Probes[role] ~= nil then return assets.Probes[role]; end
+    if assets.Probes[role] ~= nil then
+        return assets.Probes[role], assets.ProbeReasons[role];
+    end
+    local unknown = false;
     for _, row in ipairs(assets.Cities) do
-        -- Market + Lighthouse normally provide one capacity per city. Do not
-        -- count another building in an already-served city as extra capacity.
-        if role ~= "trade_building" or row.TradeBuildings == 0 then
-            local queue = row.City:GetBuildQueue();
-            if queue == nil or queue.CanProduce == nil then
-                assets.BuildabilityOk = 0;
-                assets.Probes[role] = false;
-                return false;
-            end
+        local current = row.Current ~= nil and GameInfo.Projects[row.Current] or nil;
+        local spaceCore = row.Current == "DISTRICT_SPACEPORT" or (current ~= nil
+            and (current.SpaceRace == true or current.SpaceRace == 1));
+        local economic = role ~= "ranged" and role ~= "siege" and role ~= "land";
+        if (not economic or not spaceCore)
+            and (role ~= "trade_building" or row.TradeBuildings == 0) then
             for _, entry in ipairs(Execution.GetDefinitions().ByRole[role] or {}) do
-                local success, allowed = pcall(queue.CanProduce, queue,
-                    entry.Info.Hash, false);
-                if not success or type(allowed) ~= "boolean" then
-                    assets.BuildabilityOk = 0;
-                    assets.Probes[role] = false;
-                    return false;
-                end
-                if assets.BuildabilityOk ~= 0 then assets.BuildabilityOk = 1; end
-                if allowed then
-                    assets.Probes[role] = true;
-                    return true;
+                local success, allowed = pcall(Execution.IsCandidate, assets, row, entry);
+                if not success then
+                    unknown = true;
+                    local key = "ASAI_Candidate_" .. role;
+                    if not m_ConditionErrors[key] then
+                        print("ASAI_DIAGNOSTIC_ERROR sensor=candidate_" .. role
+                            .. " fallback=other_candidates error=" .. tostring(allowed));
+                        m_ConditionErrors[key] = true;
+                    end
+                elseif allowed then
+                    assets.Probes[role], assets.ProbeReasons[role] = true, "candidate";
+                    assets.CandidateCities[role] = row.City:GetID();
+                    assets.BuildabilityOk, assets.CandidateReason = 1, "candidate";
+                    return true, "candidate";
                 end
             end
         end
     end
-    assets.Probes[role] = false;
-    return false;
+    local reason = unknown and "unknown" or "blocked";
+    assets.Probes[role], assets.ProbeReasons[role] = false, reason;
+    assets.BuildabilityOk = unknown and 0 or (assets.BuildabilityOk == 0 and 0 or 1);
+    assets.CandidateReason = reason;
+    return false, reason;
 end
 
 function Execution.HasTech(player, typeName)
@@ -6640,7 +6869,6 @@ function Execution.HasScienceDeficit(state, wasActive)
 end
 
 function Execution.SelectScienceGoal(hasTech, counts, era, cities)
-    if (counts.spaceport or 0) > 0 then return "none", "space_race"; end
     if not hasTech("TECH_WRITING") then return "writing", "campus"; end
     if (counts.campus or 0) <= 0 then return "infrastructure", "campus"; end
     local classical = GameInfo.Eras["ERA_CLASSICAL"];
@@ -6662,11 +6890,18 @@ function Execution.SelectScienceGoal(hasTech, counts, era, cities)
     return "none", "covered";
 end
 
+function Execution.LandUnits(strength)
+    return math.max(0, strength.LandUnits or ((strength.CombatUnits or 0)
+        - (strength.NavalUnits or 0) - (strength.AirUnits or 0)));
+end
+
 function Execution.MilitarySignals(snapshot, strength, queue, recentAttrition)
     local active = snapshot.ActiveMajorWars > 0 and snapshot.Cities > 0;
     local density = strength.CombatUnits / math.max(1, snapshot.Cities);
-    local thin = active and density < GetNumberParameter(
-        "ASAI_WAR_SURVIVAL_UNITS_PER_CITY_X100", 85) / 100;
+    local land = Execution.LandUnits(strength);
+    local landTarget = active and math.max(1, math.ceil(snapshot.Cities * 0.55)) or 0;
+    local thin = active and (density < GetNumberParameter(
+        "ASAI_WAR_SURVIVAL_UNITS_PER_CITY_X100", 85) / 100 or land < landTarget);
     local sufficient = strength.CombatUnits + math.max(0, queue.Combat or 0)
         >= math.ceil(snapshot.Cities * GetNumberParameter(
             "ASAI_WAR_REINFORCED_UNITS_PER_CITY_X100", 125) / 100);
@@ -6674,16 +6909,57 @@ function Execution.MilitarySignals(snapshot, strength, queue, recentAttrition)
         math.ceil(snapshot.Cities / 6))) or 0;
     local siegeTarget = active and strength.CombatUnits >= 4
         and math.min(2, math.max(1, math.ceil(snapshot.Cities / 8))) or 0;
-    local emergency = active and (thin or recentAttrition) and not sufficient;
+    local emergency = active and (thin or (recentAttrition
+        and strength.CombatUnits < math.ceil(snapshot.Cities * 1.25)));
     return {
         Emergency = emergency, ThinArmy = thin, RecentAttrition = recentAttrition,
         Density = density,
+        Land = land, LandTarget = landTarget, ReinforcementCommitted = sufficient,
         RangedTarget = rangedTarget, SiegeTarget = siegeTarget,
         RangedNeeded = active
             and strength.RangedUnits + math.max(0, queue.Ranged or 0) < rangedTarget,
         SiegeNeeded = active and not emergency and siegeTarget > 0
             and strength.SiegeUnits + math.max(0, queue.Siege or 0) < siegeTarget
     };
+end
+
+function Execution.RecoveryBudget(player, state, snapshot, economic, result, turn)
+    result.EmergencyAge = Execution.UpdateTimer(player, "ASAI_EXEC_EMERGENCY_SINCE",
+        result.Emergency, turn, false);
+    local window = ScaleStandardTurns(GetNumberParameter("ASAI_PLAN_REVIEW_STANDARD", 12));
+    result.EmergencyLevel = result.Emergency and math.min(2, math.max(
+        math.floor(result.EmergencyAge / window),
+        state.StrategicPlan == Strategic.DEFEND and (state.StrategicPlanStallCount or 0) or 0)) or 0;
+    local queue = economic.Queue;
+    local deficit = math.max(0, result.LandTarget - result.Land);
+    result.LandQueueTarget = result.Emergency and math.min(deficit,
+        math.max(1, math.ceil(snapshot.Cities * 0.25)), 2 + result.EmergencyLevel) or 0;
+    result.LandNeeded = result.EmergencyLevel > 0 and economic.QueueOk == 1
+        and (queue.Land or 0) < result.LandQueueTarget;
+    -- Acute losses still interrupt. Prolonged low density alone must not
+    -- permanently veto every economic recovery in the empire.
+    result.EconomyAllowed = not result.Emergency or (result.EmergencyLevel > 0
+        and not result.RecentAttrition and economic.QueueOk == 1
+        and snapshot.Cities - (queue.Combat or 0) >= 2);
+end
+
+function Execution.TraderBudget(player, snapshot, economic, result, turn)
+    local traders, pending = snapshot.Traders or 0, snapshot.InFlightTraders or 0;
+    result.TraderGap = math.max(0, snapshot.RouteCapacity - traders - pending);
+    result.TraderQueueTarget = math.min(result.Emergency and 1 or 2,
+        math.max(0, snapshot.RouteCapacity - traders));
+    local previous = GetStoredNumber(player, "ASAI_EXEC_TRADER_COUNT", traders);
+    result.TraderAge = Execution.UpdateTimer(player, "ASAI_EXEC_TRADER_SINCE",
+        snapshot.RouteCapacity > traders, turn, traders > previous);
+    player:SetProperty("ASAI_EXEC_TRADER_COUNT", traders);
+    if result.TraderQueueTarget <= 0 then return; end
+    if economic.QueueOk ~= 1 then result.TraderStage = "unknown"; return; end
+    if pending >= result.TraderQueueTarget then result.TraderStage = "inflight"; return; end
+    if not result.EconomyAllowed then result.TraderStage = "emergency"; return; end
+    if result.TraderGap > 0 and result.TraderAge >= ScaleStandardTurns(
+        GetNumberParameter("ASAI_TRADER_EXECUTION_DELAY_STANDARD", 12)) then
+        result.TraderStage = "candidate";
+    end
 end
 
 function Execution.ShouldRearm(state, snapshot)
@@ -6768,12 +7044,12 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
     local military = Execution.MilitarySignals(snapshot, strength,
         economic.Queue, turn < attritionUntil);
     for key, value in pairs(military) do result[key] = value; end
+    Execution.RecoveryBudget(player, state, snapshot, economic, result, turn);
+    Execution.TraderBudget(player, snapshot, economic, result, turn);
 
     local assetSuccess, assets = pcall(Execution.CollectAssets, player);
     if assetSuccess then
         result.AssetsOk = 1;
-        local spaceRace = (assets.Counts.spaceport or 0)
-            + (assets.Queued.spaceport or 0) > 0;
         local stabilityOk, untilTurn, losses = pcall(
             Execution.UpdateStability, player, assets, turn);
         if stabilityOk then
@@ -6792,9 +7068,10 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
         result.ScienceAge = Execution.UpdateTimer(player,
             "ASAI_EXEC_SCIENCE_SINCE", scienceDeficit, turn, false);
         result.ScienceQueueTarget = math.max(1, math.ceil(snapshot.Cities * 0.25));
+        if result.Emergency then result.ScienceQueueTarget = 1; end
         if scienceDeficit and result.ScienceAge >= ScaleStandardTurns(
                 GetNumberParameter("ASAI_SCIENCE_BOTTLENECK_DELAY_STANDARD", 8))
-            and not result.Emergency and not spaceRace then
+            and result.EconomyAllowed then
             result.ScienceStage, result.ScienceGoal = Execution.SelectScienceGoal(
                 function(name) return Execution.HasTech(player, name); end,
                 assets.Counts, snapshot.Era, snapshot.Cities);
@@ -6803,8 +7080,9 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
                     result.ScienceStage = "unknown";
                 elseif economic.Queue.Science >= result.ScienceQueueTarget then
                     result.ScienceStage = "inflight";
-                elseif not Execution.CanBuild(assets, result.ScienceGoal) then
-                    result.ScienceStage = "blocked";
+                else
+                    local allowed, reason = Execution.CanBuild(assets, result.ScienceGoal);
+                    if not allowed then result.ScienceStage = reason or "unknown"; end
                 end
             end
         end
@@ -6814,13 +7092,15 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
         result.TradeAge = Execution.UpdateTimer(player, "ASAI_EXEC_TRADE_SINCE",
             capacityGap > 0, turn, snapshot.RouteCapacity > previousCapacity);
         result.TradeQueueTarget = math.min(2, capacityGap);
-        if capacityGap > 0 and not result.Emergency
-            and not spaceRace
+        if result.Emergency then result.TradeQueueTarget = math.min(1, result.TradeQueueTarget); end
+        if capacityGap > 0 and result.EconomyAllowed
             and result.TradeAge >= ScaleStandardTurns(GetNumberParameter(
                 "ASAI_TRADE_EXECUTION_DELAY_STANDARD", 12)) then
             local queuedBuildings = assets.Queued.trade_building or 0;
             local queuedDistricts = assets.Queued.trade_district or 0;
-            if queuedBuildings >= result.TradeQueueTarget then
+            if economic.QueueOk ~= 1 then
+                result.TradeStage = "unknown";
+            elseif queuedBuildings >= result.TradeQueueTarget then
                 result.TradeStage = "inflight";
             elseif Execution.CanBuild(assets, "trade_building") then
                 result.TradeStage = "building";
@@ -6831,22 +7111,30 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
             elseif not Execution.HasTech(player, "TECH_CURRENCY") then
                 result.TradeStage = "research";
             else
-                result.TradeStage = "blocked";
+                result.TradeStage = assets.ProbeReasons ~= nil
+                    and (assets.ProbeReasons.trade_building == "unknown"
+                        or assets.ProbeReasons.trade_district == "unknown")
+                    and "unknown" or "blocked";
             end
         end
-        if spaceRace then
-            result.ScienceGoal = "space_race";
-            result.TradeStage = "space_race";
+        if result.TraderStage == "candidate" then
+            local allowed, reason = Execution.CanBuild(assets, "trader");
+            result.TraderStage = allowed and "trader" or (reason or "unknown");
         end
         -- Real siege combat roles, not the broad UNITTYPE_SIEGE_ALL tag.
         result.RangedNeeded = result.RangedNeeded
             and economic.QueueOk == 1 and Execution.CanBuild(assets, "ranged");
         result.SiegeNeeded = result.SiegeNeeded
             and economic.QueueOk == 1 and Execution.CanBuild(assets, "siege");
+        result.LandNeeded = result.LandNeeded and Execution.CanBuild(assets, "land");
         result.BuildabilityOk = assets.BuildabilityOk;
+        result.CandidateReason = assets.CandidateReason or "unprobed";
+        result.ProbeReasons, result.CandidateCities = assets.ProbeReasons, assets.CandidateCities;
         player:SetProperty("ASAI_EXEC_TRADE_CAPACITY", snapshot.RouteCapacity);
     else
         result.RangedNeeded, result.SiegeNeeded = false, false;
+        result.LandNeeded = false;
+        if result.TraderStage == "candidate" then result.TraderStage = "unknown"; end
         result.StabilityUntil = GetStoredNumber(player, "ASAI_EXEC_STABILITY_UNTIL", -1);
         if m_ConditionErrors.ASAI_ExecutionAssets == nil then
             print("ASAI_DIAGNOSTIC_ERROR sensor=execution_assets fallback=baseline error="
@@ -6909,6 +7197,23 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
         result.RangedNeeded and 1 or 0, result.RangedTarget,
         result.SiegeNeeded and 1 or 0, result.SiegeTarget, result.StabilityUntil,
         result.AssetsOk, result.BuildabilityOk, result.StabilityOk));
+    print(string.format(
+        "ASAI_EXECUTION_DETAIL turn=%d player=%d candidate_mode=data_prerequisites native_legality=unverified candidate_reason=%s emergency_age=%d emergency_level=%d land=%d land_target=%d land_queue_target=%d land_needed=%d economy_allowed=%d trader_stage=%s trader_age=%d trader_gap=%d trader_queue_target=%d",
+        result.Turn, playerID, result.CandidateReason, result.EmergencyAge,
+        result.EmergencyLevel, result.Land or 0, result.LandTarget or 0,
+        result.LandQueueTarget, result.LandNeeded and 1 or 0,
+        result.EconomyAllowed and 1 or 0, result.TraderStage, result.TraderAge,
+        result.TraderGap, result.TraderQueueTarget));
+    for _, role in ipairs({ "campus", "library", "university", "laboratory",
+        "trade_building", "trade_district", "trader", "ranged", "siege", "land" }) do
+        local reason = result.ProbeReasons ~= nil and result.ProbeReasons[role] or nil;
+        if reason ~= nil then
+            print(string.format(
+                "ASAI_CANDIDATE turn=%d player=%d role=%s result=%s candidate_city=%d final_legality=native city_assignment=native",
+                result.Turn, playerID, role, reason,
+                result.CandidateCities ~= nil and result.CandidateCities[role] or -1));
+        end
+    end
 end
 
 function Execution.IsWriting(playerID)
@@ -6940,6 +7245,18 @@ end
 function Execution.IsTradeBuilding(playerID)
     return Execution.GetStatus(playerID).TradeStage == "building";
 end
+function Execution.IsLandRecovery(playerID)
+    return Execution.GetStatus(playerID).LandNeeded;
+end
+function Execution.IsTraderExecution(playerID)
+    return Execution.GetStatus(playerID).TraderStage == "trader";
+end
+function ASAI_IsLandRecovery(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsLandRecovery", Execution.IsLandRecovery, playerID, threshold);
+end
+function ASAI_IsTraderExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsTraderExecution", Execution.IsTraderExecution, playerID, threshold);
+end
 function ASAI_IsWritingPrerequisite(playerID, threshold)
     return RunStrategyCondition("ASAI_IsWritingPrerequisite", Execution.IsWriting, playerID, threshold);
 end
@@ -6968,6 +7285,8 @@ GameEvents.ASAI_IsRangedReinforcement.Add(ASAI_IsRangedReinforcement);
 GameEvents.ASAI_IsSiegeReinforcement.Add(ASAI_IsSiegeReinforcement);
 GameEvents.ASAI_IsTradeDistrictExecution.Add(ASAI_IsTradeDistrictExecution);
 GameEvents.ASAI_IsTradeBuildingExecution.Add(ASAI_IsTradeBuildingExecution);
+GameEvents.ASAI_IsLandRecovery.Add(ASAI_IsLandRecovery);
+GameEvents.ASAI_IsTraderExecution.Add(ASAI_IsTraderExecution);
 
 Events.PlayerTurnActivated.Add(LogMetrics);
 Events.UnitDamageChanged.Add(OnUnitDamageChanged);

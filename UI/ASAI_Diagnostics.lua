@@ -5,6 +5,8 @@ local lastSample = {};
 local completions = {};
 local unavailable = {};
 local errors = {};
+local routeRechecks = {};
+local capabilitiesLogged = false;
 
 local function Parameter(name, fallback)
     return tonumber(GlobalParameters[name]) or fallback;
@@ -102,10 +104,17 @@ end
 
 local function CurrentItem(city)
     local queue = city:GetBuildQueue();
-    if queue == nil or queue.CurrentlyBuilding == nil then
-        error("UNAVAILABLE: UI BuildQueue:CurrentlyBuilding");
+    if not capabilitiesLogged and queue ~= nil then
+        print(string.format(
+            "ASAI_UI_CAPABILITIES current_hash=%d can_produce=%d current_api=GetCurrentProductionTypeHash",
+            queue.GetCurrentProductionTypeHash ~= nil and 1 or 0,
+            queue.CanProduce ~= nil and 1 or 0));
+        capabilitiesLogged = true;
     end
-    local item = queue:CurrentlyBuilding();
+    if queue == nil or queue.GetCurrentProductionTypeHash == nil then
+        error("UNAVAILABLE: UI BuildQueue:GetCurrentProductionTypeHash");
+    end
+    local item = queue:GetCurrentProductionTypeHash();
     if item == nil or item == "" or item == "NONE" or item == 0 or item == -1 then
         return "none";
     end
@@ -118,6 +127,11 @@ local function CurrentItem(city)
     return tostring(item):gsub("%s", "_");
 end
 
+local function RoutesConsistent(routes, ok)
+    if ok ~= 1 or routes.EngineTotal < 0 then return -1; end
+    return routes.Active == routes.EngineTotal and 1 or 0;
+end
+
 local function WriteSample(playerID, sampleTurn)
     local player = Players[playerID];
     local observedTurn = Game.GetCurrentGameTurn();
@@ -125,11 +139,17 @@ local function WriteSample(playerID, sampleTurn)
     local routes, routeOk = TrySensor("trade_routes", function() return TradeRoutes(player); end);
     routes = routes or { Active = -1, Domestic = -1, International = -1,
         Unknown = -1, Idle = -1, LinksOk = 0, EngineTotal = -1 };
+    local consistent = RoutesConsistent(routes, routeOk);
     print(string.format(
-        "ASAI_UI_TRADE turn=%d observed_turn=%d evaluated_turn=%d player=%d phase=ui_after_publish active_routes=%d domestic_routes=%d international_routes=%d unknown_routes=%d idle_traders=%d trader_links_ok=%d engine_total=%d route_sensor_ok=%d",
+        "ASAI_UI_TRADE turn=%d observed_turn=%d evaluated_turn=%d player=%d phase=ui_after_publish active_routes=%d domestic_routes=%d international_routes=%d unknown_routes=%d idle_traders=%d trader_links_ok=%d engine_total=%d route_sensor_ok=%d route_consistent=%d consensus_routes=%d",
         sampleTurn, observedTurn, evaluatedTurn, playerID, routes.Active,
         routes.Domestic, routes.International, routes.Unknown, routes.Idle,
-        routes.LinksOk, routes.EngineTotal, routeOk));
+        routes.LinksOk, routes.EngineTotal, routeOk, consistent,
+        consistent == 1 and routes.Active or -1));
+    if consistent == 0 then
+        routeRechecks[playerID] = { Turn = observedTurn, Active = routes.Active,
+            Total = routes.EngineTotal };
+    end
     local points, pointsOk = TrySensor("culture_great_people", function() return CulturalPoints(player); end);
     points = points or { PerTurn = -1, Total = -1 };
     print(string.format(
@@ -160,6 +180,24 @@ local function OnTurnDeactivated(playerID)
 end
 
 local function OnPublishComplete()
+    -- At most one retry, on a later publish event. Retain both original
+    -- readings; a reread on another turn is never backfilled into this turn.
+    for playerID, previous in pairs(routeRechecks) do
+        routeRechecks[playerID] = nil;
+        if MajorAI(playerID) then
+            local routes, ok = TrySensor("trade_routes", function()
+                return TradeRoutes(Players[playerID]);
+            end);
+            local turn = Game.GetCurrentGameTurn();
+            local consistent = routes ~= nil and RoutesConsistent(routes, ok) or -1;
+            print(string.format(
+                "ASAI_UI_TRADE_RECHECK turn=%d observed_turn=%d player=%d original_active=%d original_engine_total=%d active_routes=%d engine_total=%d route_consistent=%d same_turn=%d consensus_routes=%d",
+                previous.Turn, turn, playerID, previous.Active, previous.Total,
+                routes ~= nil and routes.Active or -1, routes ~= nil and routes.EngineTotal or -1,
+                consistent, turn == previous.Turn and 1 or 0,
+                turn == previous.Turn and consistent == 1 and routes.Active or -1));
+        end
+    end
     for playerID, turn in pairs(pending) do
         pending[playerID] = nil;
         if MajorAI(playerID) then

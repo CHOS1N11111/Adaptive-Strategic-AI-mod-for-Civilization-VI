@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import sqlite3
@@ -30,9 +31,9 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.11"
-EXPECTED_MODINFO_VERSION = "33"
-EXPECTED_STRATEGIES = 38
+EXPECTED_RELEASE = "0.11.12"
+EXPECTED_MODINFO_VERSION = "34"
+EXPECTED_STRATEGIES = 42
 
 
 def default_database() -> Path:
@@ -77,6 +78,22 @@ def register_game_sql_functions(connection: sqlite3.Connection) -> None:
         return unsigned if unsigned < 2**31 else unsigned - 2**32
 
     connection.create_function("Make_Hash", 1, make_hash)
+
+
+def semantic_database_digest(connection: sqlite3.Connection) -> str:
+    """Ignore insertion order while comparing all persisted SQL table data."""
+    digest = hashlib.sha256()
+    names = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    for (name,) in names:
+        quoted = '"' + name.replace('"', '""') + '"'
+        digest.update(name.encode("utf-8"))
+        for row in sorted(repr(tuple(row)) for row in connection.execute(f"SELECT * FROM {quoted}")):
+            digest.update(row.encode("utf-8"))
+            digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def validate_items(connection: sqlite3.Connection) -> list[str]:
@@ -551,7 +568,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "snapshot.Turn < warCooldownUntil",
         "state.StrategicPlanExecution > 0",
         'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
-        "OUTCOME_SCHEMA = 5",
+        "OUTCOME_SCHEMA = 6",
         "reset_pressure_baseline=%d",
         "reset_war_baseline=%d",
         "reset_expansion_baseline=%d",
@@ -676,7 +693,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "function ScienceExecution.SetProjectCountAtLeast(player, projectType, minimum)",
         "function ScienceExecution.SeedCountsThroughStage(player, stage)",
         "function ScienceExecution.GetLegacyAvailableStage(player)",
-        "buildQueue.CanProduce",
+        "return ScienceExecution.NONE, 0;",
         "ScienceExecution.SeedCountsThroughStage(player, migrationStage)",
         "function ScienceExecution.RecordProjectCompletion(\n    playerID,",
         "bCanceled == true or bCanceled == 1",
@@ -1209,6 +1226,7 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
 
     expected_science_stage_conditions = {
         "ASAI_STRATEGY_SCIENCE_MOON_EXECUTION": "ASAI_IsScienceMoonExecution",
+        "ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION": "ASAI_IsScienceSatelliteExecution",
         "ASAI_STRATEGY_SCIENCE_MARS_EXECUTION": "ASAI_IsScienceMarsExecution",
         "ASAI_STRATEGY_SCIENCE_EXOPLANET_EXECUTION": "ASAI_IsScienceExoplanetExecution",
         "ASAI_STRATEGY_SCIENCE_LASER_EXECUTION": "ASAI_IsScienceLaserExecution",
@@ -2813,11 +2831,14 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
     for forbidden in (":SetProperty(", "RequestOperation(", "ExposedMembers", "GameEvents."):
         if forbidden in ui:
             errors.append(f"read-only UI diagnostics crossed the behavior boundary: {forbidden}")
-    for marker in ("ASAI_UI_TRADE", "ASAI_UI_CULTURE", "ASAI_UI_CITY_QUEUE"):
+    for marker in ("ASAI_UI_TRADE", "ASAI_UI_CULTURE", "ASAI_UI_CITY_QUEUE",
+                   "ASAI_UI_TRADE_RECHECK", "ASAI_UI_CAPABILITIES"):
         counts = lua_format_counts(ui, marker)
         if counts is None or counts[0] != counts[1]:
             errors.append(f"UI format arguments disagree for {marker}: {counts}")
-    for marker in ("ASAI_EXECUTION", "ASAI_CONDITION", "ASAI_STABILITY", "ASAI_CITY_QUEUE"):
+    for marker in ("ASAI_EXECUTION", "ASAI_CONDITION", "ASAI_STABILITY", "ASAI_CITY_QUEUE",
+                   "ASAI_EXECUTION_DETAIL", "ASAI_DEFENSE_REVIEW", "ASAI_SCIENCE_PREPARATION",
+                   "ASAI_CANDIDATE"):
         counts = lua_format_counts(gameplay, marker)
         if counts is None or counts[0] != counts[1]:
             errors.append(f"execution format arguments disagree for {marker}: {counts}")
@@ -2838,6 +2859,10 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
         if fragment not in gameplay:
             errors.append(f"execution contract is missing: {fragment}")
     expected = {
+        ("ASAI_LandRecoveryUnits", "UNIT_LINE_INFANTRY"): 180,
+        ("ASAI_TraderExecutionUnits", "UNIT_TRADER"): 220,
+        ("ASAI_SatelliteExecutionProjects", "PROJECT_LAUNCH_EARTH_SATELLITE"): 350,
+        ("ASAI_PreparationBudgetDistricts", "DISTRICT_SPACEPORT"): -400,
         ("ASAI_WritingPrerequisiteTechs", "TECH_WRITING"): 400,
         ("ASAI_EducationPrerequisiteTechs", "TECH_EDUCATION"): 400,
         ("ASAI_EducationPrerequisiteTechs", "TECH_MATHEMATICS"): 120,
@@ -2854,6 +2879,17 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
                                  (list_type, item)).fetchone()
         if row is None or row[0] != value:
             errors.append(f"execution preference {list_type}/{item}: expected {value}, got {row}")
+    if re.search(r"(?:\.|:)CanProduce\b", gameplay):
+        errors.append("Gameplay must not depend on an unverified CanProduce signature")
+    if ":CurrentlyBuilding(" in ui or ":GetCurrentProductionTypeHash(" not in ui:
+        errors.append("UI production telemetry must use the native UI hash API")
+    for fragment in ("function Execution.IsCandidate(assets, row, entry)",
+                     "function Strategic.AssessDefenseOutcome(",
+                     "function Execution.TraderBudget(",
+                     "function ScienceExecution.PreparationBudget(",
+                     'candidate_mode=data_prerequisites native_legality=unverified'):
+        if fragment not in gameplay:
+            errors.append(f"continuation regression contract is missing: {fragment}")
     for list_type, promotion, value in (
         ("ASAI_RangedReinforcementUnits", "PROMOTION_CLASS_RANGED", 125),
         ("ASAI_SiegeReinforcementUnits", "PROMOTION_CLASS_SIEGE", 160),
@@ -2929,6 +2965,16 @@ def main() -> int:
                         f"expected {EXPECTED_RELEASE}, "
                         f"found {None if release is None else release[0]}"
                     )
+                first_pass = semantic_database_digest(target)
+                try:
+                    for sql_file in database_files(modinfo):
+                        target.executescript(sql_file.read_text(encoding="utf-8"))
+                    if semantic_database_digest(target) != first_pass:
+                        errors.append("replaying all SQL scripts changes semantic database contents")
+                    repeated_fk = foreign_key_errors(target) - baseline_fk
+                    errors.extend(f"replay foreign-key error: {row}" for row in sorted(repeated_fk))
+                except (OSError, sqlite3.Error) as error:
+                    errors.append(f"second SQL replay failed: {error}")
 
     if errors:
         print("VALIDATION FAILED")
@@ -2940,6 +2986,7 @@ def main() -> int:
     print(f"- release: {EXPECTED_RELEASE} (modinfo {EXPECTED_MODINFO_VERSION})")
     print(f"- modinfo: {modinfo.name}")
     print(f"- database scripts: {len(database_files(modinfo))}")
+    print("- repeated SQL load: identical table contents and no new foreign-key errors")
     print(
         "- Deity opening: 2 Settlers, 3 Warriors, 1 Builder; "
         "+50% Production/Gold, +24% Science/Culture/Faith, +3 combat, +30% XP"

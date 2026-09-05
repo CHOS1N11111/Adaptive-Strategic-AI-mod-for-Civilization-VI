@@ -9,6 +9,68 @@ INSERT OR REPLACE INTO GlobalParameters (Name, Value) VALUES
     ('ASAI_WAR_SERIOUS_OWN_LOSS_X100', 25),
     ('ASAI_LOYALTY_STABILIZE_STANDARD', 16);
 
+INSERT OR REPLACE INTO GlobalParameters (Name, Value) VALUES
+    ('ASAI_TRADER_EXECUTION_DELAY_STANDARD', 12),
+    ('ASAI_SCIENCE_FIRST_PORT_HORIZON_STANDARD', 24);
+
+-- Fixed valuation changes with runtime queue budgets, not yield grants or
+-- forced orders. Native strategy refresh may lag the Lua condition.
+INSERT INTO Types (Type, Kind) VALUES
+    ('ASAI_STRATEGY_LAND_RECOVERY', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_TRADER_EXECUTION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_PREPARATION_BUDGET', 'KIND_VICTORY_STRATEGY');
+INSERT INTO Strategies (StrategyType, NumConditionsNeeded) VALUES
+    ('ASAI_STRATEGY_LAND_RECOVERY', 1),
+    ('ASAI_STRATEGY_TRADER_EXECUTION', 1),
+    ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 1),
+    ('ASAI_STRATEGY_SCIENCE_PREPARATION_BUDGET', 1);
+INSERT INTO StrategyConditions
+    (StrategyType, ConditionFunction, StringValue, ThresholdValue, Disqualifier) VALUES
+    ('ASAI_STRATEGY_LAND_RECOVERY', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_LAND_RECOVERY', 'Call Lua Function', 'ASAI_IsLandRecovery', 0, 0),
+    ('ASAI_STRATEGY_TRADER_EXECUTION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_TRADER_EXECUTION', 'Call Lua Function', 'ASAI_IsTraderExecution', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 'Call Lua Function', 'ASAI_IsScienceSatelliteExecution', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_PREPARATION_BUDGET', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_PREPARATION_BUDGET', 'Call Lua Function', 'ASAI_IsSciencePreparationBudget', 0, 0);
+INSERT INTO AiListTypes (ListType) VALUES
+    ('ASAI_LandRecoveryUnits'), ('ASAI_LandRecoveryPseudoYields'),
+    ('ASAI_TraderExecutionUnits'), ('ASAI_TraderExecutionPseudoYields'),
+    ('ASAI_SatelliteExecutionProjects'), ('ASAI_SatelliteExecutionPseudoYields'),
+    ('ASAI_PreparationBudgetDistricts');
+INSERT INTO AiLists (ListType, System) VALUES
+    ('ASAI_LandRecoveryUnits', 'Units'),
+    ('ASAI_LandRecoveryPseudoYields', 'PseudoYields'),
+    ('ASAI_TraderExecutionUnits', 'Units'),
+    ('ASAI_TraderExecutionPseudoYields', 'PseudoYields'),
+    ('ASAI_SatelliteExecutionProjects', 'Projects'),
+    ('ASAI_SatelliteExecutionPseudoYields', 'PseudoYields'),
+    ('ASAI_PreparationBudgetDistricts', 'Districts');
+INSERT INTO Strategy_Priorities (StrategyType, ListType) VALUES
+    ('ASAI_STRATEGY_LAND_RECOVERY', 'ASAI_LandRecoveryUnits'),
+    ('ASAI_STRATEGY_LAND_RECOVERY', 'ASAI_LandRecoveryPseudoYields'),
+    ('ASAI_STRATEGY_TRADER_EXECUTION', 'ASAI_TraderExecutionUnits'),
+    ('ASAI_STRATEGY_TRADER_EXECUTION', 'ASAI_TraderExecutionPseudoYields'),
+    ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 'ASAI_SatelliteExecutionProjects'),
+    ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 'ASAI_SatelliteExecutionPseudoYields'),
+    ('ASAI_STRATEGY_SCIENCE_PREPARATION_BUDGET', 'ASAI_PreparationBudgetDistricts');
+INSERT INTO AiFavoredItems (ListType, Item, Favored, Value)
+SELECT 'ASAI_LandRecoveryUnits', UnitType, 1, 180 FROM Units
+WHERE Domain = 'DOMAIN_LAND'
+  AND MAX(COALESCE(Combat, 0), COALESCE(RangedCombat, 0), COALESCE(AntiAirCombat, 0)) > 0
+  AND PromotionClass NOT IN ('PROMOTION_CLASS_SIEGE', 'PROMOTION_CLASS_GIANT_DEATH_ROBOT');
+INSERT INTO AiFavoredItems (ListType, Item, Favored, Value)
+SELECT 'ASAI_TraderExecutionUnits', UnitType, 1, 220 FROM Units WHERE MakeTradeRoute = 1;
+INSERT INTO AiFavoredItems (ListType, Item, Favored, Value) VALUES
+    ('ASAI_LandRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 80),
+    ('ASAI_LandRecoveryPseudoYields', 'PSEUDOYIELD_WONDER', 0, -45),
+    ('ASAI_TraderExecutionPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 160),
+    ('ASAI_SatelliteExecutionProjects', 'PROJECT_LAUNCH_EARTH_SATELLITE', 1, 350),
+    ('ASAI_SatelliteExecutionPseudoYields', 'PSEUDOYIELD_SPACE_RACE', 1, 125),
+    ('ASAI_PreparationBudgetDistricts', 'DISTRICT_SPACEPORT', 0, -400);
+
 INSERT INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_WRITING_PREREQUISITE', 'KIND_VICTORY_STRATEGY'),
     ('ASAI_STRATEGY_EDUCATION_PREREQUISITE', 'KIND_VICTORY_STRATEGY'),
