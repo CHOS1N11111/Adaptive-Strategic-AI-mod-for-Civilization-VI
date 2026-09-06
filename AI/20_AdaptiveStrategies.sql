@@ -677,7 +677,8 @@ VALUES
     ('ASAI_ScienceLaserTechs', 'TECH_OFFWORLD_MISSION', 1, 240),
     ('ASAI_ScienceLaserProjects', 'PROJECT_ORBITAL_LASER', 1, 500),
     ('ASAI_ScienceLaserProjects', 'PROJECT_TERRESTRIAL_LASER', 1, 500),
-    ('ASAI_ScienceLaserDistricts', 'DISTRICT_SPACEPORT', 1, 125),
+    -- Additional ports belong to the bounded scale strategy, not to every
+    -- laser-finishing empire regardless of existing port capacity.
     ('ASAI_ScienceLaserDistricts', 'DISTRICT_INDUSTRIAL_ZONE', 1, 50),
     ('ASAI_ScienceLaserYields', 'YIELD_SCIENCE', 1, 20),
     ('ASAI_ScienceLaserYields', 'YIELD_PRODUCTION', 1, 65),

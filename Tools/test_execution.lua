@@ -319,6 +319,39 @@ equal(trader(124).TraderStage, "unknown", "unknown queue cannot silently become 
 economy.QueueOk = 1;
 
 local originalStatus = E.GetStatus;
+-- Demand is not a native order. Retain count gain and in-flight observations
+-- separately, including reload and resolved/unknown/emergency exits.
+properties = {};
+tradeStatus = E.EmptyStatus(140);
+tradeStatus.TraderStage, tradeStatus.TraderGap = "trader", 4;
+E.RecordTraderChain(player, tradeStatus, 140);
+equal(tradeStatus.TraderChain, "awaiting_native_order", "a candidate does not manufacture a trader order");
+E.RecordTraderChain(player, tradeStatus, 146);
+equal(tradeStatus.TraderRequestAge, 6, "pending request age survives independent evaluations");
+tradeStatus.TraderStage = "inflight";
+E.RecordTraderChain(player, tradeStatus, 147);
+check(tradeStatus.TraderRequestAge == 0 and tradeStatus.TraderChain == "inflight_budget",
+    "an observed queued budget ends unserved-request aging");
+for stage, expected in pairs({ unknown = "unknown_sensor", blocked = "no_data_candidate",
+    emergency = "defense_priority" }) do
+    tradeStatus.TraderStage = stage;
+    E.RecordTraderChain(player, tradeStatus, 148);
+    equal(tradeStatus.TraderChain, expected, "trader demand exit " .. stage);
+end
+tradeStatus.TraderStage, tradeStatus.TraderGap = "none", 0;
+E.RecordTraderChain(player, tradeStatus, 149);
+equal(tradeStatus.TraderChain, "covered", "full route capacity ends the demand chain");
+babylon.RouteCapacity, babylon.Traders, babylon.InFlightTraders = 6, 2, 0;
+trader(150);
+babylon.Traders, babylon.InFlightTraders = 3, 1;
+trader(151);
+check(properties.ASAI_EXEC_TRADER_GAIN_TURN == 151
+    and properties.ASAI_EXEC_TRADER_INFLIGHT_TURN == 151,
+    "trader count gains and current production get separate persisted timestamps");
+babylon.InFlightTraders = 0;
+tradeStatus = trader(152);
+E.RecordTraderChain(player, tradeStatus, 152);
+equal(tradeStatus.TraderGainTurn, 151, "unchanged trader count does not fabricate another completion");
 E.GetStatus = function() return { ScienceStage = "infrastructure", ScienceGoal = "university" }; end;
 check(E.IsEducation(1) and not E.IsWriting(1) and not E.IsLaboratory(1),
     "university handoff activates only its specific facility strategy");
@@ -453,6 +486,110 @@ check(not E.IsCandidate(probe, probe.Cities[1], E.GetDefinitions().ByType.DISTRI
 -- Real science collector: Rocketry -> first port -> satellite -> original
 -- milestone chain, including reload, canceled projects and acute defense.
 local science = upvalue(env.ASAI_IsScienceSatelliteExecution, "ScienceExecution");
+local portPlan = science.PlanPorts(14, {
+    { ID = 7, Production = 30 }, { ID = 3, Production = 90 }, { ID = 2, Production = 90 }
+}, {}, 900);
+check(portPlan.PreferredCity == 2 and portPlan.Target == 2 and portPlan.EstimatedTurns == 10,
+    "eligible high-production first-port nomination is deterministic");
+portPlan = science.PlanPorts(14, { { ID = 4, Production = 95 } },
+    { { ID = 1, Production = 70 }, { ID = 2, Production = 72 } }, 900);
+check(portPlan.Target == 3 and portPlan.Rescue and portPlan.PreferredCity == 4,
+    "a materially faster third candidate can rescue two slow first ports");
+portPlan = science.PlanPorts(14, { { ID = 4, Production = 95 } },
+    { { ID = 1, Production = 85 } }, 900);
+check(portPlan.Target == 1 and not portPlan.Rescue,
+    "a marginally faster city cannot trigger another speculative port");
+portPlan = science.PlanPorts(14, { { ID = 4, Production = 150 } },
+    { { ID = 1, Production = 70 }, { ID = 2, Production = 70 },
+      { ID = 3, Production = 70 } }, 900);
+check(portPlan.Target <= 3 and not portPlan.Rescue, "pre-satellite rescue cannot grow without bound");
+portPlan = science.PlanPorts(14, { { ID = 4, Production = 150 } },
+    { { ID = 1, Production = 70, Usable = true } }, 900);
+check(portPlan.Target == 1 and not portPlan.Rescue and portPlan.Reason == "first_project",
+    "a usable first port hands off to a project rather than repeated rescue");
+portPlan = science.PlanPorts(14, { { ID = 1, Production = 0 } }, {}, 900);
+check(portPlan.Target == 0 and portPlan.PreferredCity == -1,
+    "zero productive candidates cannot claim a nominated construction city");
+equal(science.PlanPorts(0, {}, {}, 900).Target, 0, "empty empire has no first-port demand");
+equal(science.PlanPorts(7, { { ID = 1, Production = 100 } }, {}, 0).EstimatedTurns, -1,
+    "unknown cost is never logged as an instant port");
+
+local finish = { Enabled = true, Verified = true, Emergency = false, Attrition = false,
+    Stage = science.EXOPLANET, UsablePorts = 4, ActiveProjects = 0, RecentProgress = true,
+    Wars = 2, PastStopLoss = true, SameOpponents = true, NewWarProgress = false };
+local activeCapacity, holdWar, capacityReason = science.DecideCapacity(finish);
+check(activeCapacity and holdWar and capacityReason == "finish_over_stalled_war",
+    "Babylon-like exoplanet handoff releases ordinary offensive production");
+for key, value in pairs({ Enabled = false, Verified = false, Emergency = true,
+    Attrition = true, UsablePorts = 0, SameOpponents = false, NewWarProgress = true,
+    PastStopLoss = false }) do
+    local original = finish[key];
+    finish[key] = value;
+    activeCapacity, holdWar = science.DecideCapacity(finish);
+    check(not activeCapacity and not holdWar, "science capacity safely exits for " .. key);
+    finish[key] = original;
+end
+finish.Stage, finish.RecentProgress = science.SATELLITE, false;
+check(not science.DecideCapacity(finish), "abandoned early science work does not indefinitely suppress a war");
+finish.ActiveProjects = 1;
+check(science.DecideCapacity(finish), "a real early space project can coexist with a reviewed stalled war");
+finish.Stage, finish.Wars, finish.PastStopLoss = science.MARS, 0, false;
+activeCapacity, holdWar = science.DecideCapacity(finish);
+check(activeCapacity and not holdWar, "peaceful late science finishes reprioritize without fabricating a war");
+finish.Stage = science.NONE;
+check(not science.DecideCapacity(finish), "no science investment leaves normal strategy unchanged");
+
+-- Persisted comparison baseline, not a cooldown timer that restarts on load.
+properties = {};
+local actualPorts, actualQueues = science.GetCompletedSpaceports, science.GetQueueState;
+science.GetCompletedSpaceports = function() return 4, 4; end;
+science.GetQueueState = function() return 0; end;
+properties[science.STAGE_PROPERTY] = science.EXOPLANET;
+properties[science.LAST_PROGRESS_TURN_PROPERTY] = 148;
+local coordinationSnapshot = { Turn = 150, ActiveMajorWars = 2, Cities = 15, CapturedCities = 2,
+    MajorOpponents = { 3, 2 }, MajorCaptureEvents = 4, MajorPillageEvents = 8 };
+local coordinationState = { StrategicPlanCooldownUntil = { [S.WAR] = 144 },
+    Execution = { Turn = 150, AssetsOk = 1, Density = 1.2 } };
+now = 150;
+local capacity = science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot);
+check(not capacity.Active and not capacity.HoldWar,
+    "old save seeds a comparison window instead of assuming its current wars were previously reviewed");
+equal(properties.ASAI_SCIENCE_WAR_BASELINE_OPPONENTS, "2:3", "war baseline uses stable opponent identity");
+coordinationSnapshot.Turn, coordinationState.Execution.Turn, now = 152, 152, 152;
+capacity = science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot);
+check(capacity.Active and properties.ASAI_SCIENCE_WAR_BASELINE_TURN == 150,
+    "a stable comparison window activates coordination without replacing the persisted baseline");
+coordinationSnapshot.MajorCaptureEvents = 5;
+check(science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot).Active,
+    "an unheld capture does not manufacture renewed war success");
+coordinationSnapshot.CapturedCities, coordinationSnapshot.Cities = 3, 16;
+check(not science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot).Active,
+    "new held capture releases the stale-war assumption");
+coordinationSnapshot.CapturedCities, coordinationSnapshot.Cities = 2, 15;
+coordinationSnapshot.MajorCaptureEvents, coordinationSnapshot.MajorPillageEvents = 4, 9;
+check(science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot).Active,
+    "Babylon-like single pillage is still below the existing war-outcome threshold");
+coordinationSnapshot.MajorPillageEvents = 10;
+check(not science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot).Active,
+    "effective own pillaging releases the stale-war assumption");
+coordinationSnapshot.MajorPillageEvents, coordinationSnapshot.MajorOpponents = 8, { 2, 4 };
+check(not science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot).Active,
+    "equal war count with a new opponent cannot retain old-war suppression");
+coordinationSnapshot.MajorOpponents, coordinationState.Execution.Turn = { 2, 3 }, 150;
+check(not science.GetCapacityPolicy(1, coordinationState, coordinationSnapshot).Active,
+    "stale successful defense telemetry is not current evidence");
+coordinationState.Execution.Turn = 152;
+coordinationState.ScienceCapacity = { Active = true, HoldWar = true };
+coordinationState.RawScores, coordinationState.CompetitiveScores = { Military = 1.2 }, { Military = 1.2 };
+coordinationState.Execution.ThinArmy = false;
+local choice, reason = S.SelectPlan(coordinationState, coordinationSnapshot, { [S.WAR] = 1000 });
+check(choice == S.DEVELOP and reason == "science_finish_reallocate",
+    "expired stop-loss cannot immediately force WAR=1000 over a safe science finish");
+coordinationState.Execution.ThinArmy = true;
+choice = S.SelectPlan(coordinationState, coordinationSnapshot, { [S.WAR] = 1000 });
+equal(choice, S.DEFEND, "existing rearm safety takes precedence over a cached science hold");
+science.GetCompletedSpaceports, science.GetQueueState = actualPorts, actualQueues;
+
 equal(science.PreparationBudget(7, { 100, 80, 70 }, 900), 1,
     "Maori-sized empire does not request three pre-satellite ports");
 equal(science.PreparationBudget(14, { 90, 80, 50 }, 900), 2,
@@ -514,6 +651,52 @@ check(science.Collect(1).Stage == science.SATELLITE and science.IsMoon(1),
     "completed project count and handoff survive same-turn reload");
 equal(science.GetSpaceportTarget(science.EXOPLANET, 14), 3,
     "existing late-game laser scale target remains unchanged");
+do
+    local originalCollect, originalCandidate = E.CollectAssets, E.IsCandidate;
+    local collections = 0;
+    local function portCity(id, production, currentItem, blocked, placed)
+        return { City = { GetID = function() return id; end }, Production = production,
+            Current = currentItem, Blocked = blocked,
+            Placed = placed and { DISTRICT_SPACEPORT = true } or {}, Districts = {} };
+    end
+    E.CollectAssets = function()
+        collections = collections + 1;
+        return { Cities = {
+            portCity(1, 40, "DISTRICT_SPACEPORT", false, true),
+            portCity(2, 400, nil, true, false),
+            portCity(3, 90, nil, false, false),
+            portCity(4, 300, "PROJECT_LAUNCH_EARTH_SATELLITE", false, false)
+        } };
+    end;
+    E.IsCandidate = function(_, row) return not row.Blocked; end;
+    science.PortPlans, now = {}, 160;
+    local nominated = science.GetPortPlan(player, 14);
+    check(nominated.PreferredCity == 3 and nominated.CandidateCount == 1 and nominated.Target == 2,
+        "port planning excludes disqualified cities and protected space queues before ranking");
+    science.GetPortPlan(player, 14);
+    equal(collections, 1, "repeated native strategy checks reuse this turn's city candidate scan");
+    now = 161;
+    science.GetPortPlan(player, 14);
+    equal(collections, 2, "new turn refreshes production and candidates");
+    E.CollectAssets = function() error("candidate sensor unavailable"); end;
+    now = 162;
+    nominated = science.GetPortPlan(player, 14);
+    check(nominated.Target == 1 and nominated.PreferredCity == -1
+        and nominated.CandidateCount == -1, "failed candidate scan retains baseline budget without inventing a city");
+    E.CollectAssets, E.IsCandidate = originalCollect, originalCandidate;
+    science.PortPlans = {};
+    local originalScienceCollect = science.Collect;
+    local paused = { Active = true, Preparing = true, Spaceports = 0,
+        SpaceportsInFlight = 0, SpaceportsCommitted = 3, SpaceportTarget = 3, UsableSpaceports = 0 };
+    science.Collect = function() return paused; end;
+    check(not science.IsSpaceportScale(1), "placed but paused ports still occupy the preparation budget");
+    check(not science.IsPreparationBudgetReached(1),
+        "an entirely paused port pipeline may resume without a new district penalty");
+    paused.SpaceportsInFlight = 1;
+    check(science.IsPreparationBudgetReached(1),
+        "resumed construction consumes the committed budget without losing the other placed ports");
+    science.Collect = originalScienceCollect;
+end
 upvalue(science.Collect, "GetSnapshot", realSnapshot);
 science.GetPolicyStatus = realPolicy;
 env.GameInfo = savedInfo;
@@ -623,5 +806,146 @@ check(string.find(uiLogs[#uiLogs], "current=none", 1, true) ~= nil,
     "negative empty production hash is a valid empty queue, not an interface failure");
 ui.ContextPtr.Shutdown();
 equal(#uiEvents.PlayerTurnDeactivated.Callbacks, 0, "UI shutdown removes handlers");
+
+do
+    local uiProperties = { ASAI_SCIENCE_EXECUTION_STAGE = 4,
+        ASAI_SCIENCE_EXECUTION_LAST_PROGRESS_TURN = 148,
+        ASAI_EXEC_TRADER_CHAIN = "awaiting_native_order", ASAI_EXEC_TRADER_CHAIN_TURN = 150,
+        ASAI_SCIENCE_CAPACITY_ACTIVE = 1, ASAI_SCIENCE_CAPACITY_TURN = 150 };
+    local requests, unavailableProject = {}, false;
+    local aluminum, required, fullPower = 20, 10, false;
+    local queueFixture = {
+        GetCurrentProductionTypeHash = function() return uiHash; end,
+        GetUnitCost = function() return 120; end, GetUnitProgress = function() return 0; end,
+        GetProjectCost = function() return 300; end, GetProjectProgress = function() return 0; end,
+        GetDistrictCost = function() return 900; end, GetDistrictProgress = function() return 150; end,
+        GetTurnsLeft = function() return 6; end,
+        CanProduce = function(_, request, exclusion, reasons)
+            table.insert(requests, { Request = request, Exclusion = exclusion, Reasons = reasons });
+            if exclusion then return true; end
+            if type(request) == "table" then
+                assert(request.UnitType == 8001 and request.MilitaryFormationType == 0);
+                return true;
+            end
+            if request == 8002 then
+                if unavailableProject then error("temporary project failure"); end
+                return aluminum >= 30, { failures = { "LOC_NOT_ENOUGH_ALUMINUM" } };
+            end
+            if request == 8003 then return true; end
+            if request == 8004 then return false, { failures = { "LOC_NO_SUITABLE_LOCATION" } }; end
+            error("unexpected hash");
+        end
+    };
+    ui.MilitaryFormationTypes = { STANDARD_MILITARY_FORMATION = 0 };
+    ui.CityCommandResults = { FAILURE_REASONS = "failures" };
+    ui.YieldTypes = { PRODUCTION = 3 };
+    ui.GameInfo.Units.UNIT_TRADER = { UnitType = "UNIT_TRADER", Hash = 8001, Index = 101, MakeTradeRoute = true };
+    ui.GameInfo.Projects.PROJECT_ORBITAL_LASER = { ProjectType = "PROJECT_ORBITAL_LASER", Hash = 8002, Index = 102 };
+    ui.GameInfo.Projects.PROJECT_TERRESTRIAL_LASER = { ProjectType = "PROJECT_TERRESTRIAL_LASER", Hash = 8003, Index = 103 };
+    ui.GameInfo.Projects[8002] = ui.GameInfo.Projects.PROJECT_ORBITAL_LASER;
+    ui.GameInfo.Districts.DISTRICT_SPACEPORT = { DistrictType = "DISTRICT_SPACEPORT", Hash = 8004, Index = 104 };
+    ui.GameInfo.Technologies = { TECH_ROCKETRY = { Index = 1 }, TECH_OFFWORLD_MISSION = { Index = 2 } };
+    ui.GameInfo.Resources = { RESOURCE_ALUMINUM = { Index = 5 } };
+    ui.GameInfo.Project_ResourceCosts = db({
+        { ProjectType = "PROJECT_ORBITAL_LASER", ResourceType = "RESOURCE_ALUMINUM", StartProductionCost = 30 }
+    }, "ProjectType");
+    ui.GameInfo.ProjectCompletionModifiers = db({
+        { ProjectType = "PROJECT_TERRESTRIAL_LASER", ModifierId = "EXTRA_POWER" }
+    }, "ProjectType");
+    ui.GameInfo.Modifiers = { EXTRA_POWER = { ModifierType = "MODIFIER_SINGLE_CITY_ADJUST_REQUIRED_POWER" } };
+    ui.GameInfo.ModifierArguments = db({
+        { ModifierId = "EXTRA_POWER", Name = "Amount", Value = "5" }
+    }, "ModifierId");
+    ui.Players[1].GetProperty = function(_, name) return uiProperties[name]; end;
+    ui.Players[1].GetTechs = function() return { HasTech = function() return true; end }; end;
+    ui.Players[1].GetTrade = function() return { GetNumOutgoingRoutes = function() return 1; end,
+        GetOutgoingRouteCapacity = function() return 6; end }; end;
+    ui.Players[1].GetResources = function() return { GetResourceAmount = function() return aluminum; end }; end;
+    uiCity.GetYield = function() return 100; end;
+    uiCity.GetBuildQueue = function() return queueFixture; end;
+    uiCity.GetDistricts = function() return { GetDistrict = function(_, name)
+        assert(name == "DISTRICT_SPACEPORT");
+        return { IsComplete = function() return true; end, IsPillaged = function() return false; end };
+    end }; end;
+    uiCity.GetPower = function() return { GetFreePower = function() return 4; end,
+        GetTemporaryPower = function() return 2; end, GetRequiredPower = function() return required; end,
+        IsFullyPowered = function() return fullPower; end }; end;
+    uiHash, now = 1234, 150;
+    assert(loadfile("UI/ASAI_Diagnostics.lua", "t", ui))();
+    local writeSample = upvalue(uiEvents.GameCoreEventPublishComplete.Callbacks[1], "WriteSample");
+    local writeProbes = upvalue(writeSample, "WriteExecutionProbes");
+    local probe = upvalue(writeProbes, "ProbeProduction");
+    local function capture()
+        local first = #uiLogs + 1;
+        writeProbes(ui.Players[1], now, now);
+        local result = {};
+        for i = first, #uiLogs do table.insert(result, uiLogs[i]); end
+        return table.concat(result, "\n");
+    end
+    local output = capture();
+    check(output:find("unit=UNIT_TRADER can_produce=1", 1, true) ~= nil,
+        "UI trader demand reaches actual typed CanProduce without pretending to issue orders");
+    check(output:find("capacity=6 traders=1 current_trader_queues=0 can_produce_cities=1", 1, true) ~= nil,
+        "UI demand preserves observed capacity, units, and production separately");
+    check(output:find("reasons=LOC_NOT_ENOUGH_ALUMINUM aluminum=20.0 orbital_aluminum_cost=30.0", 1, true) ~= nil,
+        "orbital legality retains native failure token and database resource requirement");
+    check(output:find("power_supplied=6.0 power_required=10.0 fully_powered=0 observed_power_margin=-4.0 terrestrial_extra_power=5.0", 1, true) ~= nil,
+        "power shortfall is measured without asserting future supply");
+    check(output:find("project=PROJECT_TERRESTRIAL_LASER", 1, true) ~= nil
+        and output:find("can_produce=1 visible=1 reasons=none", 1, true) ~= nil,
+        "an unpowered city may still legally construct a terrestrial laser");
+    check(output:find("current=UNIT_BUILDER", 1, true) ~= nil
+        and output:find("future_power=unverified", 1, true) ~= nil,
+        "current production is distinguished from a legal future project");
+    check(requests[1].Exclusion == false and requests[1].Reasons == true
+        and requests[1].Request.UnitType == 8001 and requests[3].Request == 8002,
+        "unit table and project hash use the original production-panel signatures");
+    local absent = probe({}, ui.GameInfo.Projects.PROJECT_ORBITAL_LASER, "Project");
+    equal(absent.Can, -1, "missing CanProduce is unknown rather than false or allowed");
+    absent = probe(queueFixture, { ProjectType = "NO_HASH" }, "Project");
+    equal(absent.Can, -1, "missing project hash is unknown");
+    unavailableProject, now = true, 152;
+    output = capture();
+    check(output:find("can_produce=-1 visible=1 reasons=unknown_can_produce", 1, true) ~= nil
+        and output:find("project=PROJECT_TERRESTRIAL_LASER", 1, true) ~= nil,
+        "one project API failure does not poison the other laser diagnostic");
+    unavailableProject, aluminum, fullPower, required, uiHash, now = false, 50, true, 5, 8002, 154;
+    output = capture();
+    check(output:find("observed_turn=154", 1, true) ~= nil
+        and output:find("current=PROJECT_ORBITAL_LASER", 1, true) ~= nil
+        and output:find("aluminum=50.0", 1, true) ~= nil,
+        "later legal laser production is read freshly rather than cached from prerequisites");
+    uiCity.GetPower = nil;
+    output = capture();
+    check(output:find("power_supplied=-1.0 power_required=-1.0 fully_powered=-1", 1, true) ~= nil
+        and output:find("can_produce=1", 1, true) ~= nil,
+        "missing power API does not invalidate the native project buildability result");
+    uiProperties.ASAI_SCIENCE_EXECUTION_STAGE, uiHash, now = 0, 1234, 156;
+    uiProperties.ASAI_SCIENCE_PORT_NOMINATION, uiProperties.ASAI_SCIENCE_PORT_NOMINATION_TURN = 12, 154;
+    output = capture();
+    check(output:find("ASAI_UI_PORT_CANDIDATE", 1, true) ~= nil
+        and output:find("can_produce=0 reasons=LOC_NO_SUITABLE_LOCATION", 1, true) ~= nil
+        and output:find("nominated_city=12 nomination_turn=154 assignment=native plot=unverified", 1, true) ~= nil,
+        "data nomination is not mislabeled as actual city selection or a valid plot");
+    local badCity = { GetID = function() return 10; end,
+        GetBuildQueue = function() error("city removed mid-publish"); end };
+    ui.Players[1].GetCities = function() return members({ badCity, uiCity }); end;
+    output = capture();
+    check(output:find("fallback=next_city", 1, true) ~= nil
+        and output:find("city=11 unit=UNIT_TRADER can_produce=1", 1, true) ~= nil
+        and output:find("can_produce_cities=1 unknown_cities=1", 1, true) ~= nil,
+        "failed city remains unknown while the next city still reports its real candidate");
+    ui.ContextPtr.Shutdown();
+    ui.GameInfo.Project_ResourceCosts, ui.GameInfo.ModifierArguments = nil, nil;
+    uiProperties.ASAI_SCIENCE_EXECUTION_STAGE = 4;
+    assert(loadfile("UI/ASAI_Diagnostics.lua", "t", ui))();
+    writeSample = upvalue(uiEvents.GameCoreEventPublishComplete.Callbacks[1], "WriteSample");
+    writeProbes = upvalue(writeSample, "WriteExecutionProbes");
+    output = capture();
+    check(output:find("orbital_aluminum_cost=-1.0", 1, true) ~= nil
+        and output:find("terrestrial_extra_power=-1.0", 1, true) ~= nil,
+        "missing cost tables remain unknown rather than hardcoded current rules");
+    ui.ContextPtr.Shutdown();
+end
 
 print(string.format("LUA REGRESSION PASSED: %d checks; real Lua functions, mocked game boundary", checks));

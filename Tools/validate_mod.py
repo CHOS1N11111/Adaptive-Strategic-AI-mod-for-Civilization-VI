@@ -22,6 +22,7 @@ ITEM_TABLES = {
     "Civics": ("Civics", "CivicType"),
     "UnitPromotionClasses": ("UnitPromotionClasses", "PromotionClassType"),
     "AiOperationTypes": ("AiOperationTypes", "OperationType"),
+    "AiBuildSpecializations": ("AiBuildSpecializations", "SpecializationType"),
     "DiplomaticActions": ("DiplomaticActions", "DiplomaticActionType"),
 }
 
@@ -31,9 +32,9 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.12"
-EXPECTED_MODINFO_VERSION = "34"
-EXPECTED_STRATEGIES = 42
+EXPECTED_RELEASE = "0.11.13"
+EXPECTED_MODINFO_VERSION = "35"
+EXPECTED_STRATEGIES = 43
 
 
 def default_database() -> Path:
@@ -703,7 +704,7 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "ASAI_SCIENCE_SPACEPORT_LASER_CAP",
         "math.floor(cities / 5)",
         "math.floor(cities / 4)",
-        "state.Spaceports + state.SpaceportsInFlight < state.SpaceportTarget",
+        "(state.SpaceportsCommitted or state.Spaceports + state.SpaceportsInFlight)",
         "ASAI_SCIENCE_STAGE_TIMEOUT_STANDARD",
         "ASAI_SCIENCE_MARS_TIMEOUT_STANDARD",
         "ASAI_SCIENCE_DEFENSE_COMBAT_STANDARD",
@@ -1323,7 +1324,6 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
             "PROJECT_TERRESTRIAL_LASER": 500,
         },
         "ASAI_ScienceLaserDistricts": {
-            "DISTRICT_SPACEPORT": 125,
             "DISTRICT_INDUSTRIAL_ZONE": 50,
         },
         "ASAI_ScienceLaserBuildings": {
@@ -2832,13 +2832,16 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
         if forbidden in ui:
             errors.append(f"read-only UI diagnostics crossed the behavior boundary: {forbidden}")
     for marker in ("ASAI_UI_TRADE", "ASAI_UI_CULTURE", "ASAI_UI_CITY_QUEUE",
-                   "ASAI_UI_TRADE_RECHECK", "ASAI_UI_CAPABILITIES"):
+                   "ASAI_UI_TRADE_RECHECK", "ASAI_UI_CAPABILITIES",
+                   "ASAI_UI_TRADER_CANDIDATE", "ASAI_UI_TRADER_DEMAND",
+                   "ASAI_UI_PORT_CANDIDATE", "ASAI_UI_LASER_PREREQ"):
         counts = lua_format_counts(ui, marker)
         if counts is None or counts[0] != counts[1]:
             errors.append(f"UI format arguments disagree for {marker}: {counts}")
     for marker in ("ASAI_EXECUTION", "ASAI_CONDITION", "ASAI_STABILITY", "ASAI_CITY_QUEUE",
                    "ASAI_EXECUTION_DETAIL", "ASAI_DEFENSE_REVIEW", "ASAI_SCIENCE_PREPARATION",
-                   "ASAI_CANDIDATE"):
+                   "ASAI_CANDIDATE", "ASAI_TRADER_CHAIN", "ASAI_FIRST_PORT_PLAN",
+                   "ASAI_SCIENCE_CAPACITY"):
         counts = lua_format_counts(gameplay, marker)
         if counts is None or counts[0] != counts[1]:
             errors.append(f"execution format arguments disagree for {marker}: {counts}")
@@ -2861,6 +2864,10 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
     expected = {
         ("ASAI_LandRecoveryUnits", "UNIT_LINE_INFANTRY"): 180,
         ("ASAI_TraderExecutionUnits", "UNIT_TRADER"): 220,
+        ("ASAI_TraderExecutionSpecialization", "BUILD_TRADE_UNITS"): -2,
+        ("ASAI_ScienceCapacitySpecialization", "BUILD_MILITARY_UNITS"): 2,
+        ("ASAI_ScienceCapacityPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): -35,
+        ("ASAI_ScienceCapacityPseudoYields", "PSEUDOYIELD_SPACE_RACE"): 125,
         ("ASAI_SatelliteExecutionProjects", "PROJECT_LAUNCH_EARTH_SATELLITE"): 350,
         ("ASAI_PreparationBudgetDistricts", "DISTRICT_SPACEPORT"): -400,
         ("ASAI_WritingPrerequisiteTechs", "TECH_WRITING"): 400,
@@ -2887,9 +2894,32 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
                      "function Strategic.AssessDefenseOutcome(",
                      "function Execution.TraderBudget(",
                      "function ScienceExecution.PreparationBudget(",
+                     "function ScienceExecution.PlanPorts(",
+                     "function ScienceExecution.DecideCapacity(",
+                     "function Execution.RecordTraderChain(",
+                     'Strategic.GetOpponentKey(snapshot)',
+                     'science_finish_reallocate',
                      'candidate_mode=data_prerequisites native_legality=unverified'):
         if fragment not in gameplay:
             errors.append(f"continuation regression contract is missing: {fragment}")
+    for fragment in ("MilitaryFormationTypes.STANDARD_MILITARY_FORMATION",
+                     "pcall(queue.CanProduce, queue, request, false, true)",
+                     "CityCommandResults.FAILURE_REASONS", "GetResourceAmount",
+                     "GetRequiredPower", "future_power=unverified"):
+        if fragment not in ui:
+            errors.append(f"native execution diagnostic contract is missing: {fragment}")
+    for strategy, list_type in (
+        ("ASAI_STRATEGY_TRADER_EXECUTION", "ASAI_TraderExecutionSpecialization"),
+        ("ASAI_STRATEGY_SCIENCE_CAPACITY", "ASAI_ScienceCapacitySpecialization"),
+        ("ASAI_STRATEGY_SCIENCE_CAPACITY", "ASAI_ScienceCapacityPseudoYields"),
+    ):
+        owners = list(connection.execute(
+            "SELECT StrategyType FROM Strategy_Priorities WHERE ListType=?", (list_type,)))
+        if owners != [(strategy,)]:
+            errors.append(f"{list_type} must remain exclusive to its conditional strategy: {owners}")
+    if connection.execute("SELECT 1 FROM AiFavoredItems "
+                          "WHERE ListType='ASAI_ScienceLaserDistricts' AND Item='DISTRICT_SPACEPORT'").fetchone():
+        errors.append("laser execution must not bypass the separate spaceport scale budget")
     for list_type, promotion, value in (
         ("ASAI_RangedReinforcementUnits", "PROMOTION_CLASS_RANGED", 125),
         ("ASAI_SiegeReinforcementUnits", "PROMOTION_CLASS_SIEGE", 160),
@@ -2936,6 +2966,8 @@ def main() -> int:
             source.backup(target)
             register_game_sql_functions(target)
             baseline_fk = foreign_key_errors(target)
+            default_specializations = list(target.execute(
+                "SELECT * FROM AiFavoredItems WHERE ListType='DefaultCitySpecialization' ORDER BY Item"))
             target.execute("PRAGMA foreign_keys = ON")
             for sql_file in database_files(modinfo):
                 try:
@@ -2951,6 +2983,10 @@ def main() -> int:
                 errors.extend(validate_invariants(target))
                 errors.extend(validate_relative_pacing(target))
                 errors.extend(validate_execution_recovery(target, mod_root))
+                if list(target.execute(
+                    "SELECT * FROM AiFavoredItems WHERE ListType='DefaultCitySpecialization' ORDER BY Item"
+                )) != default_specializations:
+                    errors.append("conditional specializations must not rewrite the native/other-mod default list")
                 strategy_count = target.execute(
                     "SELECT COUNT(*) FROM Strategies WHERE StrategyType LIKE 'ASAI_%'"
                 ).fetchone()[0]

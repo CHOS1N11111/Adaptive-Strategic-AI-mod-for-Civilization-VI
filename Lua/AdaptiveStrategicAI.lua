@@ -1940,16 +1940,194 @@ function ScienceExecution.PreparationBudget(cities, production, cost)
 end
 
 function ScienceExecution.GetPreparationBudget(player, cities)
-    local production = {};
-    for _, city in player:GetCities():Members() do
-        table.insert(production, city:GetYield(GameInfo.Yields["YIELD_PRODUCTION"].Index));
+    return ScienceExecution.GetPortPlan(player, cities).Target;
+end
+
+-- A nomination/priority budget, never a forced city order or valid-plot claim.
+function ScienceExecution.PlanPorts(cities, candidates, committed, cost)
+    local eligible = {};
+    for _, row in ipairs(candidates) do
+        if (row.Production or 0) > 0 then table.insert(eligible, row); end
     end
+    candidates = eligible;
+    table.sort(candidates, function(a, b)
+        if a.Production == b.Production then return a.ID < b.ID; end
+        return a.Production > b.Production;
+    end);
+    local production = {};
+    for _, row in ipairs(candidates) do table.insert(production, row.Production); end
+    for _, row in ipairs(committed) do table.insert(production, row.Production); end
+    local target = ScienceExecution.PreparationBudget(cities, production, cost);
+    local horizon = ScaleStandardTurns(GetNumberParameter(
+        "ASAI_SCIENCE_FIRST_PORT_HORIZON_STANDARD", 24));
+    local fastestCommitted, usable = 0, false;
+    for _, row in ipairs(committed) do
+        fastestCommitted = math.max(fastestCommitted, row.Production);
+        usable = usable or row.Usable;
+    end
+    local best = candidates[1];
+    local rescue = not usable and #committed > 0 and #committed < 3 and best ~= nil
+        and best.Production > 0 and cost > 0 and best.Production * horizon >= cost
+        and best.Production >= fastestCommitted * GetNumberParameter(
+            "ASAI_SCIENCE_PORT_RESCUE_RATIO_X100", 125) / 100;
+    -- Once a usable port exists, complete the first project before adding
+    -- another speculative port. Do not remove already-placed districts.
+    if usable then target = 1;
+    elseif rescue then
+        target = math.min(3, math.max(target, #committed + 1));
+    elseif #committed > 0 then
+        target = math.min(target, #committed);
+    elseif #candidates == 0 then
+        target = 0;
+    end
+    return { Target = target, CandidateCount = #candidates,
+        PreferredCity = best ~= nil and best.ID or -1,
+        PreferredProduction = best ~= nil and best.Production or 0,
+        EstimatedTurns = best ~= nil and best.Production > 0 and cost > 0
+            and cost / best.Production or -1,
+        Committed = #committed, Rescue = rescue,
+        Reason = usable and "first_project" or (rescue and "faster_replacement_candidate"
+            or (#committed > 0 and "finish_committed_port" or "productive_candidates")) };
+end
+
+function ScienceExecution.GetPortPlan(player, cities)
+    ScienceExecution.PortPlans = ScienceExecution.PortPlans or {};
+    local turn, id = Game.GetCurrentGameTurn(), player:GetID();
+    local cached = ScienceExecution.PortPlans[id];
+    if cached ~= nil and cached.Turn == turn and cached.Cities == cities then return cached; end
     local speed = GameInfo.GameSpeeds[GameConfiguration.GetGameSpeedType()];
     local multiplier = speed ~= nil and tonumber(speed.CostMultiplier) or 100;
     if multiplier <= 0 then multiplier = 100; end
     local info = GameInfo.Districts["DISTRICT_SPACEPORT"];
-    return ScienceExecution.PreparationBudget(cities, production,
-        (info ~= nil and tonumber(info.Cost) or 1800) * multiplier / 100);
+    local cost = (info ~= nil and tonumber(info.Cost) or 1800) * multiplier / 100;
+    local ok, plan = pcall(function()
+        local assets = Execution.CollectAssets(player);
+        local candidates, committed = {}, {};
+        local entry = Execution.GetDefinitions().ByType.DISTRICT_SPACEPORT;
+        for _, row in ipairs(assets.Cities) do
+            local item = { ID = row.City:GetID(), Production = math.max(0, row.Production or 0),
+                Usable = row.Districts.DISTRICT_SPACEPORT == true };
+            if row.Placed.DISTRICT_SPACEPORT or row.Current == "DISTRICT_SPACEPORT" then
+                table.insert(committed, item);
+            else
+                local project = row.Current ~= nil and GameInfo.Projects[row.Current] or nil;
+                if entry ~= nil and not (project ~= nil and (project.SpaceRace == true or project.SpaceRace == 1))
+                    and Execution.IsCandidate(assets, row, entry) then
+                    table.insert(candidates, item);
+                end
+            end
+        end
+        return ScienceExecution.PlanPorts(cities, candidates, committed, cost);
+    end);
+    if not ok then
+        if not m_ConditionErrors.ASAI_PortPlan then
+            print("ASAI_DIAGNOSTIC_ERROR sensor=port_candidates fallback=one_port error=" .. tostring(plan));
+            m_ConditionErrors.ASAI_PortPlan = true;
+        end
+        plan = { Target = math.min(1, cities), CandidateCount = -1, PreferredCity = -1,
+            PreferredProduction = 0, EstimatedTurns = -1, Committed = -1,
+            Rescue = false, Reason = "unknown_candidates" };
+    end
+    plan.Turn, plan.Cities = turn, cities;
+    ScienceExecution.PortPlans[id] = plan;
+    return plan;
+end
+
+function ScienceExecution.DecideCapacity(input)
+    if not input.Enabled then return false, false, "disabled"; end
+    if not input.Verified then return false, false, "unknown_defense"; end
+    if input.Emergency or input.Attrition then return false, false, "defense_priority"; end
+    if input.UsablePorts <= 0 then return false, false, "no_usable_port"; end
+    local finish = input.Stage >= ScienceExecution.MARS
+        or (input.Stage >= ScienceExecution.SATELLITE and input.PastStopLoss);
+    if not finish or (input.Stage ~= ScienceExecution.EXOPLANET
+        and not input.RecentProgress and input.ActiveProjects <= 0) then
+        return false, false, "no_current_finish";
+    end
+    if input.Wars <= 0 then return true, false, "peaceful_finish"; end
+    if input.PastStopLoss and (not input.SameOpponents or input.NewWarProgress) then
+        return false, false, "war_opportunity_changed";
+    end
+    if input.PastStopLoss then
+        return true, true, "finish_over_stalled_war";
+    end
+    return false, false, "unreviewed_war";
+end
+
+function ScienceExecution.RecordWarStop(playerID, snapshot)
+    local player = Players[playerID];
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_TURN", snapshot.Turn);
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_CAPTURES", snapshot.MajorCaptureEvents or 0);
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_PILLAGES", snapshot.MajorPillageEvents or 0);
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_CITIES", snapshot.Cities or 0);
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_CAPTURED_CITIES", snapshot.CapturedCities or 0);
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_MILITARY",
+        GetStoredNumber(player, "ASAI_EXEC_MILITARY", 0));
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_OPPONENTS", Strategic.GetOpponentKey(snapshot));
+    player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_OBSERVE", 0);
+end
+
+function ScienceExecution.GetCapacityPolicy(playerID, state, snapshot)
+    local player = Players[playerID];
+    local stage = GetStoredNumber(player, ScienceExecution.STAGE_PROPERTY, ScienceExecution.NONE);
+    local cooldowns = state.StrategicPlanCooldownUntil or {};
+    local pastStopLoss = (cooldowns[Strategic.WAR] or -1) >= 0;
+    -- Old saves seed once; reloading must not reset this comparison baseline.
+    if pastStopLoss and player:GetProperty("ASAI_SCIENCE_WAR_BASELINE_TURN") == nil then
+        ScienceExecution.RecordWarStop(playerID, snapshot);
+        -- An old cooldown alone does not prove the present opponent set
+        -- belongs to the reviewed war. Require a fresh comparison window.
+        player:SetProperty("ASAI_SCIENCE_WAR_BASELINE_OBSERVE", 1);
+    end
+    local baselineReady = GetStoredNumber(player, "ASAI_SCIENCE_WAR_BASELINE_OBSERVE", 0) == 0
+        or snapshot.Turn - GetStoredNumber(player, "ASAI_SCIENCE_WAR_BASELINE_TURN", snapshot.Turn)
+            >= ScaleStandardTurns(GetNumberParameter("ASAI_RELATIVE_CHECK_INTERVAL_STANDARD", 4));
+    local execution = state.Execution;
+    local usable, projects = 0, 0;
+    -- No additional city scan before a science finish is relevant.
+    if stage >= ScienceExecution.MARS
+        or (stage >= ScienceExecution.SATELLITE and pastStopLoss) then
+        local completed;
+        completed, usable = ScienceExecution.GetCompletedSpaceports(player);
+        projects = ScienceExecution.GetQueueState(player);
+    end
+    local lastProgress = GetStoredNumber(player, ScienceExecution.LAST_PROGRESS_TURN_PROPERTY, -100000);
+    local raw = state.RawScores or {};
+    local competitive = state.CompetitiveScores or {};
+    local relativeEmergency = math.min(raw.Military or 1, competitive.Military or raw.Military or 1)
+        <= GetNumberParameter("ASAI_MILITARY_READINESS_EMERGENCY_X100", 60) / 100;
+    local baselineMilitary = GetStoredNumber(player, "ASAI_SCIENCE_WAR_BASELINE_MILITARY", 0);
+    local currentMilitary = GetStoredNumber(player, "ASAI_EXEC_MILITARY", baselineMilitary);
+    -- Reuse the existing outcome rubric: a single pillage or a lost
+    -- recapture does not suddenly make the old war productive.
+    local newWarProgress = Strategic.AssessWarOutcome({
+            StrategicPlanBaselineOpponents = tostring(
+                player:GetProperty("ASAI_SCIENCE_WAR_BASELINE_OPPONENTS") or "")
+        }, snapshot,
+        (snapshot.Cities or 0) - GetStoredNumber(player, "ASAI_SCIENCE_WAR_BASELINE_CITIES", snapshot.Cities or 0),
+        (snapshot.CapturedCities or 0) - GetStoredNumber(player, "ASAI_SCIENCE_WAR_BASELINE_CAPTURED_CITIES", snapshot.CapturedCities or 0),
+        (snapshot.MajorCaptureEvents or 0) - GetStoredNumber(player, "ASAI_SCIENCE_WAR_BASELINE_CAPTURES", 0),
+        (snapshot.MajorPillageEvents or 0) - GetStoredNumber(player, "ASAI_SCIENCE_WAR_BASELINE_PILLAGES", 0),
+        0, baselineMilitary > 0 and math.max(0, (baselineMilitary - currentMilitary) / baselineMilitary) or 0);
+    local input = {
+        Enabled = GetNumberParameter("ASAI_SCIENCE_CAPACITY_ENABLED", 1) == 1
+            and (Game.IsVictoryEnabled == nil or Game.IsVictoryEnabled("VICTORY_TECHNOLOGY")),
+        Verified = execution ~= nil and execution.AssetsOk == 1 and execution.Turn == snapshot.Turn,
+        Emergency = relativeEmergency or Execution.ShouldRearm(state, snapshot)
+            or (execution ~= nil and (execution.Emergency or execution.ThinArmy) or false),
+        Attrition = execution ~= nil and execution.RecentAttrition or false,
+        Stage = stage, UsablePorts = usable, ActiveProjects = projects,
+        RecentProgress = snapshot.Turn - lastProgress <= ScaleStandardTurns(GetNumberParameter(
+            "ASAI_SCIENCE_MARS_TIMEOUT_STANDARD", 20)),
+        Wars = snapshot.ActiveMajorWars, PastStopLoss = pastStopLoss and baselineReady,
+        SameOpponents = tostring(player:GetProperty("ASAI_SCIENCE_WAR_BASELINE_OPPONENTS") or "")
+            == Strategic.GetOpponentKey(snapshot),
+        NewWarProgress = newWarProgress
+    };
+    local active, holdWar, reason = ScienceExecution.DecideCapacity(input);
+    player:SetProperty("ASAI_SCIENCE_CAPACITY_ACTIVE", active and 1 or 0);
+    player:SetProperty("ASAI_SCIENCE_CAPACITY_TURN", snapshot.Turn);
+    return { Active = active, HoldWar = holdWar, Reason = reason, Stage = stage };
 end
 
 function ScienceExecution.IsPreparing(stage, rocketry, cities, enabled)
@@ -1976,6 +2154,7 @@ function ScienceExecution.Collect(playerID)
             Spaceports = 0,
             UsableSpaceports = 0,
             SpaceportsInFlight = 0,
+            SpaceportsCommitted = 0,
             SpaceportTarget = 0,
             ActiveProjects = 0,
             CurrentProject = "none",
@@ -2101,7 +2280,13 @@ function ScienceExecution.Collect(playerID)
         Execution.HasTech(player, "TECH_ROCKETRY"), snapshot.Cities, victoryEnabled);
     local preparationAge = Execution.UpdateTimer(player, "ASAI_SCIENCE_PREPARATION_SINCE",
         preparing, turn, false);
-    if preparing then spaceportTarget = ScienceExecution.GetPreparationBudget(player, snapshot.Cities); end
+    local spaceportsCommitted = spaceports + inFlightSpaceports;
+    if preparing then
+        local portPlan = ScienceExecution.GetPortPlan(player, snapshot.Cities);
+        spaceportTarget = portPlan.Target;
+        -- A placed but paused port still consumes the preparation budget.
+        spaceportsCommitted = math.max(spaceportsCommitted, portPlan.Committed);
+    end
     local defenseWindow = ScaleStandardTurns(GetNumberParameter(
         "ASAI_SCIENCE_DEFENSE_COMBAT_STANDARD",
         8
@@ -2155,6 +2340,7 @@ function ScienceExecution.Collect(playerID)
         Spaceports = spaceports,
         UsableSpaceports = usableSpaceports,
         SpaceportsInFlight = inFlightSpaceports,
+        SpaceportsCommitted = spaceportsCommitted,
         SpaceportTarget = spaceportTarget,
         ActiveProjects = activeProjects,
         CurrentProject = currentProject,
@@ -4242,6 +4428,7 @@ function Strategic.GetPlanScores(state, snapshot, turn)
         and turn < (state.StrategicPlanCooldownUntil[Strategic.WAR] or -1);
     scores[Strategic.WAR] = snapshot.ActiveMajorWars > 0
         and not warStopLoss
+        and not (state.ScienceCapacity ~= nil and state.ScienceCapacity.HoldWar)
         and not Execution.ShouldRearm(state, snapshot)
         and 1000 + militaryGap * 100 or 0;
 
@@ -4268,7 +4455,8 @@ function Strategic.SelectPlan(state, snapshot, scores)
     if Execution.ShouldRearm(state, snapshot) then
         return Strategic.DEFEND, "war_rearm";
     end
-    if snapshot.ActiveMajorWars > 0 and not warStopLoss then
+    local scienceHold = state.ScienceCapacity ~= nil and state.ScienceCapacity.HoldWar;
+    if snapshot.ActiveMajorWars > 0 and not warStopLoss and not scienceHold then
         return Strategic.WAR, "active_major_war";
     end
     local emergency = GetNumberParameter(
@@ -4285,6 +4473,7 @@ function Strategic.SelectPlan(state, snapshot, scores)
             or "military_emergency";
     end
 
+    if scienceHold then return Strategic.DEVELOP, "science_finish_reallocate"; end
     local selected = Strategic.DEVELOP;
     local selectedScore = scores[selected] or 0;
     for _, plan in ipairs({
@@ -4411,6 +4600,14 @@ local function EvaluateRelativeState(playerID)
         print("ASAI_ERROR condition=ASAI_ExecutionSnapshot fallback=baseline error="
             .. tostring(executionStatus));
         m_ConditionErrors.ASAI_ExecutionSnapshot = true;
+    end
+    local coordinationOk, coordination = pcall(ScienceExecution.GetCapacityPolicy,
+        playerID, state, empireSnapshot);
+    state.ScienceCapacity = coordinationOk and coordination
+        or { Active = false, HoldWar = false, Reason = "unknown_coordination" };
+    if not coordinationOk and not m_ConditionErrors.ASAI_ScienceCapacity then
+        print("ASAI_DIAGNOSTIC_ERROR sensor=science_capacity fallback=normal_ai error=" .. tostring(coordination));
+        m_ConditionErrors.ASAI_ScienceCapacity = true;
     end
     local plannedExpansion = (empireSnapshot.Settlers
         + empireSnapshot.InFlightSettlers > 0) and 1 or 0;
@@ -4749,6 +4946,7 @@ local function EvaluateRelativeState(playerID)
                 );
             end
             if retiredPlan == Strategic.WAR then
+                ScienceExecution.RecordWarStop(playerID, empireSnapshot);
                 print(string.format(
                     "ASAI_WAR_STOP_LOSS turn=%d standard_turn=%.1f player=%d stall_count=%d major_wars=%d active_major_wars=%d cooldown_standard=%d cooldown_until=%d",
                     turn,
@@ -4778,6 +4976,7 @@ local function EvaluateRelativeState(playerID)
             GetNumberParameter("ASAI_PLAN_MIN_DWELL_STANDARD", 12)
         );
         local forcedStrategicPlan = strategicPlanReason == "active_major_war"
+            or strategicPlanReason == "science_finish_reallocate"
             or strategicPlanReason == "war_rearm"
             or strategicPlanReason == "military_emergency"
             or strategicPlanReason == "war_stop_loss_military_emergency"
@@ -5443,10 +5642,22 @@ function ASAI_IsScienceLaserExecution(playerID, threshold)
 end
 GameEvents.ASAI_IsScienceLaserExecution.Add(ASAI_IsScienceLaserExecution);
 
+function ScienceExecution.IsCapacity(playerID)
+    if not IsMajorAI(playerID) then return false; end
+    local state = GetRelativeState(playerID);
+    return state.ScienceCapacity ~= nil and state.ScienceCapacity.Active;
+end
+function ASAI_IsScienceCapacityExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsScienceCapacityExecution", ScienceExecution.IsCapacity,
+        playerID, threshold);
+end
+GameEvents.ASAI_IsScienceCapacityExecution.Add(ASAI_IsScienceCapacityExecution);
+
 function ScienceExecution.IsSpaceportScale(playerID, threshold)
     local state = ScienceExecution.Collect(playerID);
     return state.Active
-        and state.Spaceports + state.SpaceportsInFlight < state.SpaceportTarget;
+        and (state.SpaceportsCommitted or state.Spaceports + state.SpaceportsInFlight)
+            < state.SpaceportTarget;
 end
 function ScienceExecution.IsSatellite(playerID)
     local state = ScienceExecution.Collect(playerID);
@@ -5457,7 +5668,10 @@ function ScienceExecution.IsPreparationBudgetReached(playerID)
     local state = ScienceExecution.Collect(playerID);
     return state.Preparing and state.SpaceportTarget > 0
         and (state.Spaceports == 0 or state.UsableSpaceports > 0)
-        and state.Spaceports + state.SpaceportsInFlight >= state.SpaceportTarget;
+        -- Do not suppress resuming the only paused construction pipeline.
+        and (state.UsableSpaceports > 0 or state.SpaceportsInFlight > 0)
+        and (state.SpaceportsCommitted or state.Spaceports + state.SpaceportsInFlight)
+            >= state.SpaceportTarget;
 end
 function ASAI_IsScienceSatelliteExecution(playerID, threshold)
     return RunStrategyCondition("ASAI_IsScienceSatelliteExecution", ScienceExecution.IsSatellite,
@@ -6332,9 +6546,28 @@ function ScienceExecution.WriteDiagnostics(playerID, firstTimeThisTurn)
         state.Preparing and (state.UsableSpaceports > 0 and "first_satellite"
             or (state.Spaceports > 0 and "repair_first_spaceport" or "first_spaceport"))
             or "milestones_or_locked",
-        state.SpaceportTarget, state.Spaceports + state.SpaceportsInFlight,
+        state.SpaceportTarget, state.SpaceportsCommitted,
         state.UsableSpaceports,
         ScienceExecution.IsPreparationBudgetReached(playerID) and 1 or 0));
+    if state.Preparing then
+        local player = Players[playerID];
+        local plan = ScienceExecution.GetPortPlan(player, player:GetCities():GetCount());
+        player:SetProperty("ASAI_SCIENCE_PORT_NOMINATION", plan.PreferredCity);
+        player:SetProperty("ASAI_SCIENCE_PORT_NOMINATION_TURN", state.Turn);
+        print(string.format(
+            "ASAI_FIRST_PORT_PLAN turn=%d player=%d candidate_mode=data_prerequisites candidate_cities=%d preferred_city=%d production=%.1f estimated_full_cost_turns=%.1f committed=%d target=%d rescue=%d reason=%s assignment=native remaining_eta=unknown",
+            state.Turn, playerID, plan.CandidateCount, plan.PreferredCity,
+            plan.PreferredProduction, plan.EstimatedTurns, plan.Committed,
+            plan.Target, plan.Rescue and 1 or 0, plan.Reason));
+    end
+    local capacity = relativeState.ScienceCapacity;
+    if capacity ~= nil then
+        print(string.format(
+            "ASAI_SCIENCE_CAPACITY turn=%d player=%d active=%d hold_war_plan=%d reason=%s stage=%s queue_action=none",
+            state.Turn, playerID, capacity.Active and 1 or 0,
+            capacity.HoldWar and 1 or 0, capacity.Reason,
+            ScienceExecution.GetStageName(capacity.Stage or ScienceExecution.NONE)));
+    end
 end
 
 function ThreatResponse.WriteDiagnostics(playerID, firstTimeThisTurn)
@@ -6562,7 +6795,9 @@ function Execution.EmptyStatus(turn)
         BuildabilityOk = -1, StabilityOk = 0, LostFreeCities = 0,
         CandidateReason = "unprobed", EmergencyAge = 0, EmergencyLevel = 0,
         EconomyAllowed = true, LandNeeded = false, LandQueueTarget = 0,
-        TraderStage = "none", TraderAge = 0, TraderGap = 0, TraderQueueTarget = 0
+        TraderStage = "none", TraderAge = 0, TraderGap = 0, TraderQueueTarget = 0,
+        TraderChain = "unknown_sensor", TraderRequestAge = 0,
+        TraderGainTurn = -1, TraderInflightTurn = -1
     };
 end
 
@@ -6949,6 +7184,10 @@ function Execution.TraderBudget(player, snapshot, economic, result, turn)
     result.TraderQueueTarget = math.min(result.Emergency and 1 or 2,
         math.max(0, snapshot.RouteCapacity - traders));
     local previous = GetStoredNumber(player, "ASAI_EXEC_TRADER_COUNT", traders);
+    if traders > previous then player:SetProperty("ASAI_EXEC_TRADER_GAIN_TURN", turn); end
+    if economic.QueueOk == 1 and pending > 0 then
+        player:SetProperty("ASAI_EXEC_TRADER_INFLIGHT_TURN", turn);
+    end
     result.TraderAge = Execution.UpdateTimer(player, "ASAI_EXEC_TRADER_SINCE",
         snapshot.RouteCapacity > traders, turn, traders > previous);
     player:SetProperty("ASAI_EXEC_TRADER_COUNT", traders);
@@ -6960,6 +7199,22 @@ function Execution.TraderBudget(player, snapshot, economic, result, turn)
         GetNumberParameter("ASAI_TRADER_EXECUTION_DELAY_STANDARD", 12)) then
         result.TraderStage = "candidate";
     end
+end
+
+function Execution.RecordTraderChain(player, result, turn)
+    local reasons = {
+        trader = "awaiting_native_order", candidate = "unverified_candidate",
+        unknown = "unknown_sensor", blocked = "no_data_candidate",
+        inflight = "inflight_budget", emergency = "defense_priority"
+    };
+    result.TraderChain = reasons[result.TraderStage]
+        or (result.TraderGap <= 0 and "covered" or "waiting_persistence");
+    result.TraderRequestAge = Execution.UpdateTimer(player, "ASAI_EXEC_TRADER_REQUEST_SINCE",
+        result.TraderStage == "trader", turn, false);
+    result.TraderGainTurn = GetStoredNumber(player, "ASAI_EXEC_TRADER_GAIN_TURN", -1);
+    result.TraderInflightTurn = GetStoredNumber(player, "ASAI_EXEC_TRADER_INFLIGHT_TURN", -1);
+    player:SetProperty("ASAI_EXEC_TRADER_CHAIN", result.TraderChain);
+    player:SetProperty("ASAI_EXEC_TRADER_CHAIN_TURN", turn);
 end
 
 function Execution.ShouldRearm(state, snapshot)
@@ -7142,6 +7397,7 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
             m_ConditionErrors.ASAI_ExecutionAssets = true;
         end
     end
+    Execution.RecordTraderChain(player, result, turn);
     player:SetProperty("ASAI_EXEC_SAMPLE_TURN", turn);
     player:SetProperty("ASAI_EXEC_COMBAT_UNITS", strength.CombatUnits);
     player:SetProperty("ASAI_EXEC_MILITARY", strength.Military);
@@ -7204,6 +7460,11 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
         result.LandQueueTarget, result.LandNeeded and 1 or 0,
         result.EconomyAllowed and 1 or 0, result.TraderStage, result.TraderAge,
         result.TraderGap, result.TraderQueueTarget));
+    print(string.format(
+        "ASAI_TRADER_CHAIN turn=%d player=%d gap=%d stage=%s queue_target=%d request_age=%d last_count_gain_turn=%d last_inflight_turn=%d native_strategy=unverified native_demand=unverified native_order=unverified",
+        result.Turn, playerID, result.TraderGap, result.TraderChain,
+        result.TraderQueueTarget, result.TraderRequestAge, result.TraderGainTurn,
+        result.TraderInflightTurn));
     for _, role in ipairs({ "campus", "library", "university", "laboratory",
         "trade_building", "trade_district", "trader", "ranged", "siege", "land" }) do
         local reason = result.ProbeReasons ~= nil and result.ProbeReasons[role] or nil;

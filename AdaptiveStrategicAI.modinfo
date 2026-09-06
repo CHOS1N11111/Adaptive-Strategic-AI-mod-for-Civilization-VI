@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Mod id="6f0de0e4-37d7-48ad-a6d4-4a958d76e7f1" version="34">
+<Mod id="6f0de0e4-37d7-48ad-a6d4-4a958d76e7f1" version="35">
   <Properties>
     <Name>Adaptive Strategic AI</Name>
     <Description>Competitive Deity AI with rolling plans, bounded pacing, reversible catch-up, milestone-based science finishes, and outcome-aware wars.</Description>

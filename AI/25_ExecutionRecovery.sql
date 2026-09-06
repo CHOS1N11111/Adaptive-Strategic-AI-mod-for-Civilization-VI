@@ -11,7 +11,9 @@ INSERT OR REPLACE INTO GlobalParameters (Name, Value) VALUES
 
 INSERT OR REPLACE INTO GlobalParameters (Name, Value) VALUES
     ('ASAI_TRADER_EXECUTION_DELAY_STANDARD', 12),
-    ('ASAI_SCIENCE_FIRST_PORT_HORIZON_STANDARD', 24);
+    ('ASAI_SCIENCE_FIRST_PORT_HORIZON_STANDARD', 24),
+    ('ASAI_SCIENCE_PORT_RESCUE_RATIO_X100', 125),
+    ('ASAI_SCIENCE_CAPACITY_ENABLED', 1);
 
 -- Fixed valuation changes with runtime queue budgets, not yield grants or
 -- forced orders. Native strategy refresh may lag the Lua condition.
@@ -38,6 +40,7 @@ INSERT INTO StrategyConditions
 INSERT INTO AiListTypes (ListType) VALUES
     ('ASAI_LandRecoveryUnits'), ('ASAI_LandRecoveryPseudoYields'),
     ('ASAI_TraderExecutionUnits'), ('ASAI_TraderExecutionPseudoYields'),
+    ('ASAI_TraderExecutionSpecialization'),
     ('ASAI_SatelliteExecutionProjects'), ('ASAI_SatelliteExecutionPseudoYields'),
     ('ASAI_PreparationBudgetDistricts');
 INSERT INTO AiLists (ListType, System) VALUES
@@ -45,6 +48,7 @@ INSERT INTO AiLists (ListType, System) VALUES
     ('ASAI_LandRecoveryPseudoYields', 'PseudoYields'),
     ('ASAI_TraderExecutionUnits', 'Units'),
     ('ASAI_TraderExecutionPseudoYields', 'PseudoYields'),
+    ('ASAI_TraderExecutionSpecialization', 'AiBuildSpecializations'),
     ('ASAI_SatelliteExecutionProjects', 'Projects'),
     ('ASAI_SatelliteExecutionPseudoYields', 'PseudoYields'),
     ('ASAI_PreparationBudgetDistricts', 'Districts');
@@ -53,6 +57,7 @@ INSERT INTO Strategy_Priorities (StrategyType, ListType) VALUES
     ('ASAI_STRATEGY_LAND_RECOVERY', 'ASAI_LandRecoveryPseudoYields'),
     ('ASAI_STRATEGY_TRADER_EXECUTION', 'ASAI_TraderExecutionUnits'),
     ('ASAI_STRATEGY_TRADER_EXECUTION', 'ASAI_TraderExecutionPseudoYields'),
+    ('ASAI_STRATEGY_TRADER_EXECUTION', 'ASAI_TraderExecutionSpecialization'),
     ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 'ASAI_SatelliteExecutionProjects'),
     ('ASAI_STRATEGY_SCIENCE_SATELLITE_EXECUTION', 'ASAI_SatelliteExecutionPseudoYields'),
     ('ASAI_STRATEGY_SCIENCE_PREPARATION_BUDGET', 'ASAI_PreparationBudgetDistricts');
@@ -67,9 +72,37 @@ INSERT INTO AiFavoredItems (ListType, Item, Favored, Value) VALUES
     ('ASAI_LandRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 1, 80),
     ('ASAI_LandRecoveryPseudoYields', 'PSEUDOYIELD_WONDER', 0, -45),
     ('ASAI_TraderExecutionPseudoYields', 'PSEUDOYIELD_UNIT_TRADE', 1, 160),
+    -- Native default trade priority is 2; this conditional offset promotes
+    -- trader city specialization without replacing the default list.
+    -- This system is not a yield percentage and still needs native-order QA.
+    ('ASAI_TraderExecutionSpecialization', 'BUILD_TRADE_UNITS', 1, -2),
     ('ASAI_SatelliteExecutionProjects', 'PROJECT_LAUNCH_EARTH_SATELLITE', 1, 350),
     ('ASAI_SatelliteExecutionPseudoYields', 'PSEUDOYIELD_SPACE_RACE', 1, 125),
     ('ASAI_PreparationBudgetDistricts', 'DISTRICT_SPACEPORT', 0, -400);
+
+-- Release ordinary expansion of the army during a verified science finish.
+-- Acute defense, attrition, changed opponents and renewed war gains disable
+-- this condition. No individual military role or city queue is overwritten.
+INSERT INTO Types (Type, Kind) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CAPACITY', 'KIND_VICTORY_STRATEGY');
+INSERT INTO Strategies (StrategyType, NumConditionsNeeded) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CAPACITY', 1);
+INSERT INTO StrategyConditions
+    (StrategyType, ConditionFunction, StringValue, ThresholdValue, Disqualifier) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CAPACITY', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_CAPACITY', 'Call Lua Function', 'ASAI_IsScienceCapacityExecution', 0, 0);
+INSERT INTO AiListTypes (ListType) VALUES
+    ('ASAI_ScienceCapacitySpecialization'), ('ASAI_ScienceCapacityPseudoYields');
+INSERT INTO AiLists (ListType, System) VALUES
+    ('ASAI_ScienceCapacitySpecialization', 'AiBuildSpecializations'),
+    ('ASAI_ScienceCapacityPseudoYields', 'PseudoYields');
+INSERT INTO Strategy_Priorities (StrategyType, ListType) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CAPACITY', 'ASAI_ScienceCapacitySpecialization'),
+    ('ASAI_STRATEGY_SCIENCE_CAPACITY', 'ASAI_ScienceCapacityPseudoYields');
+INSERT INTO AiFavoredItems (ListType, Item, Favored, Value) VALUES
+    ('ASAI_ScienceCapacitySpecialization', 'BUILD_MILITARY_UNITS', 0, 2),
+    ('ASAI_ScienceCapacityPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 0, -35),
+    ('ASAI_ScienceCapacityPseudoYields', 'PSEUDOYIELD_SPACE_RACE', 1, 125);
 
 INSERT INTO Types (Type, Kind) VALUES
     ('ASAI_STRATEGY_WRITING_PREREQUISITE', 'KIND_VICTORY_STRATEGY'),

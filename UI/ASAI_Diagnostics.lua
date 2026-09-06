@@ -132,6 +132,207 @@ local function RoutesConsistent(routes, ok)
     return routes.Active == routes.EngineTotal and 1 or 0;
 end
 
+-- ProductionPanel.lua uses a typed unit request and a project/district hash.
+-- A negative legality result is data, not an unavailable API.
+local function ReadNumber(object, method, ...)
+    if object == nil or object[method] == nil then return -1; end
+    local ok, value = pcall(object[method], object, ...);
+    return ok and tonumber(value) or -1;
+end
+
+local function ReadFlag(object, method, ...)
+    if object == nil or object[method] == nil then return -1; end
+    local ok, value = pcall(object[method], object, ...);
+    if not ok or type(value) ~= "boolean" then return -1; end
+    return value and 1 or 0;
+end
+
+local function Token(value)
+    return tostring(value):gsub("%s", "_"):gsub("[=|]", "_"):sub(1, 160);
+end
+
+local function ProbeProduction(queue, row, kind)
+    local result = { Can = -1, Visible = -1, Reason = "unknown_api",
+        Cost = -1, Progress = -1, Turns = -1 };
+    if queue == nil or row == nil or row.Hash == nil then return result; end
+    local request = row.Hash;
+    if kind == "Unit" then
+        if MilitaryFormationTypes == nil
+            or MilitaryFormationTypes.STANDARD_MILITARY_FORMATION == nil then return result; end
+        request = { UnitType = row.Hash,
+            MilitaryFormationType = MilitaryFormationTypes.STANDARD_MILITARY_FORMATION };
+    end
+    result.Cost = ReadNumber(queue, "Get" .. kind .. "Cost", row.Index);
+    result.Progress = ReadNumber(queue, "Get" .. kind .. "Progress", row.Index);
+    result.Turns = ReadNumber(queue, "GetTurnsLeft", row[kind .. "Type"]);
+    if queue.CanProduce == nil then return result; end
+    local ok, allowed, details = pcall(queue.CanProduce, queue, request, false, true);
+    result.Visible = ReadFlag(queue, "CanProduce", request, true);
+    if not ok or type(allowed) ~= "boolean" then
+        result.Reason = "unknown_can_produce";
+        return result;
+    end
+    result.Can, result.Reason = allowed and 1 or 0, allowed and "none" or "not_reported";
+    local key = CityCommandResults ~= nil and CityCommandResults.FAILURE_REASONS or nil;
+    local reasons = key ~= nil and type(details) == "table" and details[key] or nil;
+    if not allowed and type(reasons) == "table" then
+        local values = {};
+        for i, reason in ipairs(reasons) do
+            if i > 8 then table.insert(values, "more"); break; end
+            table.insert(values, Token(reason));
+        end
+        if #values > 0 then result.Reason = table.concat(values, "|"); end
+    end
+    return result;
+end
+
+local laserRules;
+local function LaserRules()
+    if laserRules ~= nil then return laserRules; end
+    local aluminum, power = -1, -1;
+    pcall(function()
+        local amount = 0;
+        for row in GameInfo.Project_ResourceCosts() do
+            if row.ProjectType == "PROJECT_ORBITAL_LASER"
+                and row.ResourceType == "RESOURCE_ALUMINUM" then
+                amount = amount + assert(tonumber(row.StartProductionCost));
+            end
+        end
+        aluminum = amount;
+    end);
+    pcall(function()
+        local ids, amount = {}, 0;
+        for row in GameInfo.ProjectCompletionModifiers() do
+            if row.ProjectType == "PROJECT_TERRESTRIAL_LASER" then
+                local modifier = GameInfo.Modifiers[row.ModifierId];
+                assert(modifier ~= nil);
+                if modifier.ModifierType == "MODIFIER_SINGLE_CITY_ADJUST_REQUIRED_POWER" then
+                    ids[row.ModifierId] = true;
+                end
+            end
+        end
+        for row in GameInfo.ModifierArguments() do
+            if ids[row.ModifierId] and row.Name == "Amount" then
+                amount = amount + assert(tonumber(row.Value));
+                ids[row.ModifierId] = nil;
+            end
+        end
+        assert(next(ids) == nil);
+        power = amount;
+    end);
+    laserRules = { Aluminum = aluminum, Power = power };
+    return laserRules;
+end
+
+local function PortStatus(city)
+    local ok, district = pcall(function()
+        return city:GetDistricts():GetDistrict("DISTRICT_SPACEPORT");
+    end);
+    if not ok then return -1, -1, -1; end
+    if district == nil then return 0, 0, 0; end
+    return 1, ReadFlag(district, "IsComplete"), ReadFlag(district, "IsPillaged");
+end
+
+local function WriteExecutionProbes(player, sampleTurn, observedTurn)
+    local id = player:GetID();
+    local trader = GameInfo.Units.UNIT_TRADER;
+    local port = GameInfo.Districts.DISTRICT_SPACEPORT;
+    -- Existing telemetry still works with missing DLC/type tables.
+    if trader == nil and port == nil then return; end
+    local capacity = ReadNumber(player:GetTrade(), "GetOutgoingRouteCapacity");
+    local traders = 0;
+    for _, unit in player:GetUnits():Members() do
+        local info = GameInfo.Units[unit:GetType()];
+        if info ~= nil and (info.MakeTradeRoute == true or info.MakeTradeRoute == 1) then
+            traders = traders + 1;
+        end
+    end
+    local demand = trader ~= nil and capacity >= 0 and capacity > traders;
+    local stage = tonumber(player:GetProperty("ASAI_SCIENCE_EXECUTION_STAGE")) or -1;
+    local techs = player.GetTechs ~= nil and player:GetTechs() or nil;
+    local rocketry = GameInfo.Technologies ~= nil and GameInfo.Technologies.TECH_ROCKETRY or nil;
+    local offworld = GameInfo.Technologies ~= nil and GameInfo.Technologies.TECH_OFFWORLD_MISSION or nil;
+    local preparing = port ~= nil and stage <= 0 and rocketry ~= nil
+        and ReadFlag(techs, "HasTech", rocketry.Index) == 1;
+    local rule = (stage >= 3) and LaserRules() or nil;
+    local aluminum = -1;
+    local resource = GameInfo.Resources ~= nil and GameInfo.Resources.RESOURCE_ALUMINUM or nil;
+    if rule ~= nil and resource ~= nil and player.GetResources ~= nil then
+        aluminum = ReadNumber(player:GetResources(), "GetResourceAmount", resource.Index);
+    end
+    local pendingTraders, canTrade, unknownTrade = 0, 0, 0;
+    for _, city in player:GetCities():Members() do
+        local tradeObserved = false;
+        -- One failing city never prevents the other cities being inspected.
+        local ok = pcall(function()
+            local queue = city:GetBuildQueue();
+            local currentOk, current = pcall(CurrentItem, city);
+            if not currentOk then current = "unknown"; end
+            if trader ~= nil and current == trader.UnitType then pendingTraders = pendingTraders + 1; end
+            if demand then
+                local probe = ProbeProduction(queue, trader, "Unit");
+                if probe.Can == 1 then canTrade = canTrade + 1;
+                elseif probe.Can == -1 then unknownTrade = unknownTrade + 1; end
+                tradeObserved = true;
+                print(string.format(
+                    "ASAI_UI_TRADER_CANDIDATE turn=%d observed_turn=%d player=%d city=%d unit=%s can_produce=%d visible=%d reasons=%s cost=%.1f progress=%.1f turns=%.1f current=%s source=ui native_demand=unverified",
+                    sampleTurn, observedTurn, id, city:GetID(), trader.UnitType,
+                    probe.Can, probe.Visible, probe.Reason, probe.Cost,
+                    probe.Progress, probe.Turns, current));
+            end
+            if preparing then
+                local probe = ProbeProduction(queue, port, "District");
+                local production = YieldTypes ~= nil and ReadNumber(city, "GetYield", YieldTypes.PRODUCTION) or -1;
+                print(string.format(
+                    "ASAI_UI_PORT_CANDIDATE turn=%d observed_turn=%d player=%d city=%d can_produce=%d reasons=%s production=%.1f cost=%.1f progress=%.1f turns=%.1f current=%s nominated_city=%d nomination_turn=%d assignment=native plot=unverified",
+                    sampleTurn, observedTurn, id, city:GetID(), probe.Can, probe.Reason,
+                    production, probe.Cost, probe.Progress, probe.Turns, current,
+                    tonumber(player:GetProperty("ASAI_SCIENCE_PORT_NOMINATION")) or -1,
+                    tonumber(player:GetProperty("ASAI_SCIENCE_PORT_NOMINATION_TURN")) or -1));
+            end
+            if rule ~= nil and port ~= nil then
+                local placed, complete, pillaged = PortStatus(city);
+                if placed ~= 0 then
+                    local power;
+                    pcall(function() power = city:GetPower(); end);
+                    local free = ReadNumber(power, "GetFreePower");
+                    local temporary = ReadNumber(power, "GetTemporaryPower");
+                    local required = ReadNumber(power, "GetRequiredPower");
+                    local supplied = free >= 0 and temporary >= 0 and free + temporary or -1;
+                    local margin = supplied >= 0 and required >= 0 and supplied - required or -1;
+                    for _, name in ipairs({ "PROJECT_ORBITAL_LASER", "PROJECT_TERRESTRIAL_LASER" }) do
+                        local row = GameInfo.Projects[name];
+                        local probe = ProbeProduction(queue, row, "Project");
+                        print(string.format(
+                            "ASAI_UI_LASER_PREREQ turn=%d observed_turn=%d player=%d city=%d project=%s stage_property=%d offworld=%d port_placed=%d port_complete=%d port_pillaged=%d can_produce=%d visible=%d reasons=%s aluminum=%.1f orbital_aluminum_cost=%.1f power_supplied=%.1f power_required=%.1f fully_powered=%d observed_power_margin=%.1f terrestrial_extra_power=%.1f cost=%.1f progress=%.1f turns=%.1f current=%s project_count_property=%d coordination=%d coordination_turn=%d future_power=unverified source=ui",
+                            sampleTurn, observedTurn, id, city:GetID(), name, stage,
+                            offworld ~= nil and ReadFlag(techs, "HasTech", offworld.Index) or -1,
+                            placed, complete, pillaged, probe.Can, probe.Visible, probe.Reason,
+                            aluminum, rule.Aluminum, supplied, required, ReadFlag(power, "IsFullyPowered"),
+                            margin, rule.Power, probe.Cost, probe.Progress, probe.Turns, current,
+                            tonumber(player:GetProperty("ASAI_SCIENCE_PROJECT_COUNT_" .. name)) or -1,
+                            tonumber(player:GetProperty("ASAI_SCIENCE_CAPACITY_ACTIVE")) or -1,
+                            tonumber(player:GetProperty("ASAI_SCIENCE_CAPACITY_TURN")) or -1));
+                    end
+                end
+            end
+        end);
+        if not ok then
+            if demand and not tradeObserved then unknownTrade = unknownTrade + 1; end
+            print(string.format(
+                "ASAI_UI_DIAGNOSTIC_ERROR sensor=execution_city player=%d city=%d observed_turn=%d fallback=next_city",
+                id, city:GetID(), observedTurn));
+        end
+    end
+    if demand then
+        print(string.format(
+            "ASAI_UI_TRADER_DEMAND turn=%d observed_turn=%d player=%d capacity=%d traders=%d current_trader_queues=%d can_produce_cities=%d unknown_cities=%d gameplay_chain=%s gameplay_turn=%d demand_contract=unverified",
+            sampleTurn, observedTurn, id, capacity, traders, pendingTraders,
+            canTrade, unknownTrade, Token(player:GetProperty("ASAI_EXEC_TRADER_CHAIN") or "unknown"),
+            tonumber(player:GetProperty("ASAI_EXEC_TRADER_CHAIN_TURN")) or -1));
+    end
+end
+
 local function WriteSample(playerID, sampleTurn)
     local player = Players[playerID];
     local observedTurn = Game.GetCurrentGameTurn();
@@ -166,6 +367,10 @@ local function WriteSample(playerID, sampleTurn)
             completed.Count = 0;
             completions[key] = completed;
         end
+        return true;
+    end);
+    TrySensor("execution_probes", function()
+        WriteExecutionProbes(player, sampleTurn, observedTurn);
         return true;
     end);
 end
