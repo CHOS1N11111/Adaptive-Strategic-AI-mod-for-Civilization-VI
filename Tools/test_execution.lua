@@ -948,4 +948,5 @@ do
     ui.ContextPtr.Shutdown();
 end
 
+assert(loadfile("Tools/test_feedback.lua"))()(check, equal, upvalue);
 print(string.format("LUA REGRESSION PASSED: %d checks; real Lua functions, mocked game boundary", checks));

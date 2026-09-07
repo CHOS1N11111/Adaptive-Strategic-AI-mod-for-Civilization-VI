@@ -32,8 +32,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.13"
-EXPECTED_MODINFO_VERSION = "35"
+EXPECTED_RELEASE = "0.11.14"
+EXPECTED_MODINFO_VERSION = "36"
 EXPECTED_STRATEGIES = 43
 
 
@@ -390,18 +390,25 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "local function SyncMildResultYields(playerID, player, state, turn)",
         "ASAI_MILD_RESULT_YIELDS_ENABLED",
         "and state.Band == RELATIVE_CATCHUP",
-        "and state.SevereCatchup ~= 1",
+        "and not state.SevereResultEligible",
         "and broadEligible",
         "local function SyncSevereResultYields(playerID, player, state, turn)",
         "ASAI_SEVERE_RESULT_YIELDS_ENABLED",
-        "enabled and state.SevereCatchup == 1",
+        "enabled and state.SevereResultEligible == true",
+        "function Strategic.UpdateResultEligibility(state, snapshot, turn)",
+        "state.SevereCatchup == 1",
+        "state.SevereResultGapSince",
+        "state.SevereResultBroadGap",
+        "state.SevereResultWarEmergency",
+        "currentlyActive or turn - state.SevereResultGapSince >= confirmation",
+        'SEVERE_RESULT_GAP_SINCE_PROPERTY = "ASAI_SEVERE_RESULT_GAP_SINCE"',
         "player:AttachModifierByID(modifierID)",
         "state.MildResultYieldsActive = desiredActive and 1 or 0",
         "state.SevereResultYieldsActive = desiredActive and 1 or 0",
-        "local function SyncResultYields(playerID, player, state, turn)",
+        "local function SyncResultYields(playerID, player, state, turn, snapshot)",
         "if state.MildResultYieldsActive == 0 then",
         "if state.SevereResultYieldsActive == 0 then",
-        "SyncResultYields(playerID, player, state, turn)",
+        "SyncResultYields(playerID, player, state, turn, empireSnapshot)",
         "state.SevereResultYieldsActive\n    )",
         "player:SetProperty(\n        SEVERE_RESULT_YIELDS_ACTIVE_PROPERTY",
         "SyncSevereResultYields(playerID, player, state, turn)",
@@ -521,7 +528,17 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "state.StrategicPlanBaselineSettlers > 0",
         "state.StrategicPlanBaselineActiveWars <= 0",
         "snapshot.ActiveMajorWars <= 0",
-        "local foundedExpansion = foundedCityGain > 0 and captureEvents <= 0",
+        "local foundedExpansion = foundedCityGain > 0 and foundedEvents > 0",
+        "function Strategic.RecordCityBuilt(playerID, cityID)",
+        "GameEvents.CityBuilt.Add(Strategic.OnCityBuilt)",
+        "CityManager.GetCity(playerID, cityID)",
+        "city:GetOriginalOwner() ~= playerID",
+        "Strategic.CITY_FOUNDING_RECORDED_PROPERTY",
+        "StrategicPlanBaselineFoundedEvents",
+        "function Strategic.ResumeExpansionAfterFounding(state, snapshot, turn)",
+        "Strategic.ResumeExpansionAfterFounding(state, snapshot, turn)",
+        "state.StrategicPlanCooldownUntil[Strategic.EXPAND] == previousBlock",
+        "ASAI_EXPANSION_RESUMED",
         "and combatEvents <= 0",
         "expansionSettlerStalled",
         "state.ExpansionBlockedUntil",
@@ -569,7 +586,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "snapshot.Turn < warCooldownUntil",
         "state.StrategicPlanExecution > 0",
         'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
-        "OUTCOME_SCHEMA = 6",
+        "OUTCOME_SCHEMA = 7",
+        "function Strategic.MigratePlanOutcome(playerID, state, snapshot, strength, turn)",
+        "Strategic.MigratePlanOutcome(playerID, state, empireSnapshot, strengthSnapshot, turn)",
+        "and previousOutcomeSchema < 7",
         "reset_pressure_baseline=%d",
         "reset_war_baseline=%d",
         "reset_expansion_baseline=%d",
@@ -603,6 +623,8 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
             errors.append(f"strategic coordinator fragment is missing: {fragment}")
     if "and state.StrategicPlan ~= Strategic.WAR" in source:
         errors.append("WAR plans are still excluded from stalled-plan retirement")
+    if "improved = improved or snapshot.ActiveMajorWars > 0 or cityGain > 0" in source:
+        errors.append("PRESSURE still treats preparation or ordinary city growth as success")
     diagnostic_fragments = (
         "local function TryDiagnosticSensor(sensorName, collector, rememberUnsupported)",
         "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
