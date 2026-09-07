@@ -259,8 +259,8 @@ return function(check, equal, upvalue)
     pressure.StrategicPlanOutcomeSchema, pressure.StrategicPlanResult = 6, 1;
     pressure.StrategicPlanStallCount = 1;
     S.MigratePlanOutcome(1, pressure, p, army, 40);
-    check(pressure.StrategicPlanOutcomeSchema == 7 and pressure.StrategicPlanReviewTurn == 40
-        and pressure.StrategicPlanResult == 0, "old PRESSURE outcome is rebaselined under schema seven");
+    check(pressure.StrategicPlanOutcomeSchema == S.OUTCOME_SCHEMA and pressure.StrategicPlanReviewTurn == 40
+        and pressure.StrategicPlanResult == 0, "old PRESSURE outcome is rebaselined under the current schema");
     equal(pressure.StrategicPlanStartedTurn, 30, "migration preserves primary plan age");
     S.MigratePlanOutcome(1, pressure, p, army, 42);
     equal(pressure.StrategicPlanReviewTurn, 40, "migration does not keep postponing reviews");
@@ -268,7 +268,7 @@ return function(check, equal, upvalue)
         local state, snapshot, strength = planFixture(plan);
         state.StrategicPlanOutcomeSchema, state.StrategicPlanStallCount = 6, 2;
         S.MigratePlanOutcome(1, state, snapshot, strength, 40);
-        check(state.StrategicPlanOutcomeSchema == 7 and state.StrategicPlanReviewTurn == 30
+        check(state.StrategicPlanOutcomeSchema == S.OUTCOME_SCHEMA and state.StrategicPlanReviewTurn == 30
             and state.StrategicPlanStallCount == 2, "schema six non-pressure plan " .. plan .. " retains its review and failures");
     end
     local legacy, legacySnapshot, legacyArmy = planFixture(S.DEFEND);

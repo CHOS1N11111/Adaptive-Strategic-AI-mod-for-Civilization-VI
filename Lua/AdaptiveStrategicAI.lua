@@ -140,7 +140,7 @@ local Strategic = {
     STALL_COUNT_PROPERTY = "ASAI_STRATEGIC_PLAN_STALL_COUNT",
     SCORE_PROPERTY = "ASAI_STRATEGIC_PLAN_SCORE_X100",
     SUPPORT_PROPERTY = "ASAI_STRATEGIC_SUPPORT",
-    OUTCOME_SCHEMA = 7,
+    OUTCOME_SCHEMA = 8,
     OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA",
     MAJOR_COMBAT_EVENTS_PROPERTY = "ASAI_MAJOR_COMBAT_EVENTS",
     MAJOR_CAPTURE_EVENTS_PROPERTY = "ASAI_MAJOR_CAPTURE_EVENTS",
@@ -1777,6 +1777,307 @@ local function GetStoredNumber(player, propertyName, fallback)
     return value;
 end
 
+function Strategic.NewPressureState()
+    return {
+        Eligible = 0, SampleTurn = -1, TargetID = -1, CityPlot = -1, RallyPlot = -1,
+        Reason = "not_sampled", Distance = -1, Ready = 0, Units = "",
+        PathChecks = 0, PlotChecks = 0, BaselineTargetID = -1, BaselineCityPlot = -1,
+        BaselineRallyPlot = -1, BaselineUnits = "", PrepWindowsUsed = 0
+    };
+end
+
+function Strategic.ReadPressureState(player)
+    local pressure = Strategic.NewPressureState();
+    for key, default in pairs(pressure) do
+        local property = "ASAI_PRESSURE_" .. key;
+        if type(default) == "number" then
+            pressure[key] = GetStoredNumber(player, property, default);
+        else
+            local value = player:GetProperty(property);
+            if type(value) == "string" then pressure[key] = value; end
+        end
+    end
+    return pressure;
+end
+
+function Strategic.StorePressureState(player, pressure)
+    for key in pairs(Strategic.NewPressureState()) do
+        player:SetProperty("ASAI_PRESSURE_" .. key, pressure[key]);
+    end
+end
+
+function Strategic.PressureTargetCooling(player, targetID, turn)
+    return turn < GetStoredNumber(player, "ASAI_PRESSURE_TARGET_COOLDOWN_" .. targetID, -1);
+end
+
+function Strategic.PressureCandidates(playerID, pressure, strength, turn)
+    local player = Players[playerID];
+    local diplomacy = player:GetDiplomacy();
+    local visibility = PlayersVisibility[playerID];
+    local anchors, candidates = {}, {};
+    for _, city in player:GetCities():Members() do
+        table.insert(anchors, { X = city:GetX(), Y = city:GetY() });
+    end
+    if #anchors == 0 then return candidates, "no_anchor"; end
+    local unknownDiplomacy = false;
+    local maximumDistance = GetNumberParameter("ASAI_PRESSURE_TARGET_DISTANCE", 12);
+    local minimumRatio = GetNumberParameter("ASAI_PRESSURE_TARGET_MIN_RATIO_X100", 90) / 100;
+    for _, otherID in ipairs(PlayerManager.GetAliveMajorIDs()) do
+        local other = Players[otherID];
+        if otherID ~= playerID and other ~= nil and PlayerManager.IsAlive(otherID)
+            and not Strategic.PressureTargetCooling(player, otherID, turn) then
+            local ok, allowed = pcall(function()
+                if diplomacy:HasMet(otherID) ~= true then return false; end
+                if diplomacy:IsAtWarWith(otherID) then return true; end
+                return diplomacy:CanDeclareWarOn(otherID);
+            end);
+            if not ok or type(allowed) ~= "boolean" then
+                unknownDiplomacy = true;
+            elseif allowed then
+                local opponent = GetStrengthSnapshot(otherID);
+                if strength.Military >= math.max(1, opponent.Military) * minimumRatio then
+                    for _, city in other:GetCities():Members() do
+                        local x, y = city:GetX(), city:GetY();
+                        if visibility:IsRevealed(x, y) then
+                            local distance = math.huge;
+                            for _, anchor in ipairs(anchors) do
+                                distance = math.min(distance,
+                                    Map.GetPlotDistance(anchor.X, anchor.Y, x, y));
+                            end
+                            if distance <= maximumDistance then
+                                local plot = Map.GetPlot(x, y);
+                                if plot ~= nil and plot:GetOwner() == otherID then
+                                    table.insert(candidates, { TargetID = otherID, Plot = plot:GetIndex(),
+                                        X = x, Y = y, Distance = distance,
+                                        Coastal = plot:IsCoastalLand() });
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(candidates, function(a, b)
+        local aCurrent = a.TargetID == pressure.TargetID and a.Plot == pressure.CityPlot;
+        local bCurrent = b.TargetID == pressure.TargetID and b.Plot == pressure.CityPlot;
+        if aCurrent ~= bCurrent then return aCurrent; end
+        if a.Distance ~= b.Distance then return a.Distance < b.Distance; end
+        if a.TargetID ~= b.TargetID then return a.TargetID < b.TargetID; end
+        return a.Plot < b.Plot;
+    end);
+    while #candidates > 3 do table.remove(candidates); end
+    return candidates, unknownDiplomacy and "diplomacy_unknown" or "no_known_target";
+end
+
+function Strategic.PressureUnits(player, candidate)
+    local units = {};
+    for _, unit in player:GetUnits():Members() do
+        local info = GameInfo.Units[unit:GetType()];
+        if info ~= nil and (info.Domain == "DOMAIN_LAND" or info.Domain == "DOMAIN_SEA")
+            and math.max(tonumber(info.Combat) or 0, tonumber(info.RangedCombat) or 0) > 0 then
+            table.insert(units, { Unit = unit, ID = unit:GetID(), Domain = info.Domain,
+                X = unit:GetX(), Y = unit:GetY(),
+                Distance = Map.GetPlotDistance(unit:GetX(), unit:GetY(), candidate.X, candidate.Y) });
+        end
+    end
+    table.sort(units, function(a, b)
+        if a.Distance ~= b.Distance then return a.Distance < b.Distance; end
+        return a.ID < b.ID;
+    end);
+    while #units > 8 do table.remove(units); end
+    return units;
+end
+
+function Strategic.PressureStagingPairs(playerID, pressure, candidate, units)
+    local visibility = PlayersVisibility[playerID];
+    local pairsToProbe = {};
+    for dx = -4, 4 do
+        for dy = -4, 4 do
+            local plot = Map.GetPlotXYWithRangeCheck(candidate.X, candidate.Y, dx, dy, 4);
+            if plot ~= nil then
+                pressure.PlotChecks = pressure.PlotChecks + 1;
+                local x, y, owner = plot:GetX(), plot:GetY(), plot:GetOwner();
+                local cityDistance = Map.GetPlotDistance(candidate.X, candidate.Y, x, y);
+                if cityDistance >= 2 and visibility:IsRevealed(x, y)
+                    and (owner == -1 or owner == playerID) and not plot:IsImpassable() then
+                    for _, unit in ipairs(units) do
+                        local water = plot:IsWater();
+                        if (not water and unit.Domain == "DOMAIN_LAND")
+                            or (water and candidate.Coastal and unit.Domain == "DOMAIN_SEA") then
+                            local current = candidate.TargetID == pressure.TargetID
+                                and candidate.Plot == pressure.CityPlot
+                                and plot:GetIndex() == pressure.RallyPlot;
+                            table.insert(pairsToProbe, { Unit = unit, Plot = plot:GetIndex(),
+                                X = x, Y = y, Current = current,
+                                Score = Map.GetPlotDistance(unit.X, unit.Y, x, y) + cityDistance * 2 });
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(pairsToProbe, function(a, b)
+        if a.Current ~= b.Current then return a.Current; end
+        if a.Score ~= b.Score then return a.Score < b.Score; end
+        if a.Plot ~= b.Plot then return a.Plot < b.Plot; end
+        return a.Unit.ID < b.Unit.ID;
+    end);
+    while #pairsToProbe > 2 do table.remove(pairsToProbe); end
+    return pairsToProbe;
+end
+
+function Strategic.VerifyPressurePath(playerID, pair)
+    if pair.Unit.X == pair.X and pair.Unit.Y == pair.Y then return true, "at_staging"; end
+    local path = UnitManager.GetMoveToPath(pair.Unit.Unit, pair.Plot);
+    if type(path) ~= "table" then return false, "path_unknown"; end
+    if #path == 0 or path[#path] ~= pair.Plot then return false, "no_complete_path"; end
+    if #path > 24 then return false, "path_horizon"; end
+    for _, index in ipairs(path) do
+        local plot = Map.GetPlotByIndex(index);
+        if plot == nil or not PlayersVisibility[playerID]:IsRevealed(plot:GetX(), plot:GetY()) then
+            return false, "path_not_revealed";
+        end
+    end
+    return true, "verified_staging_path";
+end
+
+function Strategic.MeasurePressureDeployment(units, pair)
+    local distances, ready = {}, 0;
+    for _, unit in ipairs(units) do
+        if unit.Domain == pair.Unit.Domain then
+            local distance = Map.GetPlotDistance(unit.X, unit.Y, pair.X, pair.Y);
+            table.insert(distances, tostring(unit.ID) .. ":" .. tostring(distance));
+            if distance <= 2 then ready = ready + 1; end
+        end
+    end
+    table.sort(distances);
+    return table.concat(distances, ","), ready;
+end
+
+function Strategic.CollectPressure(playerID, pressure, strength, turn)
+    local candidates, reason = Strategic.PressureCandidates(playerID, pressure, strength, turn);
+    local probes = {};
+    for _, candidate in ipairs(candidates) do
+        local units = Strategic.PressureUnits(Players[playerID], candidate);
+        table.insert(probes, { Candidate = candidate, Units = units,
+            Pairs = Strategic.PressureStagingPairs(playerID, pressure, candidate, units) });
+    end
+    if #candidates == 0 then return nil, reason; end
+    reason = "no_staging_pair";
+    -- Give each candidate one attempt before spending a second on the first.
+    for round = 1, 2 do
+        for _, probe in ipairs(probes) do
+            local pair = probe.Pairs[round];
+            if pair ~= nil then
+                if pressure.PathChecks >= 4 then return nil, "path_budget"; end
+                pressure.PathChecks = pressure.PathChecks + 1;
+                local ok, reachable, pathReason = pcall(Strategic.VerifyPressurePath, playerID, pair);
+                if not ok then
+                    reason = "path_api_unknown";
+                elseif reachable then
+                    local candidate = probe.Candidate;
+                    local distances, ready = Strategic.MeasurePressureDeployment(probe.Units, pair);
+                    return { TargetID = candidate.TargetID, CityPlot = candidate.Plot,
+                        RallyPlot = pair.Plot, Distance = candidate.Distance, Units = distances,
+                        Ready = ready }, pathReason;
+                else
+                    reason = pathReason;
+                end
+            end
+        end
+    end
+    return nil, reason;
+end
+
+function Strategic.UpdatePressure(playerID, state, snapshot, strength, turn)
+    local pressure = state.Pressure;
+    if pressure.SampleTurn == turn then return; end
+    pressure.SampleTurn, pressure.PathChecks, pressure.PlotChecks = turn, 0, 0;
+    local competitive = state.CompetitiveScores or state.RawScores;
+    local upper = state.WorldUpperScores or competitive;
+    local start = ScaleStandardTurns(GetNumberParameter("ASAI_PLAN_PRESSURE_START_STANDARD", 55));
+    local ready = turn >= start and snapshot.ActiveMajorWars <= 0
+        and (state.MilitaryDominance == 1
+            or (competitive.Military >= 1.25 and upper.Military >= 0.85));
+    local cooling = turn < (state.StrategicPlanCooldownUntil[Strategic.PRESSURE] or -1);
+    local candidate, reason;
+    if not ready and state.StrategicPlan ~= Strategic.PRESSURE then
+        reason = "not_ready";
+    elseif cooling then
+        reason = "plan_cooldown";
+    else
+        local ok;
+        ok, candidate, reason = pcall(Strategic.CollectPressure, playerID, pressure, strength, turn);
+        if not ok then
+            if m_ConditionErrors.ASAI_Pressure == nil then
+                print("ASAI_DIAGNOSTIC_ERROR sensor=pressure fallback=no_pressure error=" .. tostring(candidate));
+                m_ConditionErrors.ASAI_Pressure = true;
+            end
+            candidate, reason = nil, "sensor_unknown";
+        end
+    end
+    pressure.Eligible = candidate ~= nil and 1 or 0;
+    pressure.Reason = reason;
+    if candidate ~= nil then
+        for key, value in pairs(candidate) do pressure[key] = value; end
+    else
+        pressure.TargetID, pressure.CityPlot, pressure.RallyPlot = -1, -1, -1;
+        pressure.Distance, pressure.Ready, pressure.Units = -1, 0, "";
+    end
+    if state.StrategicPlan == Strategic.PRESSURE or ready then
+        print(string.format(
+            "ASAI_PRESSURE_TARGET turn=%d player=%d eligible=%d target=%d city_plot=%d rally_plot=%d distance=%d ready_units=%d reason=%s path_checks=%d plot_checks=%d native_operation=unverified assignment=advisory path_scope=staging",
+            turn, playerID, pressure.Eligible, pressure.TargetID, pressure.CityPlot,
+            pressure.RallyPlot, pressure.Distance, pressure.Ready, pressure.Reason,
+            pressure.PathChecks, pressure.PlotChecks));
+    end
+end
+
+function Strategic.ResetPressureBaseline(state, newPlan)
+    local pressure = state.Pressure;
+    if pressure == nil then return; end
+    pressure.BaselineTargetID, pressure.BaselineCityPlot =
+        pressure.TargetID, pressure.CityPlot;
+    pressure.BaselineRallyPlot, pressure.BaselineUnits = pressure.RallyPlot, pressure.Units;
+    if newPlan then pressure.PrepWindowsUsed = 0; end
+end
+
+function Strategic.PressurePreparation(state)
+    local pressure = state.Pressure;
+    if pressure == nil or pressure.Eligible ~= 1 then return false, 0, "no_target"; end
+    if pressure.TargetID ~= pressure.BaselineTargetID or pressure.CityPlot ~= pressure.BaselineCityPlot
+        or pressure.RallyPlot ~= pressure.BaselineRallyPlot then
+        return false, 0, "target_changed";
+    end
+    local before, advanced = {}, 0;
+    for id, distance in string.gmatch(pressure.BaselineUnits, "(%d+):(%d+)") do
+        before[tonumber(id)] = tonumber(distance);
+    end
+    for id, distance in string.gmatch(pressure.Units, "(%d+):(%d+)") do
+        local previous, current = before[tonumber(id)], tonumber(distance);
+        if previous ~= nil and (previous - current >= 2 or (previous > 2 and current <= 2)) then
+            advanced = advanced + 1;
+        end
+    end
+    return advanced >= 2, advanced, advanced >= 2 and "deployment_advance" or "no_verified_preparation";
+end
+
+function Strategic.RecordPressureStop(player, state, turn)
+    local pressure = state.Pressure;
+    -- Retire the reviewed opponent, not an untried replacement sampled just now.
+    local target = pressure ~= nil and pressure.BaselineTargetID or -1;
+    if target < 0 and pressure ~= nil then target = pressure.TargetID; end
+    if target < 0 then return; end
+    local untilTurn = turn + ScaleStandardTurns(
+        GetNumberParameter("ASAI_PRESSURE_TARGET_COOLDOWN_STANDARD", 32));
+    local key = "ASAI_PRESSURE_TARGET_COOLDOWN_" .. target;
+    untilTurn = math.max(GetStoredNumber(player, key, -1), untilTurn);
+    player:SetProperty(key, untilTurn);
+    print(string.format("ASAI_PRESSURE_STOP turn=%d player=%d target=%d target_cooldown_until=%d",
+        turn, player:GetID(), target, untilTurn));
+end
+
 function ScienceExecution.GetStageName(stage)
     if stage == ScienceExecution.SATELLITE then
         return "satellite";
@@ -2579,6 +2880,7 @@ local function GetNeutralRelativeState()
         MildResultYieldsActive = 0,
         SevereResultYieldsActive = 0,
         SevereResultGapSince = -1,
+        Pressure = Strategic.NewPressureState(),
         MilitaryReadiness = 0,
         MilitaryReadinessCandidate = 0,
         MilitaryReadinessStreak = 0,
@@ -2645,6 +2947,7 @@ end
 
 local function ReadRelativeState(player)
     local state = GetNeutralRelativeState();
+    state.Pressure = Strategic.ReadPressureState(player);
     state.Band = GetStoredNumber(player, RELATIVE_BAND_PROPERTY, RELATIVE_MATCHED);
     if state.Band ~= RELATIVE_CATCHUP and state.Band ~= RELATIVE_CONSOLIDATE then
         state.Band = RELATIVE_MATCHED;
@@ -3046,6 +3349,7 @@ local function ReadRelativeState(player)
 end
 
 local function StoreRelativeState(player, state)
+    Strategic.StorePressureState(player, state.Pressure);
     player:SetProperty(RELATIVE_BAND_PROPERTY, state.Band);
     for pillar, propertyName in pairs(RELATIVE_SCORE_PROPERTIES) do
         player:SetProperty(propertyName, math.floor(state.Scores[pillar] * 1000 + 0.5));
@@ -4111,7 +4415,8 @@ end
 
 function Strategic.GetPlanExecution(playerID, state, snapshot)
     if state.StrategicPlan == Strategic.PRESSURE then
-        return snapshot.ActiveMajorWars > 0 and 1 or -1;
+        local preparation = Strategic.PressurePreparation(state);
+        return (snapshot.ActiveMajorWars > 0 or preparation) and 1 or -1;
     end
 
     local economic = GetEconomicSnapshot(playerID);
@@ -4176,6 +4481,7 @@ function Strategic.AssessWarOutcome(
 end
 
 function Strategic.StartPlanReview(state, snapshot, strength, turn)
+    if state.StrategicPlan == Strategic.PRESSURE then Strategic.ResetPressureBaseline(state, true); end
     state.StrategicPlanStartedTurn = turn;
     state.StrategicPlanReviewTurn = turn;
     state.StrategicPlanBaseline = Strategic.GetPlanOutcomeScore(
@@ -4205,6 +4511,7 @@ function Strategic.StartPlanReview(state, snapshot, strength, turn)
 end
 
 function Strategic.ResetPlanReviewBaseline(state, snapshot, strength, turn)
+    if state.StrategicPlan == Strategic.PRESSURE then Strategic.ResetPressureBaseline(state, false); end
     state.StrategicPlanReviewTurn = turn;
     state.StrategicPlanBaseline = Strategic.GetPlanOutcomeScore(
         state,
@@ -4313,6 +4620,9 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
     local externalWarImprovement = false;
     local stableWarOpponents = false;
     local defensePartial = false;
+    local pressurePartial = false;
+    local pressureAdvanced = 0;
+    local pressureReason = "not_pressure";
     local foundedEvents = math.max(0,
         (snapshot.FoundedEvents or 0) - (state.StrategicPlanBaselineFoundedEvents or 0));
     local foundedExpansion = foundedCityGain > 0 and foundedEvents > 0;
@@ -4353,14 +4663,30 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
                 pillageEvents, enemyLossRatio, ownLossRatio
             );
         improved = strategicProgress;
+        if state.StrategicPlan == Strategic.PRESSURE and improved then
+            pressureReason = "attributable_war_outcome";
+        end
+        if state.StrategicPlan == Strategic.PRESSURE and not improved then
+            local preparation;
+            preparation, pressureAdvanced, pressureReason = Strategic.PressurePreparation(state);
+            local pressure = state.Pressure;
+            pressurePartial = preparation and cityGain >= 0
+                and ownLossRatio < GetNumberParameter("ASAI_WAR_SERIOUS_OWN_LOSS_X100", 25) / 100
+                and pressure.PrepWindowsUsed < 2;
+            if pressurePartial then
+                pressure.PrepWindowsUsed = pressure.PrepWindowsUsed + 1;
+            elseif preparation then
+                pressureReason = pressure.PrepWindowsUsed >= 2 and "preparation_budget_exhausted"
+                    or "unsafe_losses";
+            end
+        end
     end
 
     if improved then
         state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_IMPROVING;
         state.StrategicPlanStallCount = 0;
-    elseif defensePartial then
-        -- Actual land recovery is useful progress, but does not clear the
-        -- persistent failure escalation while the empire remains unsafe.
+    elseif defensePartial or pressurePartial then
+        -- Partial defense or deployment earns time, not a success reset.
         state.StrategicPlanResult = RELATIVE_FOCUS_RESULT_EXECUTING;
     else
         state.StrategicPlanStallCount = state.StrategicPlanStallCount + 1;
@@ -4403,6 +4729,12 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
         foundedEvents
     ));
 
+    if state.StrategicPlan == Strategic.PRESSURE then
+        print(string.format(
+            "ASAI_PRESSURE_REVIEW turn=%d player=%d preparation=%d advanced_units=%d grace_used=%d grace_limit=2 reason=%s native_operation=unverified",
+            turn, playerID, pressurePartial and 1 or 0, pressureAdvanced,
+            state.Pressure ~= nil and state.Pressure.PrepWindowsUsed or 0, pressureReason));
+    end
     if state.StrategicPlan == Strategic.DEFEND then
         print(string.format(
             "ASAI_DEFENSE_REVIEW turn=%d player=%d land_gain=%d recovered=%d partial=%d emergency=%d retained=%d",
@@ -4418,7 +4750,7 @@ function Strategic.ReviewPlan(playerID, state, snapshot, strength, turn)
             and expansionSettlerStalled)
         or (state.StrategicPlan ~= Strategic.DEVELOP
             and state.StrategicPlanResult ~= RELATIVE_FOCUS_RESULT_IMPROVING
-            and state.StrategicPlanStallCount >= stallLimit);
+            and state.StrategicPlanStallCount >= stallLimit and not pressurePartial);
     -- Retiring DEFEND while war_rearm immediately selects the same plan left
     -- the old baseline live. Retain the job, not the stale review window.
     if Strategic.ShouldRetainDefense(state, snapshot) then retirePlan = false; end
@@ -4437,7 +4769,7 @@ function Strategic.MigratePlanOutcome(playerID, state, snapshot, strength, turn)
     local resetRecoveryBaseline = 0;
     local resetDefenseBaseline = 0;
     local resetOutcomeBaseline = (state.StrategicPlan == Strategic.PRESSURE
-            and previousOutcomeSchema < 7)
+            and previousOutcomeSchema < 8)
         or (state.StrategicPlan == Strategic.WAR and previousOutcomeSchema < 5)
         or (state.StrategicPlan == Strategic.RECOVER and previousOutcomeSchema < 5)
         or (state.StrategicPlan == Strategic.EXPAND and previousOutcomeSchema < 4)
@@ -4449,6 +4781,7 @@ function Strategic.MigratePlanOutcome(playerID, state, snapshot, strength, turn)
         state.StrategicPlanExecution = 0;
         if state.StrategicPlan ~= Strategic.DEFEND then state.StrategicPlanStallCount = 0; end
         if state.StrategicPlan == Strategic.PRESSURE then
+            Strategic.ResetPressureBaseline(state, true);
             resetPressureBaseline = 1;
         elseif state.StrategicPlan == Strategic.WAR then
             resetWarBaseline = 1;
@@ -4547,7 +4880,8 @@ function Strategic.GetPlanScores(state, snapshot, turn)
         and snapshot.ActiveMajorWars <= 0
         and competitive.Military >= 1.25
         and upper.Military >= 0.85;
-    if state.MilitaryDominance == 1 or pressureReady then
+    if state.Pressure ~= nil and state.Pressure.Eligible == 1
+        and (state.MilitaryDominance == 1 or pressureReady) then
         scores[Strategic.PRESSURE] = 85
             + math.max(0, competitive.Military - 1.2) * 80
             + (state.MilitaryDominance == 1 and 20 or 0)
@@ -4621,6 +4955,10 @@ function Strategic.SelectPlan(state, snapshot, scores)
     end
 
     local currentScore = scores[state.StrategicPlan] or 0;
+    if state.StrategicPlan == Strategic.PRESSURE
+        and (state.Pressure == nil or state.Pressure.Eligible ~= 1) then
+        return selected, "pressure_target_unavailable";
+    end
     local switchMargin = GetNumberParameter("ASAI_PLAN_SWITCH_MARGIN", 15);
     if selected ~= state.StrategicPlan
         and currentScore > 0
@@ -4947,6 +5285,7 @@ local function EvaluateRelativeState(playerID)
         end
         UpdateScaleExpansionAvailability(state, empireSnapshot);
 
+        Strategic.UpdatePressure(playerID, state, empireSnapshot, strengthSnapshot, turn);
         Strategic.MigratePlanOutcome(playerID, state, empireSnapshot, strengthSnapshot, turn);
 
         local strategicPlanRetired, expansionSettlerStalled = Strategic.ReviewPlan(
@@ -5029,6 +5368,8 @@ local function EvaluateRelativeState(playerID)
                     retiredCooldownStandard,
                     state.StrategicPlanCooldownUntil[Strategic.WAR]
                 ));
+            elseif retiredPlan == Strategic.PRESSURE then
+                Strategic.RecordPressureStop(player, state, turn);
             end
         end
         Strategic.UpdateExpansionState(state, empireSnapshot, turn);
@@ -5054,6 +5395,7 @@ local function EvaluateRelativeState(playerID)
             or strategicPlanReason == "expansion_era_closed"
             or strategicPlanReason == "expansion_era_restricted"
             or strategicPlanReason == "expansion_stall_reallocate"
+            or strategicPlanReason == "pressure_target_unavailable"
             or (strategicPlanReason == "war_stop_loss_reallocate"
                 and state.StrategicPlan == Strategic.WAR);
         if desiredStrategicPlan ~= state.StrategicPlan
@@ -5487,7 +5829,8 @@ GameEvents.ASAI_IsMilitaryReadiness.Add(ASAI_IsMilitaryReadiness);
 
 local function IsMilitaryDominance(playerID, threshold)
     local state = GetRelativeState(playerID);
-    return state.StrategicPlan == Strategic.PRESSURE;
+    return state.StrategicPlan == Strategic.PRESSURE
+        and state.Pressure ~= nil and state.Pressure.Eligible == 1;
 end
 function ASAI_IsMilitaryDominance(playerID, threshold)
     return RunStrategyCondition(

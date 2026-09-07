@@ -32,8 +32,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.14"
-EXPECTED_MODINFO_VERSION = "36"
+EXPECTED_RELEASE = "0.11.15"
+EXPECTED_MODINFO_VERSION = "37"
 EXPECTED_STRATEGIES = 43
 
 
@@ -586,10 +586,10 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         "snapshot.Turn < warCooldownUntil",
         "state.StrategicPlanExecution > 0",
         'OUTCOME_SCHEMA_PROPERTY = "ASAI_STRATEGIC_PLAN_OUTCOME_SCHEMA"',
-        "OUTCOME_SCHEMA = 7",
+        "OUTCOME_SCHEMA = 8",
         "function Strategic.MigratePlanOutcome(playerID, state, snapshot, strength, turn)",
         "Strategic.MigratePlanOutcome(playerID, state, empireSnapshot, strengthSnapshot, turn)",
-        "and previousOutcomeSchema < 7",
+        "and previousOutcomeSchema < 8",
         "reset_pressure_baseline=%d",
         "reset_war_baseline=%d",
         "reset_expansion_baseline=%d",
@@ -625,6 +625,52 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
         errors.append("WAR plans are still excluded from stalled-plan retirement")
     if "improved = improved or snapshot.ActiveMajorWars > 0 or cityGain > 0" in source:
         errors.append("PRESSURE still treats preparation or ordinary city growth as success")
+    pressure_fragments = (
+        "function Strategic.NewPressureState()",
+        "function Strategic.ReadPressureState(player)",
+        "function Strategic.StorePressureState(player, pressure)",
+        "state.Pressure = Strategic.ReadPressureState(player)",
+        "Strategic.StorePressureState(player, state.Pressure)",
+        "function Strategic.PressureCandidates(playerID, pressure, strength, turn)",
+        "diplomacy:HasMet(otherID)",
+        "diplomacy:CanDeclareWarOn(otherID)",
+        "visibility:IsRevealed(x, y)",
+        "ASAI_PRESSURE_TARGET_DISTANCE",
+        "ASAI_PRESSURE_TARGET_MIN_RATIO_X100",
+        "while #candidates > 3",
+        "while #units > 8",
+        "pressure.PathChecks >= 4",
+        "function Strategic.VerifyPressurePath(playerID, pair)",
+        "UnitManager.GetMoveToPath(pair.Unit.Unit, pair.Plot)",
+        "path[#path] ~= pair.Plot",
+        "#path > 24",
+        "path_not_revealed",
+        "function Strategic.PressurePreparation(state)",
+        "pressure.BaselineTargetID",
+        "pressure.BaselineRallyPlot",
+        "before[tonumber(id)]",
+        "return advanced >= 2",
+        "pressure.PrepWindowsUsed < 2",
+        "and not pressurePartial",
+        "Strategic.ResetPressureBaseline(state, true)",
+        "Strategic.ResetPressureBaseline(state, false)",
+        "Strategic.UpdatePressure(playerID, state, empireSnapshot, strengthSnapshot, turn)",
+        "Strategic.RecordPressureStop(player, state, turn)",
+        "pressure_target_unavailable",
+        "state.Pressure.Eligible == 1",
+        "ASAI_PRESSURE_TARGET",
+        "ASAI_PRESSURE_REVIEW",
+        "native_operation=unverified assignment=advisory path_scope=staging",
+    )
+    for fragment in pressure_fragments:
+        if fragment not in source:
+            errors.append(f"pressure target/preparation fragment is missing: {fragment}")
+    for forbidden in (
+        "StartScriptedOperation", "AddUnitToScriptedOperation", "ScriptForceUpdateTargets",
+        "UnitManager.RequestOperation", ":DeclareWarOn(", ":SetRival(",
+    ):
+        if forbidden in source:
+            errors.append(f"pressure must not commandeer native operations: {forbidden}")
     diagnostic_fragments = (
         "local function TryDiagnosticSensor(sensorName, collector, rememberUnsupported)",
         "ASAI_DIAGNOSTIC_ERROR sensor=%s fallback=missing",
