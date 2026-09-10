@@ -32,9 +32,9 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.15"
-EXPECTED_MODINFO_VERSION = "37"
-EXPECTED_STRATEGIES = 43
+EXPECTED_RELEASE = "0.11.16"
+EXPECTED_MODINFO_VERSION = "38"
+EXPECTED_STRATEGIES = 46
 
 
 def default_database() -> Path:
@@ -2902,14 +2902,15 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
     for marker in ("ASAI_UI_TRADE", "ASAI_UI_CULTURE", "ASAI_UI_CITY_QUEUE",
                    "ASAI_UI_TRADE_RECHECK", "ASAI_UI_CAPABILITIES",
                    "ASAI_UI_TRADER_CANDIDATE", "ASAI_UI_TRADER_DEMAND",
-                   "ASAI_UI_PORT_CANDIDATE", "ASAI_UI_LASER_PREREQ"):
+                   "ASAI_UI_PORT_CANDIDATE", "ASAI_UI_LASER_PREREQ", "ASAI_UI_SCIENCE_BUILD"):
         counts = lua_format_counts(ui, marker)
         if counts is None or counts[0] != counts[1]:
             errors.append(f"UI format arguments disagree for {marker}: {counts}")
     for marker in ("ASAI_EXECUTION", "ASAI_CONDITION", "ASAI_STABILITY", "ASAI_CITY_QUEUE",
                    "ASAI_EXECUTION_DETAIL", "ASAI_DEFENSE_REVIEW", "ASAI_SCIENCE_PREPARATION",
                    "ASAI_CANDIDATE", "ASAI_TRADER_CHAIN", "ASAI_FIRST_PORT_PLAN",
-                   "ASAI_SCIENCE_CAPACITY"):
+                   "ASAI_SCIENCE_CAPACITY", "ASAI_SCIENCE_BUILD", "ASAI_MINOR_COMBAT",
+                   "ASAI_MINOR_FRONT", "ASAI_MINOR_FRONTS"):
         counts = lua_format_counts(gameplay, marker)
         if counts is None or counts[0] != counts[1]:
             errors.append(f"execution format arguments disagree for {marker}: {counts}")
@@ -2948,6 +2949,11 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
         ("ASAI_TradeExecutionBuildings", "BUILDING_MARKET"): 180,
         ("ASAI_TradeExecutionBuildings", "BUILDING_LIGHTHOUSE"): 180,
         ("ASAI_TradeExecutionDistricts", "DISTRICT_COMMERCIAL_HUB"): 90,
+        ("ASAI_ScienceConstructionSpecialization", "BUILD_FOR_SCIENCE"): -2,
+        ("ASAI_ProductionShareSpecialization", "BUILD_MILITARY_UNITS"): 1,
+        ("ASAI_ProductionShareDistricts", "DISTRICT_ENCAMPMENT"): -80,
+        ("ASAI_ProductionShareBuildings", "BUILDING_MILITARY_ACADEMY"): -35,
+        ("ASAI_MinorRecoveryPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): -15,
     }
     for (list_type, item), value in expected.items():
         row = connection.execute("SELECT Value FROM AiFavoredItems WHERE ListType=? AND Item=?",
@@ -2965,6 +2971,13 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
                      "function ScienceExecution.PlanPorts(",
                      "function ScienceExecution.DecideCapacity(",
                      "function Execution.RecordTraderChain(",
+                     "function Execution.HasScienceHealthGap(",
+                     "function Execution.ScienceFacilityQueue(",
+                     "function Execution.UpdateScienceConstruction(",
+                     "function Execution.UpdateMinorFronts(",
+                     "GameEvents.OnCombatOccurred.Add(Execution.OnMinorCombat)",
+                     "GameEvents.CityConquered.Add(Execution.OnMinorCapture)",
+                     "CityManager.GetCityAt(x, y)",
                      'Strategic.GetOpponentKey(snapshot)',
                      'science_finish_reallocate',
                      'candidate_mode=data_prerequisites native_legality=unverified'):
@@ -2980,6 +2993,8 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
         ("ASAI_STRATEGY_TRADER_EXECUTION", "ASAI_TraderExecutionSpecialization"),
         ("ASAI_STRATEGY_SCIENCE_CAPACITY", "ASAI_ScienceCapacitySpecialization"),
         ("ASAI_STRATEGY_SCIENCE_CAPACITY", "ASAI_ScienceCapacityPseudoYields"),
+        ("ASAI_STRATEGY_SCIENCE_CONSTRUCTION", "ASAI_ScienceConstructionSpecialization"),
+        ("ASAI_STRATEGY_MINOR_FRONT_RECOVERY", "ASAI_MinorRecoveryPseudoYields"),
     ):
         owners = list(connection.execute(
             "SELECT StrategyType FROM Strategy_Priorities WHERE ListType=?", (list_type,)))
@@ -2997,6 +3012,26 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
                                   (list_type,)).fetchall()
         if not rows or any(row != (promotion, value) for row in rows):
             errors.append(f"role-specific reinforcement list is invalid: {list_type}")
+    for name, expected_value in {
+        "ASAI_SCIENCE_HEALTH_ENTER_X100": 80,
+        "ASAI_SCIENCE_HEALTH_EXIT_X100": 90,
+        "ASAI_SCIENCE_HEALTH_TECH_LEAD_X100": 110,
+        "ASAI_SCIENCE_CONSTRUCTION_MAX_CITIES": 3,
+        "ASAI_SCIENCE_SHARE_MILITARY_MIN_X100": 78,
+        "ASAI_MINOR_COMBAT_RECENT_STANDARD": 8,
+        "ASAI_MINOR_FRONT_COOLDOWN_STANDARD": 24,
+    }.items():
+        row = connection.execute("SELECT Value FROM GlobalParameters WHERE Name=?", (name,)).fetchone()
+        if row is None or int(row[0]) != expected_value:
+            errors.append(f"development parameter {name}: expected {expected_value}, got {row}")
+    non_optional = connection.execute(
+        "SELECT f.Item FROM AiFavoredItems f LEFT JOIN Buildings b ON b.BuildingType=f.Item "
+        "WHERE f.ListType='ASAI_ProductionShareBuildings' AND "
+        "(b.BuildingType IS NULL OR b.IsWonder=1 OR b.PrereqDistrict NOT IN "
+        "(SELECT Item FROM AiFavoredItems WHERE ListType='ASAI_ProductionShareDistricts'))"
+    ).fetchall()
+    if non_optional:
+        errors.append(f"production sharing must not penalize walls or unrelated buildings: {non_optional}")
     return errors
 
 

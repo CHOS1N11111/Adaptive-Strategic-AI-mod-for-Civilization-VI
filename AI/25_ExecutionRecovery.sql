@@ -262,3 +262,62 @@ INSERT INTO AiFavoredItems (ListType, Item, Favored, Value)
 SELECT 'ASAI_ExecutionOptionalBuildings', BuildingType, 0, -45 FROM Buildings
 WHERE PrereqDistrict = 'DISTRICT_ENCAMPMENT'
   AND COALESCE(IsWonder, 0) = 0;
+
+-- Native specialization offsets, not forced city orders or yield bonuses.
+INSERT OR REPLACE INTO GlobalParameters (Name, Value) VALUES
+    ('ASAI_SCIENCE_HEALTH_ENTER_X100', 80),
+    ('ASAI_SCIENCE_HEALTH_EXIT_X100', 90),
+    ('ASAI_SCIENCE_HEALTH_TECH_LEAD_X100', 110),
+    ('ASAI_SCIENCE_CONSTRUCTION_MAX_CITIES', 3),
+    ('ASAI_SCIENCE_SHARE_MILITARY_MIN_X100', 78),
+    ('ASAI_MINOR_COMBAT_RECENT_STANDARD', 8),
+    ('ASAI_MINOR_FRONT_COOLDOWN_STANDARD', 24);
+INSERT INTO Types (Type, Kind) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CONSTRUCTION', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE', 'KIND_VICTORY_STRATEGY'),
+    ('ASAI_STRATEGY_MINOR_FRONT_RECOVERY', 'KIND_VICTORY_STRATEGY');
+INSERT INTO Strategies (StrategyType, NumConditionsNeeded) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CONSTRUCTION', 1),
+    ('ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE', 1),
+    ('ASAI_STRATEGY_MINOR_FRONT_RECOVERY', 1);
+INSERT INTO StrategyConditions
+    (StrategyType, ConditionFunction, StringValue, ThresholdValue, Disqualifier) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CONSTRUCTION', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_CONSTRUCTION', 'Call Lua Function', 'ASAI_IsScienceConstructionExecution', 0, 0),
+    ('ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE', 'Call Lua Function', 'ASAI_IsScienceProductionShareExecution', 0, 0),
+    ('ASAI_STRATEGY_MINOR_FRONT_RECOVERY', 'Is Not Major', NULL, 0, 1),
+    ('ASAI_STRATEGY_MINOR_FRONT_RECOVERY', 'Call Lua Function', 'ASAI_IsMinorFrontRecoveryExecution', 0, 0);
+INSERT INTO AiListTypes (ListType) VALUES
+    ('ASAI_ScienceConstructionSpecialization'),
+    ('ASAI_ProductionShareSpecialization'),
+    ('ASAI_ProductionShareDistricts'),
+    ('ASAI_ProductionShareBuildings'),
+    ('ASAI_MinorRecoveryPseudoYields');
+INSERT INTO AiLists (ListType, System) VALUES
+    ('ASAI_ScienceConstructionSpecialization', 'AiBuildSpecializations'),
+    ('ASAI_ProductionShareSpecialization', 'AiBuildSpecializations'),
+    ('ASAI_ProductionShareDistricts', 'Districts'),
+    ('ASAI_ProductionShareBuildings', 'Buildings'),
+    ('ASAI_MinorRecoveryPseudoYields', 'PseudoYields');
+INSERT INTO Strategy_Priorities (StrategyType, ListType) VALUES
+    ('ASAI_STRATEGY_SCIENCE_CONSTRUCTION', 'ASAI_ScienceConstructionSpecialization'),
+    ('ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE', 'ASAI_ProductionShareSpecialization'),
+    ('ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE', 'ASAI_ProductionShareDistricts'),
+    ('ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE', 'ASAI_ProductionShareBuildings'),
+    ('ASAI_STRATEGY_MINOR_FRONT_RECOVERY', 'ASAI_ProductionShareSpecialization'),
+    ('ASAI_STRATEGY_MINOR_FRONT_RECOVERY', 'ASAI_MinorRecoveryPseudoYields');
+INSERT INTO AiFavoredItems (ListType, Item, Favored, Value) VALUES
+    ('ASAI_ScienceConstructionSpecialization', 'BUILD_FOR_SCIENCE', 1, -2),
+    ('ASAI_ProductionShareSpecialization', 'BUILD_MILITARY_UNITS', 0, 1),
+    ('ASAI_MinorRecoveryPseudoYields', 'PSEUDOYIELD_UNIT_COMBAT', 0, -15);
+INSERT INTO AiFavoredItems (ListType, Item, Favored, Value)
+SELECT 'ASAI_ProductionShareDistricts', DistrictType, 0, -80 FROM Districts
+WHERE DistrictType = 'DISTRICT_ENCAMPMENT'
+   OR DistrictType IN (SELECT CivUniqueDistrictType FROM DistrictReplaces
+       WHERE ReplacesDistrictType = 'DISTRICT_ENCAMPMENT');
+INSERT INTO AiFavoredItems (ListType, Item, Favored, Value)
+SELECT 'ASAI_ProductionShareBuildings', BuildingType, 0, -35 FROM Buildings
+WHERE PrereqDistrict IN (SELECT Item FROM AiFavoredItems
+    WHERE ListType = 'ASAI_ProductionShareDistricts')
+  AND COALESCE(IsWonder, 0) = 0;

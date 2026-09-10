@@ -5849,6 +5849,11 @@ local function GetMilitaryQueueTarget(snapshot, state)
     local targetPercent = snapshot.ActiveMajorWars > 0 and not warStopLoss
         and GetNumberParameter("ASAI_WAR_QUEUE_TARGET_X100", 45)
         or GetNumberParameter("ASAI_MILITARY_QUEUE_TARGET_X100", 25);
+    if state.Execution ~= nil and (state.Execution.MilitaryShare
+        or (state.Execution.MinorStopLoss and not state.Execution.Emergency
+            and not state.Execution.RecentAttrition)) then
+        targetPercent = math.min(targetPercent, 10);
+    end
     return snapshot.Cities > 0
         and math.max(1, math.ceil(snapshot.Cities * targetPercent / 100))
         or 0;
@@ -5860,11 +5865,12 @@ local function GetMilitaryExecutionStatus(playerID)
     end
     local state = GetRelativeState(playerID);
     local snapshot = GetSnapshot(playerID);
+    local execution = Execution.GetStatus(playerID);
     local target = GetMilitaryQueueTarget(snapshot, state);
     local failedWarReview = state.StrategicPlan == Strategic.WAR
         and (state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_EXECUTING
             or state.StrategicPlanResult == RELATIVE_FOCUS_RESULT_STALLED);
-    local emergency = Execution.GetStatus(playerID).Emergency;
+    local emergency = execution.Emergency;
     if (state.StrategicPlan ~= Strategic.DEFEND and not failedWarReview and not emergency)
         or target <= 0 then
         return false, target;
@@ -6852,7 +6858,8 @@ local function WriteMilitaryDiagnostics(playerID, firstTimeThisTurn)
         0,
         combatForceTarget - strength.CombatUnits
     );
-    local assaultRoleTarget = snapshot.ActiveMajorWars > 0 and 1 or 0;
+    local assaultRoleTarget = (snapshot.ActiveMajorWars > 0
+        or (Execution.GetStatus(playerID).MinorActionable or 0) > 0) and 1 or 0;
     local operationRangedGap = assaultRolesOk == 1 and math.max(
         0,
         assaultRoleTarget
@@ -7246,7 +7253,13 @@ function Execution.EmptyStatus(turn)
         EconomyAllowed = true, LandNeeded = false, LandQueueTarget = 0,
         TraderStage = "none", TraderAge = 0, TraderGap = 0, TraderQueueTarget = 0,
         TraderChain = "unknown_sensor", TraderRequestAge = 0,
-        TraderGainTurn = -1, TraderInflightTurn = -1
+        TraderGainTurn = -1, TraderInflightTurn = -1,
+        ScienceHealth = false, ScienceReason = "none", ScienceConstruction = false,
+        ScienceConstructionRole = "none", ScienceConstructionGap = 0,
+        ScienceConstructionQueued = 0, ScienceConstructionAge = 0,
+        ScienceConstructionGain = 0, ScienceCandidateCity = -1,
+        MilitaryShare = false, MinorActive = 0, MinorActionable = 0,
+        MinorCooling = 0, MinorStopLoss = false, MinorSensorOk = 1
     };
 end
 
@@ -7330,7 +7343,7 @@ function Execution.CollectAssets(player)
     local definitions = Execution.GetDefinitions();
     local result = {
         Counts = {}, Queued = {}, Cities = {}, CityPlots = {},
-        Player = player, Probes = {}, ProbeReasons = {}, CandidateCities = {},
+        Player = player, Probes = {}, ProbeReasons = {}, CandidateCities = {}, CandidateTypes = {},
         BuildabilityOk = -1, CandidateReason = "unprobed", ByCity = {}
     };
     for role in pairs(definitions.ByRole) do
@@ -7459,8 +7472,10 @@ function Execution.IsCandidate(assets, row, entry)
         for _, trait in ipairs(definitions.ExcludedDistricts[name] or {}) do
             if traits[trait] then return false; end
         end
-        -- Population bonuses, terrain, adjacency and placement remain native
-        -- decisions. A candidate is NOT a CanProduce/valid-plot assertion.
+        -- Population/terrain/placement legality is available to the UI probe,
+        -- not these Gameplay bindings. Never substitute a hardcoded slot
+        -- formula that would reject civilization-specific district bonuses.
+        -- A data candidate is NOT a CanProduce/valid-plot assertion.
     elseif entry.Kind == "unit" then
         if info.CanTrain == false or info.CanTrain == 0 then return false; end
         if (info.ObsoleteTech ~= nil and hasTech(info.ObsoleteTech))
@@ -7513,6 +7528,9 @@ function Execution.CanBuild(assets, role)
                 elseif allowed then
                     assets.Probes[role], assets.ProbeReasons[role] = true, "candidate";
                     assets.CandidateCities[role] = row.City:GetID();
+                    assets.CandidateTypes = assets.CandidateTypes or {};
+                    assets.CandidateTypes[role] = entry.Info.BuildingType
+                        or entry.Info.DistrictType or entry.Info.UnitType;
                     assets.BuildabilityOk, assets.CandidateReason = 1, "candidate";
                     return true, "candidate";
                 end
@@ -7552,6 +7570,79 @@ function Execution.HasScienceDeficit(state, wasActive)
     return progressRatio < (wasActive and 1.0 or 0.98) and score < threshold;
 end
 
+function Execution.HasScienceHealthGap(state, goal, wasActive)
+    -- Construction advice only. Never used by the direct-yield tier logic.
+    local ratios = state.RawRatios or {};
+    local flow, progress = ratios.Science, ratios.Techs;
+    if type(flow) ~= "number" or type(progress) ~= "number" then
+        return false, "unknown_reference";
+    end
+    if goal == "covered" or goal == "none" then return false, "facilities_covered"; end
+    if progress > GetNumberParameter("ASAI_SCIENCE_HEALTH_TECH_LEAD_X100", 110) / 100 then
+        return false, "knowledge_lead";
+    end
+    local threshold = GetNumberParameter(wasActive
+        and "ASAI_SCIENCE_HEALTH_EXIT_X100" or "ASAI_SCIENCE_HEALTH_ENTER_X100",
+        wasActive and 90 or 80) / 100;
+    return flow < threshold, flow < threshold and "infrastructure_gap" or "flow_recovered";
+end
+
+function Execution.ScienceFacilityGap(counts, role, cities)
+    local target = role == "campus" and math.max(1, math.ceil(cities * 0.60))
+        or math.max(1, math.ceil((counts.campus or 0) * 0.65));
+    return math.max(0, target - (counts[role] or 0));
+end
+
+function Execution.ScienceFacilityQueue(assets)
+    local count = 0;
+    for _, role in ipairs({ "campus", "library", "university", "laboratory" }) do
+        count = count + (assets.Queued[role] or 0);
+    end
+    return count;
+end
+
+function Execution.UpdateScienceConstruction(player, snapshot, strength, assets, result, turn, state)
+    local role = result.ScienceGoal;
+    local physical = result.ScienceStage == "infrastructure" or result.ScienceStage == "inflight";
+    result.ScienceConstructionRole = physical and role or "none";
+    result.ScienceConstructionGap = physical
+        and Execution.ScienceFacilityGap(assets.Counts, role, snapshot.Cities) or 0;
+    result.ScienceConstructionQueued = physical and (assets.Queued[role] or 0) or 0;
+    result.ScienceCandidateCity = physical and ((assets.CandidateCities or {})[role] or -1) or -1;
+    local rawRole = player:GetProperty("ASAI_SCIENCE_BUILD_ROLE");
+    local previousRole = rawRole or "none";
+    local previousCount = GetStoredNumber(player, "ASAI_SCIENCE_BUILD_COUNT", -1);
+    local count = physical and (assets.Counts[role] or 0) or 0;
+    local observedPrevious = (assets.Counts or {})[previousRole];
+    local gain = previousRole ~= "none" and previousCount >= 0 and observedPrevious ~= nil
+        and math.max(0, observedPrevious - previousCount) or 0;
+    result.ScienceConstructionGain = gain;
+    result.ScienceCompletedRole = gain > 0 and previousRole or "none";
+    result.ScienceConstruction = physical and result.ScienceStage == "infrastructure"
+        and result.ScienceConstructionGap > result.ScienceConstructionQueued
+        and result.EconomyAllowed and result.ScienceCandidateCity >= 0;
+    result.ScienceConstructionAge = Execution.UpdateTimer(player,
+        "ASAI_SCIENCE_BUILD_SINCE", result.ScienceConstruction, turn,
+        previousRole ~= role or gain > 0 or result.ScienceConstructionQueued > 0);
+    -- A healthy standing land force must exist before ordinary recruitment
+    -- gives way. Never remove walls, role reinforcements, or emergency units.
+    local peaceful = result.MinorSensorOk == 1 and (snapshot.ActiveMajorWars or 0) <= 0
+        and (result.MinorActive == 0 or result.MinorStopLoss);
+    local rawMilitary = state ~= nil and (state.RawScores or {}).Military or 0;
+    local competitiveMilitary = state ~= nil and (state.CompetitiveScores or {}).Military or 0;
+    result.MilitaryShare = result.ScienceConstruction and peaceful
+        and not result.Emergency and not result.RecentAttrition
+        and Execution.LandUnits(strength) >= math.max(2, math.ceil(snapshot.Cities))
+        and math.min(rawMilitary, competitiveMilitary)
+            >= GetNumberParameter("ASAI_SCIENCE_SHARE_MILITARY_MIN_X100", 78) / 100;
+    player:SetProperty("ASAI_SCIENCE_BUILD_ROLE", result.ScienceConstructionRole);
+    player:SetProperty("ASAI_SCIENCE_BUILD_COUNT", count);
+    player:SetProperty("ASAI_SCIENCE_BUILD_CITY", result.ScienceCandidateCity);
+    player:SetProperty("ASAI_SCIENCE_BUILD_TYPE",
+        physical and ((assets.CandidateTypes or {})[role] or "") or "");
+    player:SetProperty("ASAI_SCIENCE_BUILD_TURN", turn);
+end
+
 function Execution.SelectScienceGoal(hasTech, counts, era, cities)
     if not hasTech("TECH_WRITING") then return "writing", "campus"; end
     if (counts.campus or 0) <= 0 then return "infrastructure", "campus"; end
@@ -7580,7 +7671,8 @@ function Execution.LandUnits(strength)
 end
 
 function Execution.MilitarySignals(snapshot, strength, queue, recentAttrition)
-    local active = snapshot.ActiveMajorWars > 0 and snapshot.Cities > 0;
+    local active = (snapshot.ActiveMajorWars > 0 or (snapshot.ActiveMinorFronts or 0) > 0)
+        and snapshot.Cities > 0;
     local density = strength.CombatUnits / math.max(1, snapshot.Cities);
     local land = Execution.LandUnits(strength);
     local landTarget = active and math.max(1, math.ceil(snapshot.Cities * 0.55)) or 0;
@@ -7602,9 +7694,164 @@ function Execution.MilitarySignals(snapshot, strength, queue, recentAttrition)
         RangedTarget = rangedTarget, SiegeTarget = siegeTarget,
         RangedNeeded = active
             and strength.RangedUnits + math.max(0, queue.Ranged or 0) < rangedTarget,
-        SiegeNeeded = active and not emergency and siegeTarget > 0
+        SiegeNeeded = active and not snapshot.MinorFrontStopLoss and not emergency and siegeTarget > 0
             and strength.SiegeUnits + math.max(0, queue.Siege or 0) < siegeTarget
     };
+end
+
+function Execution.IsCityState(playerID)
+    local player = Players[playerID];
+    return player ~= nil and not player:IsMajor() and not player:IsBarbarian()
+        and not Execution.IsFreeCityPlayer(playerID);
+end
+
+function Execution.MinorKey(opponentID, key)
+    return "ASAI_MINOR_FRONT_" .. tostring(opponentID) .. "_" .. key;
+end
+
+function Execution.RecordMinorActivity(playerID, opponentID, turn)
+    if not IsMajorAI(playerID) or not Execution.IsCityState(opponentID) then return; end
+    local player = Players[playerID];
+    if not player:GetDiplomacy():IsAtWarWith(opponentID) then return; end
+    local lastKey = Execution.MinorKey(opponentID, "LAST_COMBAT");
+    local previous = GetStoredNumber(player, lastKey, -100000);
+    if previous == turn then return; end -- activity turns, not duplicate callbacks
+    local recent = ScaleStandardTurns(GetNumberParameter("ASAI_MINOR_COMBAT_RECENT_STANDARD", 8));
+    if previous > turn or turn - previous > recent then
+        player:SetProperty(Execution.MinorKey(opponentID, "REVIEW_TURN"), -1);
+        player:SetProperty(Execution.MinorKey(opponentID, "STALLS"), 0);
+    end
+    player:SetProperty(lastKey, turn);
+    Strategic.IncrementRuntimeCounter(player, Execution.MinorKey(opponentID, "COMBAT_TURNS"));
+    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) == 1 then
+        print(string.format("ASAI_MINOR_COMBAT turn=%d player=%d opponent=%d source=on_combat_occurred",
+            turn, playerID, opponentID));
+    end
+    -- Do not reevaluate strategy from inside a combat callback.
+end
+
+function Execution.RecordMinorCombat(attackerID, attackerUnitID, defenderID, defenderUnitID,
+        attackerDistrictID, defenderDistrictID)
+    if attackerID == nil or defenderID == nil or attackerID == defenderID then return; end
+    local ai, minor;
+    if IsMajorAI(attackerID) and Execution.IsCityState(defenderID) then
+        ai, minor = attackerID, defenderID;
+    elseif IsMajorAI(defenderID) and Execution.IsCityState(attackerID) then
+        ai, minor = defenderID, attackerID;
+    else return; end
+    local function military(playerID, unitID, districtID)
+        local player = Players[playerID];
+        if unitID ~= nil and unitID >= 0 then
+            local unit = player:GetUnits():FindID(unitID);
+            if unit ~= nil and GetUnitBaseStrength(GameInfo.Units[unit:GetType()]) > 0 then return true; end
+        end
+        return districtID ~= nil and districtID >= 0
+            and player:GetDistricts():FindID(districtID) ~= nil;
+    end
+    if not military(attackerID, attackerUnitID, attackerDistrictID)
+        and not military(defenderID, defenderUnitID, defenderDistrictID) then return; end
+    Execution.RecordMinorActivity(ai, minor, Game.GetCurrentGameTurn());
+end
+
+function Execution.OnMinorCombat(...)
+    local success, err = pcall(Execution.RecordMinorCombat, ...);
+    if not success and not m_ConditionErrors.ASAI_MinorCombat then
+        m_ConditionErrors.ASAI_MinorCombat = true;
+        print("ASAI_DIAGNOSTIC_ERROR sensor=minor_combat fallback=skip error=" .. tostring(err));
+    end
+end
+
+function Execution.RecordMinorCapture(capturerID, ownerID, cityID, x, y)
+    if not IsMajorAI(capturerID) or not Execution.IsCityState(ownerID)
+        or x == nil or y == nil then return; end
+    local player = Players[capturerID];
+    player:SetProperty(Execution.MinorKey(ownerID, "CAPTURE_TURN"), Game.GetCurrentGameTurn());
+    player:SetProperty(Execution.MinorKey(ownerID, "CAPTURE_X"), x);
+    player:SetProperty(Execution.MinorKey(ownerID, "CAPTURE_Y"), y);
+end
+
+function Execution.OnMinorCapture(...)
+    local success, err = pcall(Execution.RecordMinorCapture, ...);
+    if not success and not m_ConditionErrors.ASAI_MinorCapture then
+        m_ConditionErrors.ASAI_MinorCapture = true;
+        print("ASAI_DIAGNOSTIC_ERROR sensor=minor_capture fallback=skip error=" .. tostring(err));
+    end
+end
+
+function Execution.HoldsMinorCapture(player, opponentID, since)
+    local captured = GetStoredNumber(player, Execution.MinorKey(opponentID, "CAPTURE_TURN"), -1);
+    if captured <= since then return false; end
+    local x = GetStoredNumber(player, Execution.MinorKey(opponentID, "CAPTURE_X"), -1);
+    local y = GetStoredNumber(player, Execution.MinorKey(opponentID, "CAPTURE_Y"), -1);
+    if x < 0 or y < 0 then return false; end
+    local city = CityManager.GetCityAt(x, y);
+    return city ~= nil and city:GetOwner() == player:GetID();
+end
+
+function Execution.UpdateMinorFronts(player, snapshot, strength, turn)
+    local result = { Active = 0, Actionable = 0, Cooling = 0, StopLoss = false, SensorOk = 1, Rows = {} };
+    -- Older test boundaries / unavailable player inventory must not fabricate a war.
+    if PlayerManager.GetAliveIDs == nil then result.SensorOk = 0; return result; end
+    local recent = ScaleStandardTurns(GetNumberParameter("ASAI_MINOR_COMBAT_RECENT_STANDARD", 8));
+    local window = math.max(1, ScaleStandardTurns(GetNumberParameter("ASAI_PLAN_REVIEW_STANDARD", 12)));
+    local cooldown = math.max(1, ScaleStandardTurns(GetNumberParameter("ASAI_MINOR_FRONT_COOLDOWN_STANDARD", 24)));
+    for _, opponentID in ipairs(PlayerManager.GetAliveIDs()) do
+        if Execution.IsCityState(opponentID) and player:GetDiplomacy():IsAtWarWith(opponentID) then
+            local function get(key, fallback)
+                return GetStoredNumber(player, Execution.MinorKey(opponentID, key), fallback);
+            end
+            local function put(key, value) player:SetProperty(Execution.MinorKey(opponentID, key), value); end
+            local last = get("LAST_COMBAT", -100000);
+            if last <= turn and turn - last <= recent then
+                result.Active = result.Active + 1;
+                local review, stalls, untilTurn = get("REVIEW_TURN", -1), get("STALLS", 0), get("UNTIL", -1);
+                if untilTurn >= 0 and turn >= untilTurn then
+                    review, stalls, untilTurn = -1, 0, -1;
+                end
+                local events = get("COMBAT_TURNS", 0);
+                local baselineEvents = get("BASE_EVENTS", events);
+                local reason = "observing";
+                local rebased = review < 0 or review > turn;
+                if not rebased and turn - review >= window and turn >= untilTurn then
+                    local held = Execution.HoldsMinorCapture(player, opponentID, review);
+                    local baseStrength = get("BASE_MILITARY", strength.Military);
+                    local lostStrength = baseStrength > 0 and (baseStrength - strength.Military) / baseStrength or 0;
+                    local seriousLoss = snapshot.Cities < get("BASE_CITIES", snapshot.Cities)
+                        or (lostStrength >= .25 and strength.CombatUnits < get("BASE_UNITS", strength.CombatUnits));
+                    if held and not seriousLoss then
+                        stalls, reason = 0, "held_capture";
+                    elseif events - baselineEvents >= 2 then
+                        stalls, reason = stalls + 1, "no_confirmed_gain";
+                    else reason = "insufficient_activity"; end
+                    if seriousLoss or stalls >= 2 then
+                        untilTurn, reason = turn + cooldown, seriousLoss and "own_losses" or "stalled";
+                    end
+                    rebased = true;
+                end
+                if turn < untilTurn then
+                    result.Cooling = result.Cooling + 1;
+                    if reason == "observing" then reason = "cooldown"; end
+                    -- A cooldown is finite; do not count its battles as a
+                    -- ready-made failed review when the hold expires.
+                    rebased = true;
+                else result.Actionable = result.Actionable + 1; end
+                if rebased then
+                    put("REVIEW_TURN", turn);
+                    put("BASE_EVENTS", events);
+                    put("BASE_CITIES", snapshot.Cities);
+                    put("BASE_MILITARY", strength.Military);
+                    put("BASE_UNITS", strength.CombatUnits);
+                end
+                put("STALLS", stalls);
+                put("UNTIL", untilTurn);
+                table.insert(result.Rows, { Opponent = opponentID, LastCombat = last,
+                    Stalls = stalls, Until = untilTurn, Reason = reason, Activity = events });
+            end
+        end
+    end
+    result.StopLoss = result.Cooling > 0 and result.Actionable == 0
+        and (snapshot.MajorWars or 0) <= 0;
+    return result;
 end
 
 function Execution.RecoveryBudget(player, state, snapshot, economic, result, turn)
@@ -7734,18 +7981,34 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
     local attritionUntil = GetStoredNumber(player, "ASAI_EXEC_ATTRITION_UNTIL", -1);
     local lossWindow = ScaleStandardTurns(GetNumberParameter(
         "ASAI_WAR_ATTRITION_WINDOW_STANDARD", 8));
-    if snapshot.ActiveMajorWars > 0 and previousTurn >= 0
+    local minorOk, minor = pcall(Execution.UpdateMinorFronts, player, snapshot, strength, turn);
+    if not minorOk then
+        if not m_ConditionErrors.ASAI_MinorFronts then
+            print("ASAI_DIAGNOSTIC_ERROR sensor=minor_fronts fallback=major_only error=" .. tostring(minor));
+            m_ConditionErrors.ASAI_MinorFronts = true;
+        end
+        minor = { Active = 0, Actionable = 0, Cooling = 0, StopLoss = false, Rows = {} };
+        result.MinorSensorOk = 0;
+    end
+    result.MinorActive, result.MinorActionable = minor.Active, minor.Actionable;
+    result.MinorCooling, result.MinorStopLoss, result.MinorRows = minor.Cooling, minor.StopLoss, minor.Rows;
+    if minor.SensorOk == 0 then result.MinorSensorOk = 0; end
+    if (snapshot.ActiveMajorWars > 0 or minor.Active > 0) and previousTurn >= 0
         and turn > previousTurn and turn - previousTurn <= lossWindow then
         local lostUnits = previousUnits - strength.CombatUnits;
         local lostStrength = previousMilitary > 0
             and (previousMilitary - strength.Military) / previousMilitary or 0;
-        if lostUnits >= 2 or (lostUnits > 0 and lostStrength >= 0.20) then
+        if (snapshot.ActiveMajorWars > 0 and lostUnits >= 2)
+            or (lostUnits > 0 and lostStrength >= 0.20) then
             attritionUntil = math.max(attritionUntil, turn + lossWindow);
         end
     end
-    if snapshot.MajorWars <= 0 then attritionUntil = -1; end
+    if snapshot.MajorWars <= 0 and minor.Active == 0 then attritionUntil = -1; end
     local economic = GetEconomicSnapshot(playerID);
-    local military = Execution.MilitarySignals(snapshot, strength,
+    local militarySnapshot = {};
+    for key, value in pairs(snapshot) do militarySnapshot[key] = value; end
+    militarySnapshot.ActiveMinorFronts, militarySnapshot.MinorFrontStopLoss = minor.Active, minor.StopLoss;
+    local military = Execution.MilitarySignals(militarySnapshot, strength,
         economic.Queue, turn < attritionUntil);
     for key, value in pairs(military) do result[key] = value; end
     Execution.RecoveryBudget(player, state, snapshot, economic, result, turn);
@@ -7766,23 +8029,30 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
                 m_ConditionErrors.ASAI_Stability = true;
             end
         end
+        local proposedStage, proposedGoal = Execution.SelectScienceGoal(
+            function(name) return Execution.HasTech(player, name); end,
+            assets.Counts, snapshot.Era, snapshot.Cities);
+        result.ScienceHealth, result.ScienceReason = Execution.HasScienceHealthGap(
+            state, proposedGoal, GetStoredNumber(player, "ASAI_SCIENCE_HEALTH", 0) == 1);
+        player:SetProperty("ASAI_SCIENCE_HEALTH", result.ScienceHealth and 1 or 0);
         local scienceSince = GetStoredNumber(player, "ASAI_EXEC_SCIENCE_SINCE", -1);
         local scienceDeficit = snapshot.Cities >= 2
-            and Execution.HasScienceDeficit(state, scienceSince >= 0);
+            and (Execution.HasScienceDeficit(state, scienceSince >= 0) or result.ScienceHealth);
         result.ScienceAge = Execution.UpdateTimer(player,
             "ASAI_EXEC_SCIENCE_SINCE", scienceDeficit, turn, false);
-        result.ScienceQueueTarget = math.max(1, math.ceil(snapshot.Cities * 0.25));
+        result.ScienceQueueTarget = math.max(1, math.min(
+            GetNumberParameter("ASAI_SCIENCE_CONSTRUCTION_MAX_CITIES", 3),
+            math.ceil(snapshot.Cities * 0.25),
+            Execution.ScienceFacilityGap(assets.Counts, proposedGoal, snapshot.Cities)));
         if result.Emergency then result.ScienceQueueTarget = 1; end
         if scienceDeficit and result.ScienceAge >= ScaleStandardTurns(
                 GetNumberParameter("ASAI_SCIENCE_BOTTLENECK_DELAY_STANDARD", 8))
             and result.EconomyAllowed then
-            result.ScienceStage, result.ScienceGoal = Execution.SelectScienceGoal(
-                function(name) return Execution.HasTech(player, name); end,
-                assets.Counts, snapshot.Era, snapshot.Cities);
+            result.ScienceStage, result.ScienceGoal = proposedStage, proposedGoal;
             if result.ScienceStage == "infrastructure" then
                 if economic.QueueOk ~= 1 then
                     result.ScienceStage = "unknown";
-                elseif economic.Queue.Science >= result.ScienceQueueTarget then
+                elseif Execution.ScienceFacilityQueue(assets) >= result.ScienceQueueTarget then
                     result.ScienceStage = "inflight";
                 else
                     local allowed, reason = Execution.CanBuild(assets, result.ScienceGoal);
@@ -7790,6 +8060,7 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
                 end
             end
         end
+        Execution.UpdateScienceConstruction(player, snapshot, strength, assets, result, turn, state);
         local previousCapacity = GetStoredNumber(player,
             "ASAI_EXEC_TRADE_CAPACITY", snapshot.RouteCapacity);
         local capacityGap = math.max(0, GetTradeCapacityTarget(snapshot) - snapshot.RouteCapacity);
@@ -7914,6 +8185,23 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
         result.Turn, playerID, result.TraderGap, result.TraderChain,
         result.TraderQueueTarget, result.TraderRequestAge, result.TraderGainTurn,
         result.TraderInflightTurn));
+    print(string.format(
+        "ASAI_SCIENCE_BUILD turn=%d player=%d health=%d reason=%s role=%s gap=%d queued=%d request=%d request_age=%d completed_gain=%d completed_role=%s candidate_city=%d military_share=%d assignment=native native_legality=unverified",
+        result.Turn, playerID, result.ScienceHealth and 1 or 0, result.ScienceReason,
+        result.ScienceConstructionRole, result.ScienceConstructionGap,
+        result.ScienceConstructionQueued, result.ScienceConstruction and 1 or 0,
+        result.ScienceConstructionAge, result.ScienceConstructionGain, result.ScienceCompletedRole or "none",
+        result.ScienceCandidateCity, result.MilitaryShare and 1 or 0));
+    print(string.format(
+        "ASAI_MINOR_FRONTS turn=%d player=%d active=%d actionable=%d cooling=%d stop_loss=%d sensor_ok=%d",
+        result.Turn, playerID, result.MinorActive, result.MinorActionable,
+        result.MinorCooling, result.MinorStopLoss and 1 or 0, result.MinorSensorOk));
+    for _, front in ipairs(result.MinorRows or {}) do
+        print(string.format(
+            "ASAI_MINOR_FRONT turn=%d player=%d opponent=%d last_combat=%d activity_turns=%d stalls=%d cooldown_until=%d reason=%s native_operation=unverified",
+            result.Turn, playerID, front.Opponent, front.LastCombat, front.Activity,
+            front.Stalls, front.Until, front.Reason));
+    end
     for _, role in ipairs({ "campus", "library", "university", "laboratory",
         "trade_building", "trade_district", "trader", "ranged", "siege", "land" }) do
         local reason = result.ProbeReasons ~= nil and result.ProbeReasons[role] or nil;
@@ -7961,6 +8249,32 @@ end
 function Execution.IsTraderExecution(playerID)
     return Execution.GetStatus(playerID).TraderStage == "trader";
 end
+function Execution.IsScienceConstruction(playerID)
+    return Execution.GetStatus(playerID).ScienceConstruction;
+end
+function Execution.IsScienceProductionShare(playerID)
+    return Execution.GetStatus(playerID).MilitaryShare;
+end
+function Execution.IsMinorFrontRecovery(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.MinorStopLoss and not status.Emergency and not status.RecentAttrition
+        and not status.MilitaryShare;
+end
+function ASAI_IsScienceConstructionExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsScienceConstructionExecution",
+        Execution.IsScienceConstruction, playerID, threshold);
+end
+function ASAI_IsScienceProductionShareExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsScienceProductionShareExecution",
+        Execution.IsScienceProductionShare, playerID, threshold);
+end
+function ASAI_IsMinorFrontRecoveryExecution(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsMinorFrontRecoveryExecution",
+        Execution.IsMinorFrontRecovery, playerID, threshold);
+end
+GameEvents.ASAI_IsScienceConstructionExecution.Add(ASAI_IsScienceConstructionExecution);
+GameEvents.ASAI_IsScienceProductionShareExecution.Add(ASAI_IsScienceProductionShareExecution);
+GameEvents.ASAI_IsMinorFrontRecoveryExecution.Add(ASAI_IsMinorFrontRecoveryExecution);
 function ASAI_IsLandRecovery(playerID, threshold)
     return RunStrategyCondition("ASAI_IsLandRecovery", Execution.IsLandRecovery, playerID, threshold);
 end
@@ -8002,6 +8316,8 @@ Events.PlayerTurnActivated.Add(LogMetrics);
 Events.UnitDamageChanged.Add(OnUnitDamageChanged);
 Events.DistrictDamageChanged.Add(ThreatResponse.OnDistrictDamageChanged);
 GameEvents.CityConquered.Add(Strategic.OnCityConquered);
+GameEvents.CityConquered.Add(Execution.OnMinorCapture);
+GameEvents.OnCombatOccurred.Add(Execution.OnMinorCombat);
 GameEvents.CityBuilt.Add(Strategic.OnCityBuilt);
 GameEvents.OnPillage.Add(Strategic.OnPillage);
 Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted);

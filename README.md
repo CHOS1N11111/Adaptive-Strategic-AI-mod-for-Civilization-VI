@@ -30,7 +30,7 @@ The mod adjusts AI priorities and bonuses. It does not spawn free units or grant
 
 ## How It Works
 
-**Dynamic priorities.** Every major AI compares its science, culture, empire, and military with the player and the wider field. It adjusts priorities for development, defense, and victory, including trade-route gaps, reinforcements, and science-victory projects. Victory priorities can change with the situation.
+**Dynamic priorities.** Every major AI compares its science, culture, empire, and military with the player and the wider field. Scientific infrastructure can receive priority before technology counts fall behind, alongside targeted trade, reinforcement, and space-project priorities. Sustained city-state fighting is reviewed for missing unit roles and lack of gains. Victory priorities remain flexible; the native AI still chooses city orders and military actions.
 
 **Era-scaled Deity bonuses.** A standard Ancient Era Deity start provides 2 Settlers, 3 Warriors, and 1 Builder per AI. The following bonuses grow with the **world era**. These are the total difficulty bonuses after the mod's adjustments—not extra bonuses on top of vanilla Deity:
 

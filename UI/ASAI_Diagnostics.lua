@@ -237,8 +237,15 @@ local function WriteExecutionProbes(player, sampleTurn, observedTurn)
     local id = player:GetID();
     local trader = GameInfo.Units.UNIT_TRADER;
     local port = GameInfo.Districts.DISTRICT_SPACEPORT;
+    local scienceType = player:GetProperty("ASAI_SCIENCE_BUILD_TYPE");
+    local scienceBuild = scienceType ~= nil and (
+        (GameInfo.Districts ~= nil and GameInfo.Districts[scienceType])
+        or (GameInfo.Buildings ~= nil and GameInfo.Buildings[scienceType])) or nil;
+    local rawScienceCity = player:GetProperty("ASAI_SCIENCE_BUILD_CITY");
+    local scienceCity = tonumber(rawScienceCity) or -1;
+    local scienceProbes = 0;
     -- Existing telemetry still works with missing DLC/type tables.
-    if trader == nil and port == nil then return; end
+    if trader == nil and port == nil and scienceBuild == nil then return; end
     local capacity = ReadNumber(player:GetTrade(), "GetOutgoingRouteCapacity");
     local traders = 0;
     for _, unit in player:GetUnits():Members() do
@@ -268,6 +275,19 @@ local function WriteExecutionProbes(player, sampleTurn, observedTurn)
             local queue = city:GetBuildQueue();
             local currentOk, current = pcall(CurrentItem, city);
             if not currentOk then current = "unknown"; end
+            -- Exact replacement type nominated in Gameplay; UI CanProduce
+            -- supplies real slot/placement constraints, read-only. Probe the
+            -- nominee plus at most three other cities, not the entire map.
+            if scienceBuild ~= nil and (city:GetID() == scienceCity or scienceProbes < 3) then
+                scienceProbes = scienceProbes + 1;
+                local kind = scienceBuild.DistrictType ~= nil and "District" or "Building";
+                local probe = ProbeProduction(queue, scienceBuild, kind);
+                print(string.format(
+                    "ASAI_UI_SCIENCE_BUILD turn=%d observed_turn=%d player=%d city=%d type=%s can_produce=%d visible=%d reasons=%s cost=%.1f progress=%.1f turns=%.1f current=%s nominated_city=%d assignment=native source=ui",
+                    sampleTurn, observedTurn, id, city:GetID(), Token(scienceType),
+                    probe.Can, probe.Visible, probe.Reason, probe.Cost, probe.Progress,
+                    probe.Turns, current, scienceCity));
+            end
             if trader ~= nil and current == trader.UnitType then pendingTraders = pendingTraders + 1; end
             if demand then
                 local probe = ProbeProduction(queue, trader, "Unit");

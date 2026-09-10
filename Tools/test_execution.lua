@@ -179,6 +179,7 @@ local liveStatus = E.Update(1, relative, snapshot, army, 61);
 check(liveStatus.ScienceStage == "infrastructure" and liveStatus.ScienceGoal == "university",
     "persisted shortfall hands off after real education unlock");
 economy.Queue.Science = 2;
+assetFixture.Queued.university = 2;
 equal(E.Update(1, relative, snapshot, army, 62).ScienceStage, "inflight", "science queue budget prevents duplicate emphasis");
 equal(E.Update(1, relative, snapshot, army, 62), E.Cache[1], "same-turn callbacks reuse the same sample");
 snapshot.ActiveMajorWars, snapshot.MajorWars = 1, 1;
@@ -190,6 +191,7 @@ check(E.Update(1, relative, snapshot, army, 63).RecentAttrition, "same-turn relo
 snapshot.ActiveMajorWars, snapshot.MajorWars, snapshot.RouteCapacity = 0, 0, 2;
 army.CombatUnits, army.Military = 12, 600;
 economy.Queue.Science = 0;
+assetFixture.Queued.university = 0;
 E.CanBuild = function(_, role) return role == "trade_district" or role == "university", "blocked"; end;
 E.Update(1, relative, snapshot, army, 64);
 equal(E.Update(1, relative, snapshot, army, 70).TradeStage, "district", "missing eligible capacity buildings hands off to districts");
@@ -833,6 +835,8 @@ do
             end
             if request == 8003 then return true; end
             if request == 8004 then return false, { failures = { "LOC_NO_SUITABLE_LOCATION" } }; end
+            if request == 8005 then return false, { failures = { "LOC_NOT_ENOUGH_DISTRICT_SLOTS" } }; end
+            if request == 8006 then return true; end
             error("unexpected hash");
         end
     };
@@ -927,6 +931,30 @@ do
         and output:find("can_produce=0 reasons=LOC_NO_SUITABLE_LOCATION", 1, true) ~= nil
         and output:find("nominated_city=12 nomination_turn=154 assignment=native plot=unverified", 1, true) ~= nil,
         "data nomination is not mislabeled as actual city selection or a valid plot");
+    ui.GameInfo.Districts.DISTRICT_CAMPUS = { DistrictType = "DISTRICT_CAMPUS", Hash = 8005, Index = 105 };
+    ui.GameInfo.Districts.DISTRICT_SEOWON = { DistrictType = "DISTRICT_SEOWON", Hash = 8006, Index = 106 };
+    uiProperties.ASAI_SCIENCE_BUILD_TYPE, uiProperties.ASAI_SCIENCE_BUILD_CITY = "DISTRICT_CAMPUS", 11;
+    output = capture();
+    check(output:find("ASAI_UI_SCIENCE_BUILD", 1, true) ~= nil
+        and output:find("type=DISTRICT_CAMPUS can_produce=0", 1, true) ~= nil
+        and output:find("reasons=LOC_NOT_ENOUGH_DISTRICT_SLOTS", 1, true) ~= nil,
+        "science nomination keeps native population-slot rejection visible in UI");
+    uiProperties.ASAI_SCIENCE_BUILD_TYPE, uiProperties.ASAI_SCIENCE_BUILD_CITY = "DISTRICT_SEOWON", 99;
+    local cityList = {};
+    for _, id in ipairs({ 21, 22, 23, 24, 25, 26, 99 }) do
+        local candidate = {};
+        for key, value in pairs(uiCity) do candidate[key] = value; end
+        candidate.GetID = function() return id; end;
+        table.insert(cityList, candidate);
+    end
+    ui.Players[1].GetCities = function() return members(cityList); end;
+    output = capture();
+    local _, scienceProbeCount = output:gsub("ASAI_UI_SCIENCE_BUILD", "");
+    equal(scienceProbeCount, 4, "UI checks at most three alternatives plus the nominee");
+    check(output:find("city=99 type=DISTRICT_SEOWON can_produce=1", 1, true) ~= nil,
+        "exact unique replacement type reaches native UI buildability");
+    uiProperties.ASAI_SCIENCE_BUILD_TYPE, uiProperties.ASAI_SCIENCE_BUILD_CITY = nil, nil;
+    ui.Players[1].GetCities = function() return members({ uiCity }); end;
     local badCity = { GetID = function() return 10; end,
         GetBuildQueue = function() error("city removed mid-publish"); end };
     ui.Players[1].GetCities = function() return members({ badCity, uiCity }); end;
@@ -950,4 +978,5 @@ end
 
 assert(loadfile("Tools/test_feedback.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_pressure.lua"))()(check, equal, upvalue);
+assert(loadfile("Tools/test_development.lua"))()(check, equal, upvalue);
 print(string.format("LUA REGRESSION PASSED: %d checks; real Lua functions, mocked game boundary", checks));
