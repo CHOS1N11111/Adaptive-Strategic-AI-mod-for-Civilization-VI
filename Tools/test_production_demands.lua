@@ -148,6 +148,9 @@ return function(check, equal, upvalue)
     E.GetStatus = function() return active; end;
     SC.IsCapacity = function() return true; end;
     wars[0] = false;
+    -- Legacy handlers are deliberately UNBOUND in R2 SQL. These assertions
+    -- cover only compatibility for cached callback references, not native
+    -- strategy exit. Positive re-entry tests live in test_feasibility.lua.
     local gates = {
         "LandRecovery", "ScienceConstruction", "ScienceCapacity", "CampusDemand", "MinorRecovery"
     };

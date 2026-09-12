@@ -32,9 +32,9 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.17"
-EXPECTED_MODINFO_VERSION = "39"
-EXPECTED_STRATEGIES = 48
+EXPECTED_RELEASE = "0.11.18"
+EXPECTED_MODINFO_VERSION = "40"
+EXPECTED_STRATEGIES = 65  # 54 live identities + 11 inert pre-R2 save identities.
 
 
 def default_database() -> Path:
@@ -2968,7 +2968,7 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
         errors.append("Gameplay must not depend on an unverified CanProduce signature")
     if ":CurrentlyBuilding(" in ui or ":GetCurrentProductionTypeHash(" not in ui:
         errors.append("UI production telemetry must use the native UI hash API")
-    for fragment in ("function Execution.IsCandidate(assets, row, entry)",
+    for fragment in ("function Execution.IsCandidate(assets, row, entry, upgradeProbe)",
                      "function Strategic.AssessDefenseOutcome(",
                      "function Execution.TraderBudget(",
                      "function ScienceExecution.PreparationBudget(",
@@ -2995,10 +2995,10 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
             errors.append(f"native execution diagnostic contract is missing: {fragment}")
     for strategy, list_type in (
         ("ASAI_STRATEGY_TRADER_EXECUTION", "ASAI_TraderExecutionSpecialization"),
-        ("ASAI_STRATEGY_SCIENCE_CAPACITY", "ASAI_ScienceCapacitySpecialization"),
-        ("ASAI_STRATEGY_SCIENCE_CAPACITY", "ASAI_ScienceCapacityPseudoYields"),
-        ("ASAI_STRATEGY_SCIENCE_CONSTRUCTION", "ASAI_ScienceConstructionSpecialization"),
-        ("ASAI_STRATEGY_MINOR_FRONT_RECOVERY", "ASAI_MinorRecoveryPseudoYields"),
+        ("ASAI_STRATEGY_SCIENCE_CAPACITY_R2", "ASAI_ScienceCapacitySpecialization"),
+        ("ASAI_STRATEGY_SCIENCE_CAPACITY_R2", "ASAI_ScienceCapacityPseudoYields"),
+        ("ASAI_STRATEGY_SCIENCE_CONSTRUCTION_R2", "ASAI_ScienceConstructionSpecialization"),
+        ("ASAI_STRATEGY_MINOR_FRONT_RECOVERY_R2", "ASAI_MinorRecoveryPseudoYields"),
     ):
         owners = list(connection.execute(
             "SELECT StrategyType FROM Strategy_Priorities WHERE ListType=?", (list_type,)))
@@ -3049,33 +3049,45 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
     gates = {
         "LAND_RECOVERY": "LandRecovery",
         "RANGED_REINFORCEMENT": "RangedReinforcement",
-        "WRITING_PREREQUISITE": "Writing",
-        "EDUCATION_PREREQUISITE": "Education",
-        "LABORATORY_PREREQUISITE": "Laboratory",
-        "SCIENCE_CONSTRUCTION": "ScienceConstruction",
-        "SCIENCE_PRODUCTION_SHARE": "ScienceShare",
-        "SCIENCE_CAPACITY": "ScienceCapacity",
-        "MINOR_FRONT_RECOVERY": "MinorRecovery",
+        "WRITING_PREREQUISITE": "WritingPrerequisite",
+        "EDUCATION_PREREQUISITE": "EducationPrerequisite",
+        "LABORATORY_PREREQUISITE": "LaboratoryPrerequisite",
+        "SCIENCE_CONSTRUCTION": "ScienceConstructionExecution",
+        "SCIENCE_PRODUCTION_SHARE": "ScienceProductionShareExecution",
+        "SCIENCE_CAPACITY": "ScienceCapacityExecution",
+        "MINOR_FRONT_RECOVERY": "MinorFrontRecoveryExecution",
         "CAMPUS_DEMAND": "CampusDemand",
         "ANTICAVALRY_DEMAND": "AntiCavalryDemand",
     }
     for strategy, callback in gates.items():
-        full = "ASAI_STRATEGY_" + strategy
+        old = "ASAI_STRATEGY_" + strategy
+        full = old + "_R2"
         conditions = connection.execute(
             "SELECT ConditionFunction, StringValue, ThresholdValue, Forbidden, Disqualifier, Exclusive "
             "FROM StrategyConditions WHERE StrategyType=? ORDER BY ConditionFunction",
             (full,),
         ).fetchall()
         expected = [
-            ("Call Lua Function", f"ASAI_Is{callback}Disqualified", 0, 0, 1, 0),
-            ("Handicap at or below", None, 2147483647, 0, 0, 0),
+            ("Call Lua Function", f"ASAI_Is{callback}", 0, 0, 0, 0),
             ("Is Not Major", None, 0, 0, 1, 0),
         ]
         if conditions != expected:
             errors.append(f"{full}: unsafe native lifecycle wiring: {conditions}")
         if connection.execute("SELECT NumConditionsNeeded FROM Strategies WHERE StrategyType=?",
                               (full,)).fetchone() != (1,):
-            errors.append(f"{full}: must require the stable native qualifier")
+            errors.append(f"{full}: must require its ordinary runtime condition")
+        if connection.execute("SELECT 1 FROM Strategy_Priorities WHERE StrategyType=?", (old,)).fetchone():
+            errors.append(f"{old}: retired identity still owns preferences")
+        if connection.execute(
+            "SELECT StringValue, Disqualifier, Forbidden FROM StrategyConditions "
+            "WHERE StrategyType=? AND ConditionFunction='Call Lua Function'", (old,)
+        ).fetchone() != ("ASAI_IsRetiredStrategy", 0, 0):
+            errors.append(f"{old}: retired identity must be inert")
+    if connection.execute(
+        "SELECT 1 FROM StrategyConditions WHERE StrategyType LIKE 'ASAI_%' "
+        "AND ConditionFunction='Call Lua Function' AND (Disqualifier<>0 OR Forbidden<>0)"
+    ).fetchone():
+        errors.append("dynamic Lua eligibility must not use irreversible native veto flags")
 
     preferences = {
         ("ASAI_LandRecoverySpecialization", "BUILD_MILITARY_UNITS"): ("AiBuildSpecializations", -3),
@@ -3101,7 +3113,7 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
     for list_type, owner in owners.items():
         actual = connection.execute("SELECT StrategyType FROM Strategy_Priorities WHERE ListType=?",
                                     (list_type,)).fetchall()
-        if actual != [(owner,)]:
+        if actual != [(owner + "_R2",)]:
             errors.append(f"{list_type}: demand must have exactly one gated owner: {actual}")
         unconditional = connection.execute(
             "SELECT 1 FROM AiLists WHERE ListType=? AND (LeaderType IS NOT NULL OR AgendaType IS NOT NULL)",
@@ -3145,6 +3157,58 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
         if connection.execute("SELECT Value FROM AiFavoredItems WHERE ListType=? AND Item=?",
                               (list_type, item)).fetchone() != (0,):
             errors.append(f"stale strategy can still penalize generic reinforcement: {list_type}")
+    new_gates = {
+        "URGENT_LAND": "ASAI_IsUrgentLandDemand",
+        "CAMPUS_SLOT_PRESSURE": "ASAI_IsCampusSlotPressure",
+        "LASER_ORBITAL": "ASAI_IsOrbitalLaserDemand",
+        "LASER_TERRESTRIAL": "ASAI_IsTerrestrialLaserDemand",
+        "LASER_POWER": "ASAI_IsLaserPowerDemand",
+        "LASER_PORT_HANDOFF": "ASAI_IsLaserPortHandoff",
+    }
+    for suffix, callback in new_gates.items():
+        strategy = "ASAI_STRATEGY_" + suffix
+        rows = connection.execute(
+            "SELECT ConditionFunction, StringValue, Disqualifier, Forbidden, Exclusive "
+            "FROM StrategyConditions WHERE StrategyType=? ORDER BY ConditionFunction", (strategy,)
+        ).fetchall()
+        if rows != [("Call Lua Function", callback, 0, 0, 0), ("Is Not Major", None, 1, 0, 0)]:
+            errors.append(f"{strategy}: invalid reversible preference gate: {rows}")
+        if not connection.execute("SELECT 1 FROM Strategy_Priorities WHERE StrategyType=?", (strategy,)).fetchone():
+            errors.append(f"{strategy}: no native preference wiring")
+        unconditional = connection.execute(
+            "SELECT 1 FROM Strategy_Priorities p JOIN AiLists l USING(ListType) WHERE p.StrategyType=? "
+            "AND (l.LeaderType IS NOT NULL OR l.AgendaType IS NOT NULL)", (strategy,)
+        ).fetchone()
+        if unconditional:
+            errors.append(f"{strategy}: conditional preferences leak to an unconditional owner")
+    for list_type, item, value in (
+        ("ASAI_UrgentLandCompetition", "UNIT_JET_BOMBER", -80),
+        ("ASAI_UrgentLandProjects", "PROJECT_TRAIN_ATHLETES", -180),
+        ("ASAI_CampusSlotDistricts", "DISTRICT_AERODROME", -100),
+        ("ASAI_OrbitalResourceProjects", "PROJECT_ORBITAL_LASER", 240),
+        ("ASAI_TerrestrialResourceProjects", "PROJECT_TERRESTRIAL_LASER", 240),
+        ("ASAI_LaserHandoffProjects", "PROJECT_ORBITAL_LASER", 180),
+        ("ASAI_LaserHandoffProjects", "PROJECT_TERRESTRIAL_LASER", 180),
+        ("ASAI_LaserHandoffSpecialization", "BUILD_FOR_SCIENCE", -3),
+    ):
+        if connection.execute("SELECT Value FROM AiFavoredItems WHERE ListType=? AND Item=?",
+                              (list_type, item)).fetchone() != (value,):
+            errors.append(f"missing or incorrect endgame-demand preference: {list_type}/{item}")
+    if connection.execute(
+        "SELECT 1 FROM AiFavoredItems f JOIN Units u ON f.Item=u.UnitType "
+        "WHERE f.ListType='ASAI_UrgentLandCompetition' AND u.Domain='DOMAIN_LAND'"
+    ).fetchone():
+        errors.append("urgent land competition must never penalize ground defenders or support")
+    if connection.execute(
+        "SELECT 1 FROM AiFavoredItems f JOIN Projects p ON p.ProjectType=f.Item "
+        "WHERE f.ListType='ASAI_UrgentLandProjects' AND (p.SpaceRace<>0 OR p.ProjectType<>'PROJECT_TRAIN_ATHLETES')"
+    ).fetchone():
+        errors.append("urgent land project competition exceeds its bounded optional-project scope")
+    if connection.execute(
+        "SELECT 1 FROM AiFavoredItems WHERE ListType='ASAI_LaserHandoffSpecialization' "
+        "AND Item='BUILD_MILITARY_UNITS'"
+    ).fetchone():
+        errors.append("spaceport handoff must not install a lingering generic recruitment penalty")
     source = (mod_root / "Lua/AdaptiveStrategicAI.lua").read_text(encoding="utf-8")
     for required in ("local veto = not success or active ~= true",
                      "Execution.HasLiveMajorWar(playerID)",

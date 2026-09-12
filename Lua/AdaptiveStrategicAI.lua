@@ -2722,6 +2722,7 @@ function ScienceExecution.RecordProjectCompletion(
         ScienceExecution.GetStageName(stage)
     ));
     ScienceExecution.Cache[playerID] = nil;
+    if ScienceExecution.LaserCache ~= nil then ScienceExecution.LaserCache[playerID] = nil; end
 end
 
 function ScienceExecution.OnCityProjectCompleted(
@@ -5855,6 +5856,16 @@ local function GetMilitaryQueueTarget(snapshot, state)
             and not state.Execution.RecentAttrition)) then
         targetPercent = math.min(targetPercent, 10);
     end
+    local execution, capacity = state.Execution, state.ScienceCapacity;
+    if capacity ~= nil and capacity.Active and execution ~= nil
+        and not execution.Emergency and not execution.RecentAttrition
+        and (execution.Land or 0) >= math.max(2, math.ceil(snapshot.Cities * 0.85))
+        and ((snapshot.MajorWars or snapshot.ActiveMajorWars or 0) <= 0
+            or (capacity.HoldWar and warStopLoss)) then
+        -- Bounded ordinary recruitment during a verified science finish.
+        -- Role/acute reinforcement gates remain separate and take priority.
+        targetPercent = math.min(targetPercent, 10);
+    end
     return snapshot.Cities > 0
         and math.max(1, math.ceil(snapshot.Cities * targetPercent / 100))
         or 0;
@@ -6068,6 +6079,153 @@ function ScienceExecution.IsCapacity(playerID)
     local state = GetRelativeState(playerID);
     return state.ScienceCapacity ~= nil and state.ScienceCapacity.Active;
 end
+
+function ScienceExecution.LaserRules()
+    if ScienceExecution.ResourceRules ~= nil then return ScienceExecution.ResourceRules; end
+    local result = { Aluminum = -1, Power = -1 };
+    local ok, aluminum, power = pcall(function()
+        local amount, extra, modifiers = 0, 0, {};
+        for row in GameInfo.Project_ResourceCosts() do
+            if row.ProjectType == "PROJECT_ORBITAL_LASER" and row.ResourceType == "RESOURCE_ALUMINUM" then
+                amount = amount + assert(tonumber(row.StartProductionCost));
+            end
+        end
+        for row in GameInfo.ProjectCompletionModifiers() do
+            if row.ProjectType == "PROJECT_TERRESTRIAL_LASER" then
+                local modifier = GameInfo.Modifiers[row.ModifierId];
+                if modifier ~= nil and modifier.ModifierType == "MODIFIER_SINGLE_CITY_ADJUST_REQUIRED_POWER" then
+                    modifiers[row.ModifierId] = true;
+                end
+            end
+        end
+        for row in GameInfo.ModifierArguments() do
+            if modifiers[row.ModifierId] and row.Name == "Amount" then
+                extra = extra + assert(tonumber(row.Value)); modifiers[row.ModifierId] = nil;
+            end
+        end
+        assert(next(modifiers) == nil and amount > 0 and extra > 0);
+        return amount, extra;
+    end);
+    if ok then result.Aluminum, result.Power = aluminum, power; end
+    ScienceExecution.ResourceRules = result;
+    return result;
+end
+
+function ScienceExecution.DecideLaser(input)
+    local result = { Preferred = "none", PowerNeeded = false, Target = 0,
+        Handoff = false, Reason = "inactive" };
+    if not input.Active then return result; end
+    if input.Emergency or input.Attrition then result.Reason = "defense_priority"; return result; end
+    if not input.Offworld then result.Reason = "offworld_locked"; return result; end
+    if input.Ports <= 0 then result.Reason = "no_usable_port"; return result; end
+    local orbital = input.Cost > 0 and input.Aluminum >= input.Cost;
+    local targets = 0;
+    if input.PowerReady > 0 then
+        result.Preferred, result.Reason = "terrestrial", "observed_power_margin";
+        targets = input.PowerReady;
+    elseif orbital then
+        result.Preferred, result.Reason = "orbital", "aluminum_available";
+        targets = math.floor(input.Aluminum / input.Cost);
+    elseif input.PowerUnknown > 0 and input.Aluminum >= 0 and input.Cost > input.Aluminum then
+        -- A soft native preference, not a claim that unobserved power exists.
+        result.Preferred, result.Reason = "terrestrial", "aluminum_short_power_unverified";
+        targets = 1;
+    else
+        result.Reason = input.Aluminum < 0 and "unknown_resources" or "resource_or_power_blocked";
+    end
+    result.PowerNeeded = input.PowerShort > 0 and not orbital and input.Aluminum >= 0;
+    -- Existing projects already reserved their resource cost / future power.
+    -- Keep their queue slots occupied; completing two lasers is not victory.
+    result.Target = math.min(3, input.Ports, targets + input.Queued);
+    result.Handoff = input.Coordinate and result.Target > input.Queued;
+    return result;
+end
+
+function ScienceExecution.GetLaserStatus(playerID)
+    local turn = Game.GetCurrentGameTurn();
+    ScienceExecution.LaserCache = ScienceExecution.LaserCache or {};
+    local cached = ScienceExecution.LaserCache[playerID];
+    if cached ~= nil and cached.Turn == turn then return cached; end
+    local input = { Active = false, Emergency = false, Attrition = false, Offworld = false,
+        Ports = 0, PowerReady = 0, PowerUnknown = 0, PowerShort = 0, Queued = 0,
+        Aluminum = -1, Cost = -1, Coordinate = false };
+    local ports = {};
+    if IsMajorAI(playerID) then
+        local state, player = ScienceExecution.Collect(playerID), Players[playerID];
+        input.Active = state.Active and state.Stage == ScienceExecution.EXOPLANET;
+        if input.Active then
+            local defense, rules = Execution.GetStatus(playerID), ScienceExecution.LaserRules();
+            input.Emergency, input.Attrition = defense.Emergency, defense.RecentAttrition;
+            input.Coordinate = ScienceExecution.IsCapacity(playerID);
+            input.Offworld = Execution.HasTech(player, "TECH_OFFWORLD_MISSION");
+            input.Cost = rules.Aluminum > 0
+                and math.floor(rules.Aluminum * GetGameSpeedMultiplier() / 100) or -1;
+            local resource = GameInfo.Resources ~= nil and GameInfo.Resources.RESOURCE_ALUMINUM;
+            local ok, stock = pcall(function()
+                return resource ~= nil and player:GetResources():GetResourceAmount(resource.Index);
+            end);
+            input.Aluminum = ok and tonumber(stock) or -1;
+            if input.Aluminum == nil then input.Aluminum = -1; end
+            for _, district in player:GetDistricts():Members() do
+                local info = GameInfo.Districts[district:GetType()];
+                if info ~= nil and IsDistrictRole(info.DistrictType, "DISTRICT_SPACEPORT")
+                    and district:IsComplete() and not district:IsPillaged() then
+                    local city = district:GetCity();
+                    local current = GetCurrentProductionType(city);
+                    local queued = current == "PROJECT_ORBITAL_LASER" or current == "PROJECT_TERRESTRIAL_LASER";
+                    input.Ports = input.Ports + 1;
+                    if queued then input.Queued = input.Queued + 1; end
+                    local powerOk, margin = pcall(function()
+                        local power = city:GetPower();
+                        return power:GetFreePower() + power:GetTemporaryPower() - power:GetRequiredPower();
+                    end);
+                    local ready = powerOk and type(margin) == "number" and rules.Power > 0;
+                    if not queued then
+                        if not ready then input.PowerUnknown = input.PowerUnknown + 1;
+                        elseif margin >= rules.Power then input.PowerReady = input.PowerReady + 1;
+                        else input.PowerShort = input.PowerShort + 1; end
+                    end
+                    table.insert(ports, { City = city:GetID(), Current = current or "none",
+                        Queued = queued, Power = ready and margin or -1, PowerKnown = ready,
+                        Production = city:GetYield(GameInfo.Yields.YIELD_PRODUCTION.Index) });
+                end
+            end
+        end
+    end
+    local result = ScienceExecution.DecideLaser(input);
+    result.Turn, result.Input, result.Ports = turn, input, ports;
+    ScienceExecution.LaserCache[playerID] = result;
+    return result;
+end
+
+function ScienceExecution.IsOrbitalDemand(playerID)
+    return IsMajorAI(playerID) and ScienceExecution.GetLaserStatus(playerID).Preferred == "orbital";
+end
+function ScienceExecution.IsTerrestrialDemand(playerID)
+    return IsMajorAI(playerID) and ScienceExecution.GetLaserStatus(playerID).Preferred == "terrestrial";
+end
+function ScienceExecution.IsPowerDemand(playerID)
+    return IsMajorAI(playerID) and ScienceExecution.GetLaserStatus(playerID).PowerNeeded;
+end
+function ScienceExecution.IsPortHandoff(playerID)
+    return IsMajorAI(playerID) and ScienceExecution.GetLaserStatus(playerID).Handoff;
+end
+function ASAI_IsOrbitalLaserDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsOrbitalLaserDemand", ScienceExecution.IsOrbitalDemand, playerID, threshold);
+end
+function ASAI_IsTerrestrialLaserDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsTerrestrialLaserDemand", ScienceExecution.IsTerrestrialDemand, playerID, threshold);
+end
+function ASAI_IsLaserPowerDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsLaserPowerDemand", ScienceExecution.IsPowerDemand, playerID, threshold);
+end
+function ASAI_IsLaserPortHandoff(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsLaserPortHandoff", ScienceExecution.IsPortHandoff, playerID, threshold);
+end
+GameEvents.ASAI_IsOrbitalLaserDemand.Add(ASAI_IsOrbitalLaserDemand);
+GameEvents.ASAI_IsTerrestrialLaserDemand.Add(ASAI_IsTerrestrialLaserDemand);
+GameEvents.ASAI_IsLaserPowerDemand.Add(ASAI_IsLaserPowerDemand);
+GameEvents.ASAI_IsLaserPortHandoff.Add(ASAI_IsLaserPortHandoff);
 function ASAI_IsScienceCapacityExecution(playerID, threshold)
     return RunStrategyCondition("ASAI_IsScienceCapacityExecution", ScienceExecution.IsCapacity,
         playerID, threshold);
@@ -6943,6 +7101,23 @@ function ScienceExecution.WriteDiagnostics(playerID, firstTimeThisTurn)
         return;
     end
     local state = ScienceExecution.Collect(playerID);
+    local laserOk, laser = pcall(ScienceExecution.GetLaserStatus, playerID);
+    if laserOk and laser.Input.Active then
+        local input = laser.Input;
+        print(string.format(
+            "ASAI_LASER_DEMAND turn=%d player=%d preferred=%s reason=%s aluminum=%.1f scaled_cost_estimate=%.1f power_ready=%d power_short=%d power_unknown=%d queued=%d target=%d handoff=%d power_request=%d order_authority=native",
+            state.Turn, playerID, laser.Preferred, laser.Reason, input.Aluminum, input.Cost,
+            input.PowerReady, input.PowerShort, input.PowerUnknown, input.Queued, laser.Target,
+            laser.Handoff and 1 or 0, laser.PowerNeeded and 1 or 0));
+        for _, port in ipairs(laser.Ports) do
+            print(string.format(
+                "ASAI_LASER_PORT turn=%d player=%d city=%d current=%s production=%.1f power_known=%d power_margin=%.1f laser_inflight=%d allocation=native",
+                state.Turn, playerID, port.City, port.Current, port.Production,
+                port.PowerKnown and 1 or 0, port.Power, port.Queued and 1 or 0));
+        end
+    elseif not laserOk then
+        print("ASAI_DIAGNOSTIC_ERROR sensor=laser_demand fallback=other_diagnostics error=" .. tostring(laser));
+    end
     print(string.format(
         "ASAI_SCIENCE_EXECUTION turn=%d evaluated_turn=%d standard_turn=%.1f player=%d stage=%s active=%d suspended=%d progress_age=%.1f satellite=%d moon=%d mars=%d exoplanet=%d lasers=%d spaceports=%d spaceports_inflight=%d target=%d active_projects=%d current_project=%s migration_stage=%s migration_sensor_ok=%d future_frontier=%d space_race_civic=%d globalization=%d integrated_space_cell=%d international_space_agency=%d",
         state.Turn,
@@ -7269,7 +7444,7 @@ function Execution.GetDefinitions()
     if Execution.Definitions ~= nil then return Execution.Definitions; end
     local result = { ByType = {}, ByRole = {}, Replacements = {},
         BuildingPrereqs = {}, UnitPrereqs = {}, ExclusiveBuildings = {},
-        ExcludedDistricts = {} };
+        ExcludedDistricts = {}, Upgrades = {} };
     local function add(info, kind, role)
         if role == nil then return; end
         local entry = { Info = info, Kind = kind, Role = role };
@@ -7320,10 +7495,11 @@ function Execution.GetDefinitions()
         end
         add(info, "unit", role);
         if info.Domain == "DOMAIN_LAND" and GetUnitBaseStrength(info) > 0
-            and info.PromotionClass ~= "PROMOTION_CLASS_SIEGE"
-            and info.PromotionClass ~= "PROMOTION_CLASS_GIANT_DEATH_ROBOT"
-            and info.PromotionClass ~= "PROMOTION_CLASS_RECON"
-            and info.PromotionClass ~= "PROMOTION_CLASS_SUPPORT" then
+            and (info.PromotionClass == "PROMOTION_CLASS_MELEE"
+                or info.PromotionClass == "PROMOTION_CLASS_RANGED"
+                or info.PromotionClass == "PROMOTION_CLASS_ANTI_CAVALRY"
+                or info.PromotionClass == "PROMOTION_CLASS_LIGHT_CAVALRY"
+                or info.PromotionClass == "PROMOTION_CLASS_HEAVY_CAVALRY") then
             result.ByRole.land = result.ByRole.land or {};
             table.insert(result.ByRole.land, { Info = info, Kind = "unit", Role = "land" });
         end
@@ -7341,6 +7517,18 @@ function Execution.GetDefinitions()
     group("Unit_BuildingPrereqs", "Unit", "PrereqBuilding", result.UnitPrereqs);
     group("MutuallyExclusiveBuildings", "Building", "MutuallyExclusiveBuilding", result.ExclusiveBuildings);
     group("ExcludedDistricts", "DistrictType", "TraitType", result.ExcludedDistricts);
+    if GameInfo.UnitUpgrades ~= nil then
+        group("UnitUpgrades", "Unit", "UpgradeUnit", result.Upgrades);
+    end
+    -- Table iteration order is not a military recommendation. Prefer modern
+    -- effective strength; IsCandidate still checks traits, tech and resources.
+    for _, role in ipairs({ "land", "ranged", "siege", "anticavalry" }) do
+        table.sort(result.ByRole[role] or {}, function(a, b)
+            local left, right = GetUnitBaseStrength(a.Info), GetUnitBaseStrength(b.Info);
+            if left ~= right then return left > right; end
+            return a.Info.UnitType < b.Info.UnitType;
+        end);
+    end
     Execution.Definitions = result;
     return result;
 end
@@ -7440,7 +7628,27 @@ function Execution.HasEquivalent(typeName, predicate)
     return false;
 end
 
-function Execution.IsCandidate(assets, row, entry)
+function Execution.DistrictCapacity(row)
+    if row.Capacity ~= nil then return row.Capacity; end
+    local result = { Known = false, Used = 0, Allowed = -1, Estimate = -1 };
+    -- Exact district capacity methods are UI-only on the observed runtime.
+    -- Great people, traits and other mods can grant extra district slots:
+    -- this population estimate ranks candidates but never rejects them.
+    for name in pairs(row.Placed or {}) do
+        local info = GameInfo.Districts[name];
+        if info ~= nil and (info.RequiresPopulation == true or info.RequiresPopulation == 1) then
+            result.Used = result.Used + 1;
+        end
+    end
+    if row.City.GetPopulation ~= nil then
+        local per = math.max(1, GetNumberParameter("DISTRICT_POPULATION_REQUIRED_PER", 3));
+        result.Estimate = 1 + math.floor((math.max(1, row.City:GetPopulation()) - 1) / per);
+    end
+    row.Capacity = result;
+    return result;
+end
+
+function Execution.IsCandidate(assets, row, entry, upgradeProbe)
     local info, player = entry.Info, assets.Player;
     local name = info.BuildingType or info.DistrictType or info.UnitType;
     if assets.Traits == nil then assets.Traits, assets.Leaders = Execution.GetTraits(player); end
@@ -7492,10 +7700,9 @@ function Execution.IsCandidate(assets, row, entry)
         for _, trait in ipairs(definitions.ExcludedDistricts[name] or {}) do
             if traits[trait] then return false; end
         end
-        -- Population/terrain/placement legality is available to the UI probe,
-        -- not these Gameplay bindings. Never substitute a hardcoded slot
-        -- formula that would reject civilization-specific district bonuses.
-        -- A data candidate is NOT a CanProduce/valid-plot assertion.
+        -- Exact population/plot legality remains the native engine's decision.
+        -- Repeated no-order evidence rotates a candidate temporarily instead
+        -- of treating an estimated full city as permanently impossible.
     elseif entry.Kind == "unit" then
         if info.CanTrain == false or info.CanTrain == 0 then return false; end
         if (info.ObsoleteTech ~= nil and hasTech(info.ObsoleteTech))
@@ -7518,6 +7725,41 @@ function Execution.IsCandidate(assets, row, entry)
             -- Costs can be discounted locally. Require access, not the
             -- undiscounted DB cost; the engine decides final affordability.
             if amount <= 0 then return false; end
+            if upgradeProbe then
+                local extra = GameInfo.Units_XP2 ~= nil and GameInfo.Units_XP2[name] or nil;
+                local cost = extra ~= nil and tonumber(extra.ResourceCost) or nil;
+                -- Insufficient/unknown undiscounted cost is not proof that
+                -- the successor makes an older resource-free fallback obsolete.
+                if cost == nil or amount < math.max(1,
+                    math.floor(cost * GetGameSpeedMultiplier() / 100)) then return false; end
+            end
+        end
+        if not upgradeProbe then
+            -- A later trainable successor can obsolete a unit before its
+            -- MandatoryObsoleteTech. Traverse past unavailable intermediate
+            -- units, include owned replacements, and tolerate modded cycles.
+            local seen = { [name] = true };
+            local function availableSuccessor(base)
+                for _, successor in ipairs((definitions.Upgrades or {})[base] or {}) do
+                    if not seen[successor] then
+                        seen[successor] = true;
+                        local alternatives = { successor };
+                        for _, replacement in ipairs(definitions.Replacements[successor] or {}) do
+                            table.insert(alternatives, replacement);
+                        end
+                        for _, candidate in ipairs(alternatives) do
+                            local unit = GameInfo.Units[candidate];
+                            if unit ~= nil and Execution.IsCandidate(assets, row,
+                                { Info = unit, Kind = "unit", Role = entry.Role }, true) then
+                                return true;
+                            end
+                        end
+                        if availableSuccessor(successor) then return true; end
+                    end
+                end
+                return false;
+            end
+            if availableSuccessor(name) then return false; end
         end
     end
     return true;
@@ -7539,6 +7781,18 @@ function Execution.CanBuild(assets, role)
             end
             table.insert(unfinished and resumed or fresh, row);
         end
+        table.sort(fresh, function(a, b)
+            local function rank(row)
+                local cap = Execution.DistrictCapacity(row);
+                return cap.Estimate >= 0 and cap.Used >= cap.Estimate and 2 or 1;
+            end
+            local left, right = rank(a), rank(b);
+            if left ~= right then return left < right; end
+            if (a.Production or 0) ~= (b.Production or 0) then
+                return (a.Production or 0) > (b.Production or 0);
+            end
+            return a.City:GetID() < b.City:GetID();
+        end);
         for _, row in ipairs(fresh) do table.insert(resumed, row); end
         rows = resumed;
     end
@@ -7548,7 +7802,10 @@ function Execution.CanBuild(assets, role)
             and (current.SpaceRace == true or current.SpaceRace == 1));
         local economic = role ~= "ranged" and role ~= "siege" and role ~= "land"
             and role ~= "anticavalry";
-        if (not economic or not spaceCore)
+        local cooling = role == "campus" and assets.Player.GetProperty ~= nil
+            and Game.GetCurrentGameTurn() < GetStoredNumber(assets.Player,
+                "ASAI_CAMPUS_RETRY_UNTIL_" .. tostring(row.City:GetID()), -1);
+        if not cooling and (not economic or not spaceCore)
             and (role ~= "trade_building" or row.TradeBuildings == 0) then
             for _, entry in ipairs(Execution.GetDefinitions().ByRole[role] or {}) do
                 local success, allowed = pcall(Execution.IsCandidate, assets, row, entry);
@@ -7698,6 +7955,41 @@ function Execution.SelectScienceGoal(hasTech, counts, era, cities)
         if (counts.laboratory or 0) < buildingGoal then return "infrastructure", "laboratory"; end
     end
     return "none", "covered";
+end
+
+function Execution.RefreshCampusRetry(player, assets, queueOk, turn)
+    if queueOk ~= 1 then return; end
+    local previousRole = player:GetProperty("ASAI_SCIENCE_BUILD_ROLE");
+    local since = GetStoredNumber(player, "ASAI_SCIENCE_BUILD_SINCE", -1);
+    local cityID = GetStoredNumber(player, "ASAI_SCIENCE_BUILD_CITY", -1);
+    local count = GetStoredNumber(player, "ASAI_SCIENCE_BUILD_COUNT", -1);
+    local window = ScaleStandardTurns(GetNumberParameter("ASAI_PRODUCTION_DEMAND_REVIEW_STANDARD", 8));
+    if previousRole == "campus" and cityID >= 0 and since >= 0 and turn - since >= 2 * window
+        and (assets.Queued.campus or 0) == 0 and count == (assets.Counts.campus or 0) then
+        player:SetProperty("ASAI_CAMPUS_RETRY_UNTIL_" .. tostring(cityID), turn + 2 * window);
+        player:SetProperty("ASAI_SCIENCE_BUILD_SINCE", turn);
+        if GetNumberParameter("ASAI_ENABLE_METRICS", 0) == 1 then
+            print(string.format(
+                "ASAI_CAMPUS_RETRY turn=%d player=%d city=%d until_turn=%d reason=no_order_two_reviews legality=unverified",
+                turn, player:GetID(), cityID, turn + 2 * window));
+        end
+    end
+end
+
+function Execution.ScienceFallback(assets, cities, era)
+    -- Improve existing campuses while a new foundation is blocked; never
+    -- turn a legal-slot guess into an infinite request for the same city.
+    for _, role in ipairs({ "library", "university", "laboratory" }) do
+        if Execution.ScienceFacilityGap(assets.Counts, role, cities) > (assets.Queued[role] or 0)
+            and Execution.CanBuild(assets, role) then return "infrastructure", role; end
+    end
+    local industrial = GameInfo.Eras.ERA_INDUSTRIAL;
+    if industrial ~= nil and era ~= nil and era >= industrial.Index
+        and (assets.Counts.campus or 0) > 0
+        and not Execution.HasTech(assets.Player, "TECH_CHEMISTRY") then
+        return "laboratory_tech", "laboratory";
+    end
+    return "blocked", "campus";
 end
 
 function Execution.LandUnits(strength)
@@ -8136,6 +8428,7 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
         local proposedStage, proposedGoal = Execution.SelectScienceGoal(
             function(name) return Execution.HasTech(player, name); end,
             assets.Counts, snapshot.Era, snapshot.Cities);
+        Execution.RefreshCampusRetry(player, assets, economic.QueueOk, turn);
         result.ScienceHealth, result.ScienceReason = Execution.HasScienceHealthGap(
             state, proposedGoal, GetStoredNumber(player, "ASAI_SCIENCE_HEALTH", 0) == 1);
         player:SetProperty("ASAI_SCIENCE_HEALTH", result.ScienceHealth and 1 or 0);
@@ -8160,10 +8453,22 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
                     result.ScienceStage = "inflight";
                 else
                     local allowed, reason = Execution.CanBuild(assets, result.ScienceGoal);
-                    if not allowed then result.ScienceStage = reason or "unknown"; end
+                    if not allowed and result.ScienceGoal == "campus" and reason ~= "unknown" then
+                        result.ScienceStage, result.ScienceGoal = Execution.ScienceFallback(
+                            assets, snapshot.Cities, snapshot.Era);
+                        result.ScienceQueueTarget = math.min(result.ScienceQueueTarget,
+                            math.max(1, Execution.ScienceFacilityGap(assets.Counts,
+                                result.ScienceGoal, snapshot.Cities)));
+                    elseif not allowed then result.ScienceStage = reason or "unknown"; end
                 end
             end
         end
+        result.CampusSlotPressure = proposedGoal == "campus" and scienceDeficit
+            and result.ScienceAge >= ScaleStandardTurns(GetNumberParameter(
+                "ASAI_SCIENCE_BOTTLENECK_DELAY_STANDARD", 8))
+            and result.EconomyAllowed and not result.Emergency and not result.RecentAttrition
+            and (snapshot.ActiveMajorWars or 0) <= 0 and economic.QueueOk == 1
+            and (assets.Queued.campus or 0) == 0;
         Execution.UpdateScienceConstruction(player, snapshot, strength, assets, result, turn, state);
         local previousCapacity = GetStoredNumber(player,
             "ASAI_EXEC_TRADE_CAPACITY", snapshot.RouteCapacity);
@@ -8277,7 +8582,8 @@ function Execution.TraceCondition(name, playerID, result)
     if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 or not IsMajorAI(playerID) then return; end
     if not string.find(name, "Execution") and not string.find(name, "Prerequisite")
         and not string.find(name, "Reinforcement") and not string.find(name, "Disqualified")
-        and not string.find(name, "Demand") then return; end
+        and not string.find(name, "Demand") and not string.find(name, "LandRecovery")
+        and not string.find(name, "Handoff") and not string.find(name, "SlotPressure") then return; end
     local turn = Game.GetCurrentGameTurn();
     local key = name .. ":" .. tostring(playerID);
     local last = Execution.ConditionChecks[key];
@@ -8418,6 +8724,31 @@ function Execution.IsAntiCavalryDemand(playerID)
     return status.LandNeeded and status.AntiCavalryNeeded;
 end
 
+function Execution.IsRetired() return false; end
+function ASAI_IsRetiredStrategy(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsRetiredStrategy", Execution.IsRetired, playerID, threshold);
+end
+function Execution.IsUrgentLand(playerID)
+    if not IsMajorAI(playerID) then return false; end
+    local state = Execution.GetStatus(playerID);
+    return state.LandNeeded and state.AcuteDefense and Execution.HasLiveMajorWar(playerID);
+end
+function Execution.IsCampusSlotPressure(playerID)
+    return IsMajorAI(playerID) and Execution.GetStatus(playerID).CampusSlotPressure == true
+        and not Execution.HasLiveMajorWar(playerID);
+end
+function ASAI_IsUrgentLandDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsUrgentLandDemand", Execution.IsUrgentLand, playerID, threshold);
+end
+function ASAI_IsCampusSlotPressure(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsCampusSlotPressure", Execution.IsCampusSlotPressure, playerID, threshold);
+end
+GameEvents.ASAI_IsRetiredStrategy.Add(ASAI_IsRetiredStrategy);
+GameEvents.ASAI_IsUrgentLandDemand.Add(ASAI_IsUrgentLandDemand);
+GameEvents.ASAI_IsCampusSlotPressure.Add(ASAI_IsCampusSlotPressure);
+
+-- Compatibility handlers for old callback references only. No current SQL
+-- strategy wires a dynamic disqualifier; these cannot implement re-entry.
 function Execution.RunVeto(name, evaluator, playerID, threshold)
     local success, active = pcall(function()
         return IsMajorAI(playerID) and evaluator(playerID, threshold) == true;

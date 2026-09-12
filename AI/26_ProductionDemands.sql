@@ -81,41 +81,6 @@ WHERE (ListType IN ('ASAI_ProductionShareSpecialization',
                     'ASAI_MinorRecoveryPseudoYields')
        AND Item = 'PSEUDOYIELD_UNIT_COMBAT');
 
--- A positive condition alone can linger as a native strategy. Use a stable
--- native qualifier plus an explicit dynamic Disqualifier. The latter
--- returns true on inactive/unknown/error, so failure cannot retain a request.
--- No Exclusive flag is used; independent adaptive strategies may coexist.
--- "Handicap at or below" is an existing native condition. Its signed-int
--- ceiling admits every real difficulty without relying on whether Forbidden
--- contributes to NumConditionsNeeded. Is Not Major remains a disqualifier;
--- Lua separately rejects humans. This does not modify difficulty bonuses.
-INSERT INTO StrategyConditions (StrategyType, ConditionFunction, ThresholdValue)
-SELECT StrategyType, 'Handicap at or below', 2147483647 FROM Strategies
-WHERE StrategyType IN
-    ('ASAI_STRATEGY_LAND_RECOVERY', 'ASAI_STRATEGY_RANGED_REINFORCEMENT',
-     'ASAI_STRATEGY_WRITING_PREREQUISITE', 'ASAI_STRATEGY_EDUCATION_PREREQUISITE',
-     'ASAI_STRATEGY_LABORATORY_PREREQUISITE',
-     'ASAI_STRATEGY_SCIENCE_CONSTRUCTION', 'ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE',
-     'ASAI_STRATEGY_SCIENCE_CAPACITY', 'ASAI_STRATEGY_MINOR_FRONT_RECOVERY',
-     'ASAI_STRATEGY_CAMPUS_DEMAND', 'ASAI_STRATEGY_ANTICAVALRY_DEMAND');
-UPDATE StrategyConditions
-SET StringValue = CASE StrategyType
-    WHEN 'ASAI_STRATEGY_LAND_RECOVERY' THEN 'ASAI_IsLandRecoveryDisqualified'
-    WHEN 'ASAI_STRATEGY_RANGED_REINFORCEMENT' THEN 'ASAI_IsRangedReinforcementDisqualified'
-    WHEN 'ASAI_STRATEGY_WRITING_PREREQUISITE' THEN 'ASAI_IsWritingDisqualified'
-    WHEN 'ASAI_STRATEGY_EDUCATION_PREREQUISITE' THEN 'ASAI_IsEducationDisqualified'
-    WHEN 'ASAI_STRATEGY_LABORATORY_PREREQUISITE' THEN 'ASAI_IsLaboratoryDisqualified'
-    WHEN 'ASAI_STRATEGY_SCIENCE_CONSTRUCTION' THEN 'ASAI_IsScienceConstructionDisqualified'
-    WHEN 'ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE' THEN 'ASAI_IsScienceShareDisqualified'
-    WHEN 'ASAI_STRATEGY_SCIENCE_CAPACITY' THEN 'ASAI_IsScienceCapacityDisqualified'
-    WHEN 'ASAI_STRATEGY_MINOR_FRONT_RECOVERY' THEN 'ASAI_IsMinorRecoveryDisqualified'
-    WHEN 'ASAI_STRATEGY_CAMPUS_DEMAND' THEN 'ASAI_IsCampusDemandDisqualified'
-    WHEN 'ASAI_STRATEGY_ANTICAVALRY_DEMAND' THEN 'ASAI_IsAntiCavalryDemandDisqualified' END,
-    Disqualifier = 1, Forbidden = 0, Exclusive = 0
-WHERE ConditionFunction = 'Call Lua Function' AND StrategyType IN
-    ('ASAI_STRATEGY_LAND_RECOVERY', 'ASAI_STRATEGY_RANGED_REINFORCEMENT',
-     'ASAI_STRATEGY_WRITING_PREREQUISITE', 'ASAI_STRATEGY_EDUCATION_PREREQUISITE',
-     'ASAI_STRATEGY_LABORATORY_PREREQUISITE',
-     'ASAI_STRATEGY_SCIENCE_CONSTRUCTION', 'ASAI_STRATEGY_SCIENCE_PRODUCTION_SHARE',
-     'ASAI_STRATEGY_SCIENCE_CAPACITY', 'ASAI_STRATEGY_MINOR_FRONT_RECOVERY',
-     'ASAI_STRATEGY_CAMPUS_DEMAND', 'ASAI_STRATEGY_ANTICAVALRY_DEMAND');
+-- Temporary requests use ordinary conditions. A native Disqualifier was
+-- observed to stop subsequent evaluations after the first veto in 0.11.17.
+-- 27_ExecutionFeasibility migrates those saved strategy identities.

@@ -974,12 +974,55 @@ do
         and output:find("LOC_UNIT_CANNOT_SPAWN", 1, true) ~= nil,
         "actual unit spawn rejection is exposed rather than trusting the data-prerequisite candidate");
     uiProperties.ASAI_DEFENSE_BUILD_TYPE, uiProperties.ASAI_DEFENSE_BUILD_CITY = nil, nil;
+    do
+        local originalProperty = ui.Players[1].GetProperty;
+        uiProperties.ASAI_SCIENCE_EXECUTION_STAGE = 4;
+        ui.GameInfo.Units[0] = { UnitType = "UNIT_SETTLER", Index = 0, Hash = 7 };
+        ui.GameInfo.Districts[0] = { DistrictType = "DISTRICT_CITY_CENTER", Index = 0, Hash = 8 };
+        uiProperties.ASAI_DEFENSE_BUILD_TYPE, uiProperties.ASAI_SCIENCE_BUILD_TYPE = 0, 0;
+        ui.Players[1].GetProperty = function(_, key)
+            if uiProperties[key] == nil then return; end
+            return uiProperties[key], "metadata";
+        end;
+        output = capture();
+        check(not output:find("ASAI_UI_DEFENSE_BUILD", 1, true)
+            and not output:find("ASAI_UI_SCIENCE_BUILD", 1, true),
+            "cleared numeric type sentinels never resolve index-zero units or districts");
+        check(not output:find("ASAI_UI_DIAGNOSTIC_ERROR", 1, true)
+            and output:find("project=PROJECT_TERRESTRIAL_LASER", 1, true) ~= nil
+            and output:find("project_count_property=-1", 1, true) ~= nil,
+            "zero-return and multi-return properties cannot abort either laser probe");
+        check(output:find("orbital_scaled_cost_estimate=15.0", 1, true) ~= nil,
+            "Online estimated resource cost is distinct from the database base cost 30");
+        ui.Players[1].GetProperty = function(_, key)
+            if key == "ASAI_SCIENCE_PROJECT_COUNT_PROJECT_ORBITAL_LASER" then
+                error("orbital property unavailable");
+            end
+            return uiProperties[key];
+        end;
+        output = capture();
+        check(output:find("sensor=laser_PROJECT_ORBITAL_LASER", 1, true) ~= nil
+            and output:find("orbital_property_unavailable", 1, true) ~= nil
+            and output:find("project=PROJECT_TERRESTRIAL_LASER", 1, true) ~= nil,
+            "one project failure logs its actual step and error without hiding the other laser");
+        ui.Players[1].GetProperty = originalProperty;
+        output = capture();
+        check(output:find("project=PROJECT_ORBITAL_LASER", 1, true) ~= nil,
+            "a transient failed probe is retried on a later sample");
+        local token = upvalue(probe, "Token");
+        local unicode = token(string.rep("科技", 40));
+        check(#unicode <= 160 and utf8.len(unicode) ~= nil,
+            "bounded engine-reason tokens preserve complete UTF-8 characters");
+        uiProperties.ASAI_DEFENSE_BUILD_TYPE, uiProperties.ASAI_SCIENCE_BUILD_TYPE = nil, nil;
+    end
     ui.Players[1].GetCities = function() return members({ uiCity }); end;
     local badCity = { GetID = function() return 10; end,
         GetBuildQueue = function() error("city removed mid-publish"); end };
     ui.Players[1].GetCities = function() return members({ badCity, uiCity }); end;
     output = capture();
-    check(output:find("fallback=next_city", 1, true) ~= nil
+    check(output:find("fallback=next_probe", 1, true) ~= nil
+        and output:find("error=", 1, true) ~= nil
+        and output:find("city_removed_mid-publish", 1, true) ~= nil
         and output:find("city=11 unit=UNIT_TRADER can_produce=1", 1, true) ~= nil
         and output:find("can_produce_cities=1 unknown_cities=1", 1, true) ~= nil,
         "failed city remains unknown while the next city still reports its real candidate");
@@ -1000,4 +1043,5 @@ assert(loadfile("Tools/test_feedback.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_pressure.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_development.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_production_demands.lua"))()(check, equal, upvalue);
+assert(loadfile("Tools/test_feasibility.lua"))()(check, equal, upvalue);
 print(string.format("LUA REGRESSION PASSED: %d checks; real Lua functions, mocked game boundary", checks));
