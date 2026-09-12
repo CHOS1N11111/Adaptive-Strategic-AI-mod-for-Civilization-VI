@@ -32,8 +32,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.18"
-EXPECTED_MODINFO_VERSION = "40"
+EXPECTED_RELEASE = "0.11.19"
+EXPECTED_MODINFO_VERSION = "41"
 EXPECTED_STRATEGIES = 65  # 54 live identities + 11 inert pre-R2 save identities.
 
 
@@ -2979,14 +2979,31 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
                      "function Execution.ScienceFacilityQueue(",
                      "function Execution.UpdateScienceConstruction(",
                      "function Execution.UpdateMinorFronts(",
+                     "function Execution.RecordMinorCombatResult(combatResult)",
+                     "function Execution.RegisterMinorCombatResults()",
+                     "Events.Combat.Add(Execution.OnMinorCombatResult)",
                      "GameEvents.OnCombatOccurred.Add(Execution.OnMinorCombat)",
                      "GameEvents.CityConquered.Add(Execution.OnMinorCapture)",
+                     'ComponentType.DISTRICT',
+                     '"LAST_VERIFIED_COMBAT"',
+                     '"VERIFIED_COMBAT_TURNS"',
+                     '"CITY_COMBAT_TURNS"',
+                     '"REVIEW_COVERAGE"',
+                     '"BASE_VERIFIED_EVENTS"',
+                     '"combat_coverage_unknown"',
+                     'review_coverage=%d result_ready=%d',
                      "CityManager.GetCityAt(x, y)",
                      'Strategic.GetOpponentKey(snapshot)',
                      'science_finish_reallocate',
                      'candidate_mode=data_prerequisites native_legality=unverified'):
         if fragment not in gameplay:
             errors.append(f"continuation regression contract is missing: {fragment}")
+    minor_result = gameplay.split("function Execution.RecordMinorCombatResult(", 1)[-1].split(
+        "function Execution.OnMinorCombatResult(", 1)[0]
+    for forbidden in ("Map.GetPlot", "GetDamage(", "CombatVisBegin", "CombatVisEnd",
+                      "UI.Request", "UnitManager.Request"):
+        if forbidden in minor_result:
+            errors.append(f"minor combat attribution must use actual event identities, not {forbidden}")
     for fragment in ("MilitaryFormationTypes.STANDARD_MILITARY_FORMATION",
                      "pcall(queue.CanProduce, queue, request, false, true)",
                      "CityCommandResults.FAILURE_REASONS", "GetResourceAmount",

@@ -1042,6 +1042,7 @@ end
 assert(loadfile("Tools/test_feedback.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_pressure.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_development.lua"))()(check, equal, upvalue);
+assert(loadfile("Tools/test_minor_city_combat.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_production_demands.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_feasibility.lua"))()(check, equal, upvalue);
 print(string.format("LUA REGRESSION PASSED: %d checks; real Lua functions, mocked game boundary", checks));

@@ -32,6 +32,8 @@ return function(check, equal, upvalue)
     local env = setmetatable({
         print = function(text) table.insert(logs, tostring(text)); end,
         GlobalParameters = { ASAI_ENABLE_METRICS = 1, ASAI_VERSION = "test" },
+        CombatResultParameters = { ATTACKER = 101, DEFENDER = 102, ID = 103 },
+        ComponentType = { UNIT = 21, DISTRICT = 22 },
         Game = { GetCurrentGameTurn = function() return now; end },
         GameConfiguration = { GetGameSpeedType = function() return "ONLINE"; end },
         GameInfo = {
@@ -137,7 +139,17 @@ return function(check, equal, upvalue)
 
     props, wars = {}, { [13] = true };
     now = 200;
-    local combat = env.GameEvents.OnCombatOccurred.Callbacks[1];
+    -- Exercise both real production callbacks. Result receipts corroborate the
+    -- legacy event; the city-combat suite separately tests a missing source.
+    local function combat(a, au, d, du, ad, dd)
+        env.GameEvents.OnCombatOccurred.Callbacks[1](a, au, d, du, ad, dd);
+        local function component(p, u, district)
+            local isDistrict = district ~= nil and district >= 0;
+            return { [103] = { player = p, id = isDistrict and district or u,
+                type = isDistrict and 22 or 21 } };
+        end
+        env.Events.Combat.Callbacks[1]({ [101] = component(a, au, ad), [102] = component(d, du, dd) });
+    end
     combat(1, 2, 13, 2, -1, -1);
     equal(props[E.MinorKey(13, "COMBAT_TURNS")], nil, "religious combat is excluded");
     combat(0, 1, 13, 1, -1, -1);
@@ -166,7 +178,6 @@ return function(check, equal, upvalue)
     env.GameEvents, env.Events = events(), events();
     assert(loadfile("Lua/AdaptiveStrategicAI.lua", "t", env))();
     E = upvalue(env.ASAI_IsScienceConstructionExecution, "Execution");
-    combat = env.GameEvents.OnCombatOccurred.Callbacks[1];
     local afterReload = E.UpdateMinorFronts(player, snapshot, army, now);
     check(afterReload.StopLoss and afterReload.Rows[1].Until == 224
         and afterReload.Rows[1].Stalls == 2, "same-turn reload preserves per-opponent failure and expiry");

@@ -8036,23 +8036,46 @@ function Execution.MinorKey(opponentID, key)
     return "ASAI_MINOR_FRONT_" .. tostring(opponentID) .. "_" .. key;
 end
 
-function Execution.RecordMinorActivity(playerID, opponentID, turn)
+function Execution.RecordMinorActivity(playerID, opponentID, turn, source, cityCombat)
     if not IsMajorAI(playerID) or not Execution.IsCityState(opponentID) then return; end
     local player = Players[playerID];
-    if not player:GetDiplomacy():IsAtWarWith(opponentID) then return; end
+    source = source or "on_combat_occurred";
+    -- CityConquered can arrive after the last city's owner has been eliminated.
+    -- Only that confirmed event may bypass the current diplomatic war check.
+    if source ~= "city_capture" and not player:GetDiplomacy():IsAtWarWith(opponentID) then return; end
     local lastKey = Execution.MinorKey(opponentID, "LAST_COMBAT");
     local previous = GetStoredNumber(player, lastKey, -100000);
-    if previous == turn then return; end -- activity turns, not duplicate callbacks
-    local recent = ScaleStandardTurns(GetNumberParameter("ASAI_MINOR_COMBAT_RECENT_STANDARD", 8));
-    if previous > turn or turn - previous > recent then
-        player:SetProperty(Execution.MinorKey(opponentID, "REVIEW_TURN"), -1);
-        player:SetProperty(Execution.MinorKey(opponentID, "STALLS"), 0);
+    local counted = previous ~= turn;
+    if counted then
+        local recent = ScaleStandardTurns(GetNumberParameter("ASAI_MINOR_COMBAT_RECENT_STANDARD", 8));
+        if previous > turn or turn - previous > recent then
+            player:SetProperty(Execution.MinorKey(opponentID, "REVIEW_TURN"), -1);
+            player:SetProperty(Execution.MinorKey(opponentID, "STALLS"), 0);
+        end
+        player:SetProperty(lastKey, turn);
+        Strategic.IncrementRuntimeCounter(player, Execution.MinorKey(opponentID, "COMBAT_TURNS"));
     end
-    player:SetProperty(lastKey, turn);
-    Strategic.IncrementRuntimeCounter(player, Execution.MinorKey(opponentID, "COMBAT_TURNS"));
-    if GetNumberParameter("ASAI_ENABLE_METRICS", 0) == 1 then
-        print(string.format("ASAI_MINOR_COMBAT turn=%d player=%d opponent=%d source=on_combat_occurred",
-            turn, playerID, opponentID));
+    local cityKey = Execution.MinorKey(opponentID, "LAST_CITY_COMBAT");
+    local newCityTurn = cityCombat and GetStoredNumber(player, cityKey, -1) ~= turn;
+    if newCityTurn then
+        player:SetProperty(cityKey, turn);
+        Strategic.IncrementRuntimeCounter(player, Execution.MinorKey(opponentID, "CITY_COMBAT_TURNS"));
+    end
+    -- This subset of COMBAT_TURNS lets a review detect old-listener-only gaps.
+    -- A result and a capture on the same turn still contribute just one receipt.
+    local verifiedKey = Execution.MinorKey(opponentID, "LAST_VERIFIED_COMBAT");
+    if (source == "combat_result" or source == "city_capture")
+        and GetStoredNumber(player, verifiedKey, -1) ~= turn then
+        player:SetProperty(verifiedKey, turn);
+        Strategic.IncrementRuntimeCounter(player, Execution.MinorKey(opponentID, "VERIFIED_COMBAT_TURNS"));
+    end
+    local sourceKey = Execution.MinorKey(opponentID, "SOURCE_" .. source);
+    local newSourceTurn = GetStoredNumber(player, sourceKey, -1) ~= turn;
+    if newSourceTurn then player:SetProperty(sourceKey, turn); end
+    if (newSourceTurn or newCityTurn) and GetNumberParameter("ASAI_ENABLE_METRICS", 0) == 1 then
+        print(string.format(
+            "ASAI_MINOR_COMBAT turn=%d player=%d opponent=%d source=%s city=%d counted=%d",
+            turn, playerID, opponentID, source, cityCombat and 1 or 0, counted and 1 or 0));
     end
     -- Do not reevaluate strategy from inside a combat callback.
 end
@@ -8077,7 +8100,9 @@ function Execution.RecordMinorCombat(attackerID, attackerUnitID, defenderID, def
     end
     if not military(attackerID, attackerUnitID, attackerDistrictID)
         and not military(defenderID, defenderUnitID, defenderDistrictID) then return; end
-    Execution.RecordMinorActivity(ai, minor, Game.GetCurrentGameTurn());
+    local cityCombat = military(attackerID, -1, attackerDistrictID)
+        or military(defenderID, -1, defenderDistrictID);
+    Execution.RecordMinorActivity(ai, minor, Game.GetCurrentGameTurn(), "on_combat_occurred", cityCombat);
 end
 
 function Execution.OnMinorCombat(...)
@@ -8088,6 +8113,102 @@ function Execution.OnMinorCombat(...)
     end
 end
 
+function Execution.MinorCombatResultSchemaReady()
+    return CombatResultParameters ~= nil and CombatResultParameters.ATTACKER ~= nil
+        and CombatResultParameters.DEFENDER ~= nil and CombatResultParameters.ID ~= nil
+        and ComponentType ~= nil and ComponentType.UNIT ~= nil and ComponentType.DISTRICT ~= nil;
+end
+
+function Execution.MarkMinorCombatUncertain(playerID, opponentID, reason, detail)
+    local turn = Game.GetCurrentGameTurn();
+    if playerID ~= nil and opponentID ~= nil then
+        Players[playerID]:SetProperty(Execution.MinorKey(opponentID, "RESULT_ERROR_TURN"), turn);
+    else
+        -- Without a trustworthy pair, invalidate the observation window, not
+        -- an invented opponent. Persist this across a save/reload as well.
+        for _, id in ipairs(PlayerManager.GetAliveMajorIDs()) do
+            if IsMajorAI(id) then Players[id]:SetProperty("ASAI_MINOR_RESULT_ERROR_TURN", turn); end
+        end
+    end
+    local key = "ASAI_MinorCombatResult_" .. reason;
+    if not m_ConditionErrors[key] then
+        m_ConditionErrors[key] = true;
+        print("ASAI_DIAGNOSTIC_ERROR sensor=minor_combat_result fallback=unknown reason=" .. reason
+            .. (detail ~= nil and (" error=" .. tostring(detail)) or ""));
+    end
+end
+
+function Execution.RecordMinorCombatResult(combatResult)
+    if not Execution.MinorCombatResultSchemaReady() then
+        Execution.MarkMinorCombatUncertain(nil, nil, "schema_unavailable"); return;
+    end
+    local function component(value)
+        if type(value) ~= "table" and type(value) ~= "userdata" then return nil; end
+        local id = value[CombatResultParameters.ID];
+        if type(id) ~= "table" and type(id) ~= "userdata" then return nil; end
+        if type(id.player) ~= "number" or id.player < 0 or id.player % 1 ~= 0
+            or type(id.id) ~= "number" or id.id < 0 or id.id % 1 ~= 0
+            or id.type == nil then return nil; end
+        return id;
+    end
+    if type(combatResult) ~= "table" and type(combatResult) ~= "userdata" then
+        Execution.MarkMinorCombatUncertain(nil, nil, "invalid_result"); return;
+    end
+    local attacker = component(combatResult[CombatResultParameters.ATTACKER]);
+    local defender = component(combatResult[CombatResultParameters.DEFENDER]);
+    if attacker == nil or defender == nil then
+        Execution.MarkMinorCombatUncertain(nil, nil, "invalid_component"); return;
+    end
+    if attacker.player == defender.player then return; end
+    local ai, minor;
+    if IsMajorAI(attacker.player) and Execution.IsCityState(defender.player) then
+        ai, minor = attacker.player, defender.player;
+    elseif IsMajorAI(defender.player) and Execution.IsCityState(attacker.player) then
+        ai, minor = defender.player, attacker.player;
+    else return; end
+    if not Players[ai]:GetDiplomacy():IsAtWarWith(minor) then return; end
+    if (attacker.type ~= ComponentType.UNIT and attacker.type ~= ComponentType.DISTRICT)
+        or (defender.type ~= ComponentType.UNIT and defender.type ~= ComponentType.DISTRICT) then
+        Execution.MarkMinorCombatUncertain(ai, minor, "unsupported_component"); return;
+    end
+    local function military(id)
+        -- The event's typed identity survives capture/destruction. Do not
+        -- look up a district in its former owner's now-empty collection.
+        if id.type == ComponentType.DISTRICT then return true, true; end
+        if id.type ~= ComponentType.UNIT then return nil, false; end
+        local unit = Players[id.player]:GetUnits():FindID(id.id);
+        if unit == nil then return nil, false; end
+        return GetUnitBaseStrength(GameInfo.Units[unit:GetType()]) > 0, false;
+    end
+    local attackerMilitary, attackerCity = military(attacker);
+    local defenderMilitary, defenderCity = military(defender);
+    if not attackerMilitary and not defenderMilitary then
+        if attackerMilitary == nil or defenderMilitary == nil then
+            Execution.MarkMinorCombatUncertain(ai, minor, "unresolved_combatants");
+        end
+        return;
+    end
+    Execution.RecordMinorActivity(ai, minor, Game.GetCurrentGameTurn(), "combat_result",
+        attackerCity or defenderCity);
+end
+
+function Execution.OnMinorCombatResult(...)
+    local success, err = pcall(Execution.RecordMinorCombatResult, ...);
+    if not success then Execution.MarkMinorCombatUncertain(nil, nil, "callback_error", err); end
+end
+
+function Execution.RegisterMinorCombatResults()
+    local success, registered = pcall(function()
+        if Events.Combat == nil or Events.Combat.Add == nil then return false; end
+        Events.Combat.Add(Execution.OnMinorCombatResult);
+        return true;
+    end);
+    Execution.MinorCombatResultsRegistered = success and registered == true;
+    if not Execution.MinorCombatResultsRegistered then
+        print("ASAI_DIAGNOSTIC_ERROR sensor=minor_combat_result fallback=unknown reason=event_unavailable");
+    end
+end
+
 function Execution.RecordMinorCapture(capturerID, ownerID, cityID, x, y)
     if not IsMajorAI(capturerID) or not Execution.IsCityState(ownerID)
         or x == nil or y == nil then return; end
@@ -8095,6 +8216,7 @@ function Execution.RecordMinorCapture(capturerID, ownerID, cityID, x, y)
     player:SetProperty(Execution.MinorKey(ownerID, "CAPTURE_TURN"), Game.GetCurrentGameTurn());
     player:SetProperty(Execution.MinorKey(ownerID, "CAPTURE_X"), x);
     player:SetProperty(Execution.MinorKey(ownerID, "CAPTURE_Y"), y);
+    Execution.RecordMinorActivity(capturerID, ownerID, Game.GetCurrentGameTurn(), "city_capture", true);
 end
 
 function Execution.OnMinorCapture(...)
@@ -8137,8 +8259,21 @@ function Execution.UpdateMinorFronts(player, snapshot, strength, turn)
                 end
                 local events = get("COMBAT_TURNS", 0);
                 local baselineEvents = get("BASE_EVENTS", events);
+                local verified = get("VERIFIED_COMBAT_TURNS", 0);
+                local errorTurn = math.max(get("RESULT_ERROR_TURN", -1),
+                    GetStoredNumber(player, "ASAI_MINOR_RESULT_ERROR_TURN", -1));
+                local coveredNow = Execution.MinorCombatResultsRegistered
+                    and Execution.MinorCombatResultSchemaReady()
+                    and get("LAST_VERIFIED_COMBAT", -1) == last and errorTurn < turn;
+                if not coveredNow or errorTurn >= review then put("REVIEW_COVERAGE", 0); end
+                local coveredReview = coveredNow and get("REVIEW_COVERAGE", 0) == 1
+                    and verified - get("BASE_VERIFIED_EVENTS", verified) == events - baselineEvents;
                 local reason = "observing";
                 local rebased = review < 0 or review > turn;
+                if not coveredNow or (not rebased and not coveredReview) then
+                    result.SensorOk = 0;
+                    reason = "combat_coverage_unknown";
+                end
                 if not rebased and turn - review >= window and turn >= untilTurn then
                     local held = Execution.HoldsMinorCapture(player, opponentID, review);
                     local baseStrength = get("BASE_MILITARY", strength.Military);
@@ -8147,6 +8282,8 @@ function Execution.UpdateMinorFronts(player, snapshot, strength, turn)
                         or (lostStrength >= .25 and strength.CombatUnits < get("BASE_UNITS", strength.CombatUnits));
                     if held and not seriousLoss then
                         stalls, reason = 0, "held_capture";
+                    elseif not coveredReview then
+                        stalls, reason = 0, "combat_coverage_unknown";
                     elseif events - baselineEvents >= 2 then
                         stalls, reason = stalls + 1, "no_confirmed_gain";
                     else reason = "insufficient_activity"; end
@@ -8165,6 +8302,8 @@ function Execution.UpdateMinorFronts(player, snapshot, strength, turn)
                 if rebased then
                     put("REVIEW_TURN", turn);
                     put("BASE_EVENTS", events);
+                    put("BASE_VERIFIED_EVENTS", verified);
+                    put("REVIEW_COVERAGE", coveredNow and 1 or 0);
                     put("BASE_CITIES", snapshot.Cities);
                     put("BASE_MILITARY", strength.Military);
                     put("BASE_UNITS", strength.CombatUnits);
@@ -8172,7 +8311,9 @@ function Execution.UpdateMinorFronts(player, snapshot, strength, turn)
                 put("STALLS", stalls);
                 put("UNTIL", untilTurn);
                 table.insert(result.Rows, { Opponent = opponentID, LastCombat = last,
-                    Stalls = stalls, Until = untilTurn, Reason = reason, Activity = events });
+                    Stalls = stalls, Until = untilTurn, Reason = reason, Activity = events,
+                    CityActivity = get("CITY_COMBAT_TURNS", 0), VerifiedActivity = verified,
+                    Coverage = coveredReview and 1 or 0, ResultReady = coveredNow and 1 or 0 });
             end
         end
     end
@@ -8640,14 +8781,16 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
             demand.AssetDelta, demand.PlacedIdle, demand.NoOrderAge, demand.Phase));
     end
     print(string.format(
-        "ASAI_MINOR_FRONTS turn=%d player=%d active=%d actionable=%d cooling=%d stop_loss=%d sensor_ok=%d",
+        "ASAI_MINOR_FRONTS turn=%d player=%d active=%d actionable=%d cooling=%d stop_loss=%d sensor_ok=%d result_registered=%d result_schema=%d",
         result.Turn, playerID, result.MinorActive, result.MinorActionable,
-        result.MinorCooling, result.MinorStopLoss and 1 or 0, result.MinorSensorOk));
+        result.MinorCooling, result.MinorStopLoss and 1 or 0, result.MinorSensorOk,
+        Execution.MinorCombatResultsRegistered and 1 or 0, Execution.MinorCombatResultSchemaReady() and 1 or 0));
     for _, front in ipairs(result.MinorRows or {}) do
         print(string.format(
-            "ASAI_MINOR_FRONT turn=%d player=%d opponent=%d last_combat=%d activity_turns=%d stalls=%d cooldown_until=%d reason=%s native_operation=unverified",
+            "ASAI_MINOR_FRONT turn=%d player=%d opponent=%d last_combat=%d activity_turns=%d stalls=%d cooldown_until=%d reason=%s city_turns=%d verified_turns=%d review_coverage=%d result_ready=%d native_operation=unverified",
             result.Turn, playerID, front.Opponent, front.LastCombat, front.Activity,
-            front.Stalls, front.Until, front.Reason));
+            front.Stalls, front.Until, front.Reason, front.CityActivity, front.VerifiedActivity,
+            front.Coverage, front.ResultReady));
     end
     for _, role in ipairs({ "campus", "library", "university", "laboratory",
         "trade_building", "trade_district", "trader", "ranged", "siege", "land", "anticavalry" }) do
@@ -8874,6 +9017,7 @@ GameEvents.CityConquered.Add(Strategic.OnCityConquered);
 GameEvents.CityConquered.Add(Execution.OnMinorCapture);
 GameEvents.OnCombatOccurred.Add(Execution.OnMinorCombat);
 GameEvents.OnCombatOccurred.Add(Execution.OnDefenseCombat);
+Execution.RegisterMinorCombatResults();
 GameEvents.CityBuilt.Add(Strategic.OnCityBuilt);
 GameEvents.OnPillage.Add(Strategic.OnPillage);
 Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted);
