@@ -209,12 +209,16 @@ check(liveStatus.ScienceStage == "blocked" and liveStatus.ScienceGoal == "univer
 assetFixture.Queued.spaceport, assetFixture.Counts.spaceport = 0, 1;
 equal(E.Update(1, relative, snapshot, army, 75).TradeStage, "blocked", "completed spaceport does not erase trade deficit");
 E.CollectAssets = function() error("mock missing asset API"); end;
+properties.ASAI_DEMAND_CAMPUS_NO_ORDER_SINCE = 70;
 snapshot.ActiveMajorWars, snapshot.MajorWars = 1, 1;
 army.CombatUnits, army.Military = 4, 200;
 liveStatus = E.Update(1, relative, snapshot, army, 76);
 check(liveStatus.AssetsOk == 0 and liveStatus.Emergency
     and not liveStatus.RangedNeeded and liveStatus.ScienceStage == "none",
     "asset sensor failure preserves survival response and isolates optional escalation");
+equal(properties.ASAI_DEMAND_CAMPUS_NO_ORDER_SINCE, -1,
+    "missing assets cannot be counted as observed idle production");
+equal(properties.ASAI_SCIENCE_BUILD_TYPE, "", "missing assets clear a stale UI construction nomination");
 E.CollectAssets, E.CanBuild, E.UpdateStability = originalAssets, originalCanBuild, originalStability;
 
 -- Continuous Khmer-style recovery: land defense, finite escalation, economic
@@ -240,8 +244,9 @@ end
 defense.Execution = recover(100, false);
 check(defense.Execution.ThinArmy and defense.Execution.Land == 4
     and defense.Execution.LandTarget == 8, "Khmer 4 land + 3 sea + 1 air is not eight land defenders");
-check(not defense.Execution.EconomyAllowed and not defense.Execution.LandNeeded,
-    "initial emergency preserves the immediate baseline/role response");
+check(not defense.Execution.EconomyAllowed and defense.Execution.LandNeeded
+    and defense.Execution.LandQueueTarget == 2,
+    "first emergency sample starts a bounded two-unit land request without waiting for a review");
 defense.Execution = recover(106, false);
 check(defense.Execution.EmergencyLevel == 1 and defense.Execution.LandNeeded
     and defense.Execution.LandQueueTarget == 3, "first persistent window requests a bounded land pipeline");
@@ -426,6 +431,7 @@ for _, index in ipairs({ 1, 2 }) do
         IsPillaged = function() return districtPillaged; end });
 end
 player.GetCities = function() return members({ city }); end;
+player.GetUnits = function() return members({}); end;
 player.GetDistricts = function() return members(districts); end;
 player.GetResources = function() return { GetResourceAmount = function() return iron; end }; end;
 player.GetCulture = function() return { HasCivic = function() return civic; end }; end;
@@ -826,7 +832,11 @@ do
             table.insert(requests, { Request = request, Exclusion = exclusion, Reasons = reasons });
             if exclusion then return true; end
             if type(request) == "table" then
-                assert(request.UnitType == 8001 and request.MilitaryFormationType == 0);
+                assert((request.UnitType == 8001 or request.UnitType == 8007)
+                    and request.MilitaryFormationType == 0);
+                if request.UnitType == 8007 then
+                    return false, { failures = { "LOC_UNIT_CANNOT_SPAWN" } };
+                end
                 return true;
             end
             if request == 8002 then
@@ -954,6 +964,16 @@ do
     check(output:find("city=99 type=DISTRICT_SEOWON can_produce=1", 1, true) ~= nil,
         "exact unique replacement type reaches native UI buildability");
     uiProperties.ASAI_SCIENCE_BUILD_TYPE, uiProperties.ASAI_SCIENCE_BUILD_CITY = nil, nil;
+    ui.GameInfo.Units.UNIT_AT_CREW = { UnitType = "UNIT_AT_CREW", Hash = 8007, Index = 107 };
+    uiProperties.ASAI_DEFENSE_BUILD_TYPE, uiProperties.ASAI_DEFENSE_BUILD_CITY = "UNIT_AT_CREW", 99;
+    uiProperties.ASAI_DEFENSE_BUILD_TURN = 154;
+    output = capture();
+    local _, defenseProbes = output:gsub("ASAI_UI_DEFENSE_BUILD", "");
+    equal(defenseProbes, 4, "defense legality probes at most three alternatives plus the nominee");
+    check(output:find("city=99 type=UNIT_AT_CREW can_produce=0", 1, true) ~= nil
+        and output:find("LOC_UNIT_CANNOT_SPAWN", 1, true) ~= nil,
+        "actual unit spawn rejection is exposed rather than trusting the data-prerequisite candidate");
+    uiProperties.ASAI_DEFENSE_BUILD_TYPE, uiProperties.ASAI_DEFENSE_BUILD_CITY = nil, nil;
     ui.Players[1].GetCities = function() return members({ uiCity }); end;
     local badCity = { GetID = function() return 10; end,
         GetBuildQueue = function() error("city removed mid-publish"); end };
@@ -979,4 +999,5 @@ end
 assert(loadfile("Tools/test_feedback.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_pressure.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_development.lua"))()(check, equal, upvalue);
+assert(loadfile("Tools/test_production_demands.lua"))()(check, equal, upvalue);
 print(string.format("LUA REGRESSION PASSED: %d checks; real Lua functions, mocked game boundary", checks));

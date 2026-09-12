@@ -244,8 +244,14 @@ local function WriteExecutionProbes(player, sampleTurn, observedTurn)
     local rawScienceCity = player:GetProperty("ASAI_SCIENCE_BUILD_CITY");
     local scienceCity = tonumber(rawScienceCity) or -1;
     local scienceProbes = 0;
+    local defenseType = player:GetProperty("ASAI_DEFENSE_BUILD_TYPE");
+    local defenseUnit = defenseType ~= nil and GameInfo.Units[defenseType] or nil;
+    local rawDefenseCity = player:GetProperty("ASAI_DEFENSE_BUILD_CITY");
+    local rawDefenseTurn = player:GetProperty("ASAI_DEFENSE_BUILD_TURN");
+    local defenseCity, defenseTurn = tonumber(rawDefenseCity) or -1, tonumber(rawDefenseTurn) or -1;
+    local defenseProbes = 0;
     -- Existing telemetry still works with missing DLC/type tables.
-    if trader == nil and port == nil and scienceBuild == nil then return; end
+    if trader == nil and port == nil and scienceBuild == nil and defenseUnit == nil then return; end
     local capacity = ReadNumber(player:GetTrade(), "GetOutgoingRouteCapacity");
     local traders = 0;
     for _, unit in player:GetUnits():Members() do
@@ -275,6 +281,14 @@ local function WriteExecutionProbes(player, sampleTurn, observedTurn)
             local queue = city:GetBuildQueue();
             local currentOk, current = pcall(CurrentItem, city);
             if not currentOk then current = "unknown"; end
+            if defenseUnit ~= nil and (city:GetID() == defenseCity or defenseProbes < 3) then
+                defenseProbes = defenseProbes + 1;
+                local probe = ProbeProduction(queue, defenseUnit, "Unit");
+                print(string.format(
+                    "ASAI_UI_DEFENSE_BUILD turn=%d observed_turn=%d player=%d city=%d type=%s can_produce=%d visible=%d reasons=%s cost=%.1f progress=%.1f turns=%.1f current=%s nominated_city=%d nomination_turn=%d assignment=native source=ui",
+                    sampleTurn, observedTurn, id, city:GetID(), defenseType, probe.Can, probe.Visible,
+                    probe.Reason, probe.Cost, probe.Progress, probe.Turns, current, defenseCity, defenseTurn));
+            end
             -- Exact replacement type nominated in Gameplay; UI CanProduce
             -- supplies real slot/placement constraints, read-only. Probe the
             -- nominee plus at most three other cities, not the entire map.

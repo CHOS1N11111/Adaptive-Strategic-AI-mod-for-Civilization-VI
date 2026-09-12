@@ -45,6 +45,7 @@ return function(check, equal, upvalue)
         PlayerConfigurations = {},
         PlayerManager = {
             IsAlive = function(id) return id == 0 or id == 1 or id >= 13; end,
+            GetAliveMajorIDs = function() return { 0, 1 }; end,
             GetAliveIDs = function() return { 0, 1, 13, 14, 62, 63 }; end
         },
         CityManager = { GetCityAt = function()

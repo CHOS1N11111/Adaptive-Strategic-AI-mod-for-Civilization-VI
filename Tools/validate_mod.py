@@ -32,9 +32,9 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.16"
-EXPECTED_MODINFO_VERSION = "38"
-EXPECTED_STRATEGIES = 46
+EXPECTED_RELEASE = "0.11.17"
+EXPECTED_MODINFO_VERSION = "39"
+EXPECTED_STRATEGIES = 48
 
 
 def default_database() -> Path:
@@ -181,20 +181,24 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
             source,
         )
     )
+    veto_functions = set(re.findall(
+        r"function\s+(ASAI_Is[A-Za-z0-9_]+Disqualified)\s*\([^)]*\)\s*"
+        r"return\s+Execution\.RunVeto\(", source))
     functions = connection.execute(
         """
-        SELECT DISTINCT StringValue
+        SELECT DISTINCT StringValue, Disqualifier
         FROM StrategyConditions
         WHERE StrategyType LIKE 'ASAI_%'
           AND ConditionFunction = 'Call Lua Function'
         """
     )
-    for (name,) in functions:
+    for name, disqualifier in functions:
         if f"function {name}(" not in source:
             errors.append(f"Lua function is missing: {name}")
         if f"GameEvents.{name}.Add({name})" not in source:
             errors.append(f"GameEvents registration is missing: {name}")
-        if name not in safe_functions:
+        if (disqualifier and name not in veto_functions) or (
+                not disqualifier and name not in safe_functions):
             errors.append(f"Lua strategy condition is not fail-closed: {name}")
 
     if "pcall(evaluator, playerID, threshold)" not in source:
@@ -2934,8 +2938,8 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
         ("ASAI_LandRecoveryUnits", "UNIT_LINE_INFANTRY"): 180,
         ("ASAI_TraderExecutionUnits", "UNIT_TRADER"): 220,
         ("ASAI_TraderExecutionSpecialization", "BUILD_TRADE_UNITS"): -2,
-        ("ASAI_ScienceCapacitySpecialization", "BUILD_MILITARY_UNITS"): 2,
-        ("ASAI_ScienceCapacityPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): -35,
+        ("ASAI_ScienceCapacitySpecialization", "BUILD_MILITARY_UNITS"): 0,
+        ("ASAI_ScienceCapacityPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 0,
         ("ASAI_ScienceCapacityPseudoYields", "PSEUDOYIELD_SPACE_RACE"): 125,
         ("ASAI_SatelliteExecutionProjects", "PROJECT_LAUNCH_EARTH_SATELLITE"): 350,
         ("ASAI_PreparationBudgetDistricts", "DISTRICT_SPACEPORT"): -400,
@@ -2950,10 +2954,10 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
         ("ASAI_TradeExecutionBuildings", "BUILDING_LIGHTHOUSE"): 180,
         ("ASAI_TradeExecutionDistricts", "DISTRICT_COMMERCIAL_HUB"): 90,
         ("ASAI_ScienceConstructionSpecialization", "BUILD_FOR_SCIENCE"): -2,
-        ("ASAI_ProductionShareSpecialization", "BUILD_MILITARY_UNITS"): 1,
+        ("ASAI_ProductionShareSpecialization", "BUILD_MILITARY_UNITS"): 0,
         ("ASAI_ProductionShareDistricts", "DISTRICT_ENCAMPMENT"): -80,
         ("ASAI_ProductionShareBuildings", "BUILDING_MILITARY_ACADEMY"): -35,
-        ("ASAI_MinorRecoveryPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): -15,
+        ("ASAI_MinorRecoveryPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"): 0,
     }
     for (list_type, item), value in expected.items():
         row = connection.execute("SELECT Value FROM AiFavoredItems WHERE ListType=? AND Item=?",
@@ -3035,6 +3039,123 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
     return errors
 
 
+def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) -> list[str]:
+    """Check the native wiring, not just whether the Lua callback exists.
+
+    This is a configuration/logic test, not an emulator of the engine's
+    strategy-retention or contract-scheduling implementation.
+    """
+    errors: list[str] = []
+    gates = {
+        "LAND_RECOVERY": "LandRecovery",
+        "RANGED_REINFORCEMENT": "RangedReinforcement",
+        "WRITING_PREREQUISITE": "Writing",
+        "EDUCATION_PREREQUISITE": "Education",
+        "LABORATORY_PREREQUISITE": "Laboratory",
+        "SCIENCE_CONSTRUCTION": "ScienceConstruction",
+        "SCIENCE_PRODUCTION_SHARE": "ScienceShare",
+        "SCIENCE_CAPACITY": "ScienceCapacity",
+        "MINOR_FRONT_RECOVERY": "MinorRecovery",
+        "CAMPUS_DEMAND": "CampusDemand",
+        "ANTICAVALRY_DEMAND": "AntiCavalryDemand",
+    }
+    for strategy, callback in gates.items():
+        full = "ASAI_STRATEGY_" + strategy
+        conditions = connection.execute(
+            "SELECT ConditionFunction, StringValue, ThresholdValue, Forbidden, Disqualifier, Exclusive "
+            "FROM StrategyConditions WHERE StrategyType=? ORDER BY ConditionFunction",
+            (full,),
+        ).fetchall()
+        expected = [
+            ("Call Lua Function", f"ASAI_Is{callback}Disqualified", 0, 0, 1, 0),
+            ("Handicap at or below", None, 2147483647, 0, 0, 0),
+            ("Is Not Major", None, 0, 0, 1, 0),
+        ]
+        if conditions != expected:
+            errors.append(f"{full}: unsafe native lifecycle wiring: {conditions}")
+        if connection.execute("SELECT NumConditionsNeeded FROM Strategies WHERE StrategyType=?",
+                              (full,)).fetchone() != (1,):
+            errors.append(f"{full}: must require the stable native qualifier")
+
+    preferences = {
+        ("ASAI_LandRecoverySpecialization", "BUILD_MILITARY_UNITS"): ("AiBuildSpecializations", -3),
+        ("ASAI_CampusDemandDistricts", "DISTRICT_CAMPUS"): ("Districts", 180),
+        ("ASAI_CampusDemandYields", "YIELD_SCIENCE"): ("Yields", 60),
+        ("ASAI_AntiCavalryDemandUnits", "UNIT_AT_CREW"): ("Units", 220),
+    }
+    for (list_type, item), expected in preferences.items():
+        actual = connection.execute(
+            "SELECT l.System, f.Value FROM AiLists l JOIN AiFavoredItems f USING(ListType) "
+            "WHERE l.ListType=? AND f.Item=?", (list_type, item)).fetchall()
+        if actual != [expected]:
+            errors.append(f"production demand entry {list_type}/{item}: {actual}")
+
+    owners = {
+        "ASAI_LandRecoverySpecialization": "ASAI_STRATEGY_LAND_RECOVERY",
+        "ASAI_LandRecoveryCivilianUnits": "ASAI_STRATEGY_LAND_RECOVERY",
+        "ASAI_CampusDemandDistricts": "ASAI_STRATEGY_CAMPUS_DEMAND",
+        "ASAI_CampusDemandYields": "ASAI_STRATEGY_CAMPUS_DEMAND",
+        "ASAI_ConstructionDemandProjects": "ASAI_STRATEGY_SCIENCE_CONSTRUCTION",
+        "ASAI_AntiCavalryDemandUnits": "ASAI_STRATEGY_ANTICAVALRY_DEMAND",
+    }
+    for list_type, owner in owners.items():
+        actual = connection.execute("SELECT StrategyType FROM Strategy_Priorities WHERE ListType=?",
+                                    (list_type,)).fetchall()
+        if actual != [(owner,)]:
+            errors.append(f"{list_type}: demand must have exactly one gated owner: {actual}")
+        unconditional = connection.execute(
+            "SELECT 1 FROM AiLists WHERE ListType=? AND (LeaderType IS NOT NULL OR AgendaType IS NOT NULL)",
+            (list_type,)).fetchone()
+        if unconditional:
+            errors.append(f"{list_type}: request unexpectedly applies unconditionally")
+
+    expected_campuses = {r[0] for r in connection.execute(
+        "SELECT DistrictType FROM Districts WHERE DistrictType='DISTRICT_CAMPUS' "
+        "OR DistrictType IN (SELECT CivUniqueDistrictType FROM DistrictReplaces "
+        "WHERE ReplacesDistrictType='DISTRICT_CAMPUS')")}
+    actual_campuses = {r[0] for r in connection.execute(
+        "SELECT Item FROM AiFavoredItems WHERE ListType='ASAI_CampusDemandDistricts'")}
+    if actual_campuses != expected_campuses:
+        errors.append("campus demand must include all database-defined campus replacements, and no other districts")
+    counter_classes = connection.execute(
+        "SELECT DISTINCT u.PromotionClass FROM AiFavoredItems f JOIN Units u ON u.UnitType=f.Item "
+        "WHERE f.ListType='ASAI_AntiCavalryDemandUnits'").fetchall()
+    if counter_classes != [("PROMOTION_CLASS_ANTI_CAVALRY",)]:
+        errors.append(f"counter demand contains wrong unit roles: {counter_classes}")
+    land_classes = {r[0] for r in connection.execute(
+        "SELECT DISTINCT u.PromotionClass FROM AiFavoredItems f JOIN Units u ON u.UnitType=f.Item "
+        "WHERE f.ListType='ASAI_LandRecoveryUnits'")}
+    if not land_classes or not land_classes <= {
+            "PROMOTION_CLASS_MELEE", "PROMOTION_CLASS_RANGED", "PROMOTION_CLASS_ANTI_CAVALRY",
+            "PROMOTION_CLASS_LIGHT_CAVALRY", "PROMOTION_CLASS_HEAVY_CAVALRY"}:
+        errors.append(f"line reinforcement includes recon/support/siege instead of ground defenders: {land_classes}")
+    projects = connection.execute(
+        "SELECT p.ProjectType, p.SpaceRace FROM AiFavoredItems f JOIN Projects p ON p.ProjectType=f.Item "
+        "WHERE f.ListType='ASAI_ConstructionDemandProjects'").fetchall()
+    if not projects or any(r[0] not in {"PROJECT_ENHANCE_DISTRICT_CAMPUS",
+                                      "PROJECT_ENHANCE_DISTRICT_INDUSTRIAL_ZONE"} or r[1]
+                           for r in projects):
+        errors.append(f"construction demand penalizes a protected project: {projects}")
+    for list_type, item in (
+        ("ASAI_ProductionShareSpecialization", "BUILD_MILITARY_UNITS"),
+        ("ASAI_ScienceCapacitySpecialization", "BUILD_MILITARY_UNITS"),
+        ("ASAI_ScienceCapacityPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"),
+        ("ASAI_MinorRecoveryPseudoYields", "PSEUDOYIELD_UNIT_COMBAT"),
+    ):
+        if connection.execute("SELECT Value FROM AiFavoredItems WHERE ListType=? AND Item=?",
+                              (list_type, item)).fetchone() != (0,):
+            errors.append(f"stale strategy can still penalize generic reinforcement: {list_type}")
+    source = (mod_root / "Lua/AdaptiveStrategicAI.lua").read_text(encoding="utf-8")
+    for required in ("local veto = not success or active ~= true",
+                     "Execution.HasLiveMajorWar(playerID)",
+                     "ASAI_PRODUCTION_DEMAND", 'contract=unobserved',
+                     'completion_origin=unverified', 'phase=%s',
+                     "GameEvents.OnCombatOccurred.Add(Execution.OnDefenseCombat)"):
+        if required not in source:
+            errors.append(f"missing demand safety/observability contract: {required}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Adaptive Strategic AI without modifying the game cache.")
     parser.add_argument("--db", type=Path, default=default_database())
@@ -3086,6 +3207,7 @@ def main() -> int:
                 errors.extend(validate_invariants(target))
                 errors.extend(validate_relative_pacing(target))
                 errors.extend(validate_execution_recovery(target, mod_root))
+                errors.extend(validate_production_demands(target, mod_root))
                 if list(target.execute(
                     "SELECT * FROM AiFavoredItems WHERE ListType='DefaultCitySpecialization' ORDER BY Item"
                 )) != default_specializations:

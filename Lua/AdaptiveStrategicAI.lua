@@ -5849,7 +5849,8 @@ local function GetMilitaryQueueTarget(snapshot, state)
     local targetPercent = snapshot.ActiveMajorWars > 0 and not warStopLoss
         and GetNumberParameter("ASAI_WAR_QUEUE_TARGET_X100", 45)
         or GetNumberParameter("ASAI_MILITARY_QUEUE_TARGET_X100", 25);
-    if state.Execution ~= nil and (state.Execution.MilitaryShare
+    if (snapshot.MajorWars or snapshot.ActiveMajorWars or 0) <= 0
+        and state.Execution ~= nil and (state.Execution.MilitaryShare
         or (state.Execution.MinorStopLoss and not state.Execution.Emergency
             and not state.Execution.RecentAttrition)) then
         targetPercent = math.min(targetPercent, 10);
@@ -7250,6 +7251,7 @@ function Execution.EmptyStatus(turn)
         RangedTarget = 0, SiegeTarget = 0, AssetsOk = 0,
         BuildabilityOk = -1, StabilityOk = 0, LostFreeCities = 0,
         CandidateReason = "unprobed", EmergencyAge = 0, EmergencyLevel = 0,
+        AcuteDefense = false, AntiCavalryNeeded = false, AntiCavalryTarget = 0,
         EconomyAllowed = true, LandNeeded = false, LandQueueTarget = 0,
         TraderStage = "none", TraderAge = 0, TraderGap = 0, TraderQueueTarget = 0,
         TraderChain = "unknown_sensor", TraderRequestAge = 0,
@@ -7259,7 +7261,7 @@ function Execution.EmptyStatus(turn)
         ScienceConstructionQueued = 0, ScienceConstructionAge = 0,
         ScienceConstructionGain = 0, ScienceCandidateCity = -1,
         MilitaryShare = false, MinorActive = 0, MinorActionable = 0,
-        MinorCooling = 0, MinorStopLoss = false, MinorSensorOk = 1
+        MinorCooling = 0, MinorStopLoss = false, MinorSensorOk = 1, Demands = {}
     };
 end
 
@@ -7312,12 +7314,16 @@ function Execution.GetDefinitions()
             elseif info.PromotionClass == "PROMOTION_CLASS_SIEGE"
                 and (tonumber(info.Bombard) or 0) > 0 then
                 role = "siege";
+            elseif info.PromotionClass == "PROMOTION_CLASS_ANTI_CAVALRY" then
+                role = "anticavalry";
             end
         end
         add(info, "unit", role);
         if info.Domain == "DOMAIN_LAND" and GetUnitBaseStrength(info) > 0
             and info.PromotionClass ~= "PROMOTION_CLASS_SIEGE"
-            and info.PromotionClass ~= "PROMOTION_CLASS_GIANT_DEATH_ROBOT" then
+            and info.PromotionClass ~= "PROMOTION_CLASS_GIANT_DEATH_ROBOT"
+            and info.PromotionClass ~= "PROMOTION_CLASS_RECON"
+            and info.PromotionClass ~= "PROMOTION_CLASS_SUPPORT" then
             result.ByRole.land = result.ByRole.land or {};
             table.insert(result.ByRole.land, { Info = info, Kind = "unit", Role = "land" });
         end
@@ -7342,7 +7348,7 @@ end
 function Execution.CollectAssets(player)
     local definitions = Execution.GetDefinitions();
     local result = {
-        Counts = {}, Queued = {}, Cities = {}, CityPlots = {},
+        Counts = {}, Queued = {}, Incomplete = {}, Cities = {}, CityPlots = {},
         Player = player, Probes = {}, ProbeReasons = {}, CandidateCities = {}, CandidateTypes = {},
         BuildabilityOk = -1, CandidateReason = "unprobed", ByCity = {}
     };
@@ -7350,7 +7356,7 @@ function Execution.CollectAssets(player)
         result.Counts[role], result.Queued[role] = 0, 0;
     end
     for _, city in player:GetCities():Members() do
-        local row = { City = city, TradeBuildings = 0, Districts = {}, Placed = {},
+        local row = { City = city, TradeBuildings = 0, Districts = {}, Placed = {}, Unfinished = {},
             Production = city:GetYield(GameInfo.Yields["YIELD_PRODUCTION"].Index) };
         local buildings = city:GetBuildings();
         for _, role in ipairs({ "library", "university", "laboratory", "trade_building" }) do
@@ -7382,11 +7388,21 @@ function Execution.CollectAssets(player)
             row.Placed[info.DistrictType] = true;
             if district:IsComplete() and not district:IsPillaged() then
                 row.Districts[info.DistrictType] = true;
+            elseif not district:IsComplete() then
+                row.Unfinished[info.DistrictType] = true;
             end
         end
         local entry = info ~= nil and definitions.ByType[info.DistrictType] or nil;
         if entry ~= nil and district:IsComplete() then
             result.Counts[entry.Role] = result.Counts[entry.Role] + 1;
+        elseif entry ~= nil then
+            result.Incomplete[entry.Role] = (result.Incomplete[entry.Role] or 0) + 1;
+        end
+    end
+    for _, unit in player:GetUnits():Members() do
+        local info = GameInfo.Units[unit:GetType()];
+        if info ~= nil and info.PromotionClass == "PROMOTION_CLASS_ANTI_CAVALRY" then
+            result.Counts.anticavalry = (result.Counts.anticavalry or 0) + 1;
         end
     end
     table.sort(result.CityPlots);
@@ -7467,7 +7483,11 @@ function Execution.IsCandidate(assets, row, entry)
             if hasBuilding(other) then return false; end
         end
     elseif entry.Kind == "district" then
-        if Execution.HasEquivalent(name, function(value) return row.Placed[value] == true; end)
+        -- An already placed, unfinished district is a resume candidate, not
+        -- a reason to nominate another city for a duplicate foundation.
+        if Execution.HasEquivalent(name, function(value)
+            return row.Placed[value] == true and not (row.Unfinished or {})[value];
+        end)
             then return false; end
         for _, trait in ipairs(definitions.ExcludedDistricts[name] or {}) do
             if traits[trait] then return false; end
@@ -7508,11 +7528,26 @@ function Execution.CanBuild(assets, role)
         return assets.Probes[role], assets.ProbeReasons[role];
     end
     local unknown = false;
-    for _, row in ipairs(assets.Cities) do
+    local rows = assets.Cities;
+    if role == "campus" then
+        local resumed, fresh = {}, {};
+        for _, row in ipairs(rows) do
+            local unfinished = false;
+            for name in pairs(row.Unfinished or {}) do
+                local definition = Execution.GetDefinitions().ByType[name];
+                if definition ~= nil and definition.Role == role then unfinished = true; break; end
+            end
+            table.insert(unfinished and resumed or fresh, row);
+        end
+        for _, row in ipairs(fresh) do table.insert(resumed, row); end
+        rows = resumed;
+    end
+    for _, row in ipairs(rows) do
         local current = row.Current ~= nil and GameInfo.Projects[row.Current] or nil;
         local spaceCore = row.Current == "DISTRICT_SPACEPORT" or (current ~= nil
             and (current.SpaceRace == true or current.SpaceRace == 1));
-        local economic = role ~= "ranged" and role ~= "siege" and role ~= "land";
+        local economic = role ~= "ranged" and role ~= "siege" and role ~= "land"
+            and role ~= "anticavalry";
         if (not economic or not spaceCore)
             and (role ~= "trade_building" or row.TradeBuildings == 0) then
             for _, entry in ipairs(Execution.GetDefinitions().ByRole[role] or {}) do
@@ -7858,20 +7893,84 @@ function Execution.RecoveryBudget(player, state, snapshot, economic, result, tur
     result.EmergencyAge = Execution.UpdateTimer(player, "ASAI_EXEC_EMERGENCY_SINCE",
         result.Emergency, turn, false);
     local window = ScaleStandardTurns(GetNumberParameter("ASAI_PLAN_REVIEW_STANDARD", 12));
+    result.AcuteDefense = result.Emergency and (snapshot.ActiveMajorWars or 0) > 0
+        and (result.RecentAttrition
+            or result.Land < math.max(1, math.ceil(result.LandTarget * 0.5)));
     result.EmergencyLevel = result.Emergency and math.min(2, math.max(
         math.floor(result.EmergencyAge / window),
+        result.AcuteDefense and 1 or 0,
         state.StrategicPlan == Strategic.DEFEND and (state.StrategicPlanStallCount or 0) or 0)) or 0;
     local queue = economic.Queue;
     local deficit = math.max(0, result.LandTarget - result.Land);
     result.LandQueueTarget = result.Emergency and math.min(deficit,
+        math.max(1, snapshot.Cities - 1),
         math.max(1, math.ceil(snapshot.Cities * 0.25)), 2 + result.EmergencyLevel) or 0;
-    result.LandNeeded = result.EmergencyLevel > 0 and economic.QueueOk == 1
+    -- Start the bounded basic pipeline on the first shortage sample. The
+    -- review clock increases its budget; it must not delay all recruitment.
+    result.LandNeeded = result.Emergency and economic.QueueOk == 1
         and (queue.Land or 0) < result.LandQueueTarget;
     -- Acute losses still interrupt. Prolonged low density alone must not
     -- permanently veto every economic recovery in the empire.
     result.EconomyAllowed = not result.Emergency or (result.EmergencyLevel > 0
-        and not result.RecentAttrition and economic.QueueOk == 1
+        and not result.AcuteDefense and not result.RecentAttrition and economic.QueueOk == 1
         and snapshot.Cities - (queue.Combat or 0) >= 2);
+end
+
+function Execution.RecordDefenseCombat(attackerID, attackerUnitID, defenderID, defenderUnitID)
+    if attackerID == nil or defenderID == nil or attackerID == defenderID then return; end
+    local function observe(playerID, opponentID, opponentUnitID)
+        if not IsMajorAI(playerID) then return; end
+        local player, opponent = Players[playerID], Players[opponentID];
+        if opponent == nil or not opponent:IsMajor()
+            or not player:GetDiplomacy():IsAtWarWith(opponentID)
+            or opponentUnitID == nil or opponentUnitID < 0 then return; end
+        local unit = opponent:GetUnits():FindID(opponentUnitID);
+        local info = unit ~= nil and GameInfo.Units[unit:GetType()] or nil;
+        if info == nil or (info.PromotionClass ~= "PROMOTION_CLASS_HEAVY_CAVALRY"
+            and info.PromotionClass ~= "PROMOTION_CLASS_LIGHT_CAVALRY") then return; end
+        player:SetProperty("ASAI_EXEC_CAVALRY_THREAT_UNTIL", Game.GetCurrentGameTurn()
+            + ScaleStandardTurns(GetNumberParameter("ASAI_DEFENSE_CAVALRY_MEMORY_STANDARD", 8)));
+    end
+    -- Only a unit that actually participated in our combat reveals this
+    -- threat. Do not enumerate opponents' hidden units or the world map.
+    observe(attackerID, defenderID, defenderUnitID);
+    observe(defenderID, attackerID, attackerUnitID);
+end
+
+function Execution.OnDefenseCombat(...)
+    local success, err = pcall(Execution.RecordDefenseCombat, ...);
+    if not success and not m_ConditionErrors.ASAI_DefenseCombat then
+        m_ConditionErrors.ASAI_DefenseCombat = true;
+        print("ASAI_DIAGNOSTIC_ERROR sensor=defense_combat fallback=general_land error=" .. tostring(err));
+    end
+end
+
+function Execution.AntiCavalryBudget(player, snapshot, economic, assets, result, turn)
+    result.AntiCavalryTarget = 0;
+    result.AntiCavalryNeeded = false;
+    if not result.LandNeeded or economic.QueueOk ~= 1
+        or (snapshot.ActiveMajorWars or 0) <= 0
+        or turn >= GetStoredNumber(player, "ASAI_EXEC_CAVALRY_THREAT_UNTIL", -1) then return; end
+    result.AntiCavalryTarget = math.min(2, math.max(1, math.ceil(snapshot.Cities / 8)));
+    result.AntiCavalryNeeded = (assets.Counts.anticavalry or 0)
+        + (assets.Queued.anticavalry or 0) < result.AntiCavalryTarget
+        and Execution.CanBuild(assets, "anticavalry");
+end
+
+function Execution.RecordProductionDemand(player, result, role, requested, queued, count, idle, turn)
+    local prefix = "ASAI_DEMAND_" .. string.upper(role) .. "_";
+    local previous = GetStoredNumber(player, prefix .. "COUNT", count);
+    local age = Execution.UpdateTimer(player, prefix .. "NO_ORDER_SINCE",
+        requested and queued == 0, turn, false);
+    local phase = queued == nil and "unknown_queue"
+        or (queued > 0 and (requested and "partial_inflight" or "inflight")
+        or (requested and (age >= ScaleStandardTurns(GetNumberParameter(
+            "ASAI_PRODUCTION_DEMAND_REVIEW_STANDARD", 8)) and "stalled_no_order"
+            or "awaiting_native_order") or "inactive"));
+    player:SetProperty(prefix .. "COUNT", count);
+    result.Demands = result.Demands or {};
+    table.insert(result.Demands, { Role = role, Requested = requested, Queued = queued or -1,
+        AssetDelta = count - previous, PlacedIdle = idle or -1, NoOrderAge = age, Phase = phase });
 end
 
 function Execution.TraderBudget(player, snapshot, economic, result, turn)
@@ -8013,6 +8112,11 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
     for key, value in pairs(military) do result[key] = value; end
     Execution.RecoveryBudget(player, state, snapshot, economic, result, turn);
     Execution.TraderBudget(player, snapshot, economic, result, turn);
+    -- Clear old nominations before probing, including the asset-error path.
+    player:SetProperty("ASAI_DEFENSE_BUILD_TYPE", "");
+    player:SetProperty("ASAI_DEFENSE_BUILD_CITY", -1);
+    player:SetProperty("ASAI_DEFENSE_BUILD_ROLE", "none");
+    player:SetProperty("ASAI_DEFENSE_BUILD_TURN", turn);
 
     local assetSuccess, assets = pcall(Execution.CollectAssets, player);
     if assetSuccess then
@@ -8098,10 +8202,28 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
         end
         -- Real siege combat roles, not the broad UNITTYPE_SIEGE_ALL tag.
         result.RangedNeeded = result.RangedNeeded
+            and (not result.Emergency or (economic.Queue.Land or 0) < result.LandQueueTarget)
             and economic.QueueOk == 1 and Execution.CanBuild(assets, "ranged");
         result.SiegeNeeded = result.SiegeNeeded
             and economic.QueueOk == 1 and Execution.CanBuild(assets, "siege");
         result.LandNeeded = result.LandNeeded and Execution.CanBuild(assets, "land");
+        Execution.AntiCavalryBudget(player, snapshot, economic, assets, result, turn);
+        local defenseRole = result.AntiCavalryNeeded and "anticavalry"
+            or (result.LandNeeded and "land" or (result.RangedNeeded and "ranged" or nil));
+        if defenseRole ~= nil then
+            player:SetProperty("ASAI_DEFENSE_BUILD_TYPE", (assets.CandidateTypes or {})[defenseRole] or "");
+            player:SetProperty("ASAI_DEFENSE_BUILD_CITY", (assets.CandidateCities or {})[defenseRole] or -1);
+            player:SetProperty("ASAI_DEFENSE_BUILD_ROLE", defenseRole);
+        end
+        Execution.RecordProductionDemand(player, result, "land", result.LandNeeded,
+            economic.QueueOk == 1 and (economic.Queue.Land or 0) or nil, result.Land, 0, turn);
+        for _, role in ipairs({ "campus", "library", "university", "laboratory" }) do
+            Execution.RecordProductionDemand(player, result, role,
+                result.ScienceConstruction and result.ScienceConstructionRole == role,
+                economic.QueueOk == 1 and (assets.Queued[role] or 0) or nil, assets.Counts[role] or 0,
+                economic.QueueOk == 1 and math.max(0,
+                    ((assets.Incomplete or {})[role] or 0) - (assets.Queued[role] or 0)) or nil, turn);
+        end
         result.BuildabilityOk = assets.BuildabilityOk;
         result.CandidateReason = assets.CandidateReason or "unprobed";
         result.ProbeReasons, result.CandidateCities = assets.ProbeReasons, assets.CandidateCities;
@@ -8109,6 +8231,13 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
     else
         result.RangedNeeded, result.SiegeNeeded = false, false;
         result.LandNeeded = false;
+        player:SetProperty("ASAI_SCIENCE_BUILD_TYPE", "");
+        player:SetProperty("ASAI_SCIENCE_BUILD_CITY", -1);
+        player:SetProperty("ASAI_SCIENCE_BUILD_TURN", turn);
+        -- A missing asset sample is not proof that production stayed idle.
+        for _, role in ipairs({ "land", "campus", "library", "university", "laboratory" }) do
+            player:SetProperty("ASAI_DEMAND_" .. string.upper(role) .. "_NO_ORDER_SINCE", -1);
+        end
         if result.TraderStage == "candidate" then result.TraderStage = "unknown"; end
         result.StabilityUntil = GetStoredNumber(player, "ASAI_EXEC_STABILITY_UNTIL", -1);
         if m_ConditionErrors.ASAI_ExecutionAssets == nil then
@@ -8147,7 +8276,8 @@ end
 function Execution.TraceCondition(name, playerID, result)
     if GetNumberParameter("ASAI_ENABLE_METRICS", 0) ~= 1 or not IsMajorAI(playerID) then return; end
     if not string.find(name, "Execution") and not string.find(name, "Prerequisite")
-        and not string.find(name, "Reinforcement") then return; end
+        and not string.find(name, "Reinforcement") and not string.find(name, "Disqualified")
+        and not string.find(name, "Demand") then return; end
     local turn = Game.GetCurrentGameTurn();
     local key = name .. ":" .. tostring(playerID);
     local last = Execution.ConditionChecks[key];
@@ -8193,6 +8323,17 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
         result.ScienceConstructionAge, result.ScienceConstructionGain, result.ScienceCompletedRole or "none",
         result.ScienceCandidateCity, result.MilitaryShare and 1 or 0));
     print(string.format(
+        "ASAI_DEFENSE_DEMAND turn=%d player=%d acute=%d land_request=%d land_budget=%d anticavalry_request=%d anticavalry_target=%d cavalry_until=%d native_assignment=unverified",
+        result.Turn, playerID, result.AcuteDefense and 1 or 0, result.LandNeeded and 1 or 0,
+        result.LandQueueTarget, result.AntiCavalryNeeded and 1 or 0, result.AntiCavalryTarget,
+        GetStoredNumber(Players[playerID], "ASAI_EXEC_CAVALRY_THREAT_UNTIL", -1)));
+    for _, demand in ipairs(result.Demands or {}) do
+        print(string.format(
+            "ASAI_PRODUCTION_DEMAND turn=%d player=%d role=%s request=%d observed_queue=%d asset_delta=%d placed_idle=%d no_order_age=%d phase=%s contract=unobserved completion_origin=unverified",
+            result.Turn, playerID, demand.Role, demand.Requested and 1 or 0, demand.Queued,
+            demand.AssetDelta, demand.PlacedIdle, demand.NoOrderAge, demand.Phase));
+    end
+    print(string.format(
         "ASAI_MINOR_FRONTS turn=%d player=%d active=%d actionable=%d cooling=%d stop_loss=%d sensor_ok=%d",
         result.Turn, playerID, result.MinorActive, result.MinorActionable,
         result.MinorCooling, result.MinorStopLoss and 1 or 0, result.MinorSensorOk));
@@ -8203,7 +8344,7 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
             front.Stalls, front.Until, front.Reason));
     end
     for _, role in ipairs({ "campus", "library", "university", "laboratory",
-        "trade_building", "trade_district", "trader", "ranged", "siege", "land" }) do
+        "trade_building", "trade_district", "trader", "ranged", "siege", "land", "anticavalry" }) do
         local reason = result.ProbeReasons ~= nil and result.ProbeReasons[role] or nil;
         if reason ~= nil then
             print(string.format(
@@ -8231,7 +8372,8 @@ function Execution.IsLaboratory(playerID)
         or (status.ScienceStage == "infrastructure" and status.ScienceGoal == "laboratory");
 end
 function Execution.IsRanged(playerID)
-    return Execution.GetStatus(playerID).RangedNeeded;
+    local status = Execution.GetStatus(playerID);
+    return status.RangedNeeded and not status.AntiCavalryNeeded;
 end
 function Execution.IsSiege(playerID)
     return Execution.GetStatus(playerID).SiegeNeeded;
@@ -8253,13 +8395,95 @@ function Execution.IsScienceConstruction(playerID)
     return Execution.GetStatus(playerID).ScienceConstruction;
 end
 function Execution.IsScienceProductionShare(playerID)
-    return Execution.GetStatus(playerID).MilitaryShare;
+    return Execution.GetStatus(playerID).MilitaryShare and not Execution.HasLiveMajorWar(playerID);
 end
 function Execution.IsMinorFrontRecovery(playerID)
     local status = Execution.GetStatus(playerID);
     return status.MinorStopLoss and not status.Emergency and not status.RecentAttrition
-        and not status.MilitaryShare;
+        and not status.MilitaryShare and not Execution.HasLiveMajorWar(playerID);
 end
+function Execution.HasLiveMajorWar(playerID)
+    local diplomacy = Players[playerID]:GetDiplomacy();
+    for _, otherID in ipairs(PlayerManager.GetAliveMajorIDs()) do
+        if otherID ~= playerID and diplomacy:IsAtWarWith(otherID) then return true; end
+    end
+    return false;
+end
+function Execution.IsCampusDemand(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.ScienceConstruction and status.ScienceConstructionRole == "campus";
+end
+function Execution.IsAntiCavalryDemand(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.LandNeeded and status.AntiCavalryNeeded;
+end
+
+function Execution.RunVeto(name, evaluator, playerID, threshold)
+    local success, active = pcall(function()
+        return IsMajorAI(playerID) and evaluator(playerID, threshold) == true;
+    end);
+    local veto = not success or active ~= true;
+    if not success and not m_ConditionErrors[name] then
+        m_ConditionErrors[name] = true;
+        print(string.format("ASAI_ERROR condition=%s player=%s fallback=true error=%s",
+            name, tostring(playerID), tostring(active)));
+    end
+    -- This records the veto returned to the engine, not its retained state.
+    pcall(Execution.TraceCondition, name, playerID, veto);
+    return veto;
+end
+function ASAI_IsLandRecoveryDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsLandRecoveryDisqualified", Execution.IsLandRecovery, playerID, threshold);
+end
+function ASAI_IsRangedReinforcementDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsRangedReinforcementDisqualified", Execution.IsRanged, playerID, threshold);
+end
+function ASAI_IsWritingDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsWritingDisqualified", Execution.IsWriting, playerID, threshold);
+end
+function ASAI_IsEducationDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsEducationDisqualified", Execution.IsEducation, playerID, threshold);
+end
+function ASAI_IsLaboratoryDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsLaboratoryDisqualified", Execution.IsLaboratory, playerID, threshold);
+end
+function ASAI_IsScienceConstructionDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsScienceConstructionDisqualified", Execution.IsScienceConstruction, playerID, threshold);
+end
+function ASAI_IsScienceShareDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsScienceShareDisqualified", Execution.IsScienceProductionShare, playerID, threshold);
+end
+function ASAI_IsScienceCapacityDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsScienceCapacityDisqualified", ScienceExecution.IsCapacity, playerID, threshold);
+end
+function ASAI_IsMinorRecoveryDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsMinorRecoveryDisqualified", Execution.IsMinorFrontRecovery, playerID, threshold);
+end
+function ASAI_IsCampusDemandDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsCampusDemandDisqualified", Execution.IsCampusDemand, playerID, threshold);
+end
+function ASAI_IsAntiCavalryDemandDisqualified(playerID, threshold)
+    return Execution.RunVeto("ASAI_IsAntiCavalryDemandDisqualified", Execution.IsAntiCavalryDemand, playerID, threshold);
+end
+function ASAI_IsCampusDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsCampusDemand", Execution.IsCampusDemand, playerID, threshold);
+end
+function ASAI_IsAntiCavalryDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsAntiCavalryDemand", Execution.IsAntiCavalryDemand, playerID, threshold);
+end
+GameEvents.ASAI_IsLandRecoveryDisqualified.Add(ASAI_IsLandRecoveryDisqualified);
+GameEvents.ASAI_IsRangedReinforcementDisqualified.Add(ASAI_IsRangedReinforcementDisqualified);
+GameEvents.ASAI_IsWritingDisqualified.Add(ASAI_IsWritingDisqualified);
+GameEvents.ASAI_IsEducationDisqualified.Add(ASAI_IsEducationDisqualified);
+GameEvents.ASAI_IsLaboratoryDisqualified.Add(ASAI_IsLaboratoryDisqualified);
+GameEvents.ASAI_IsScienceConstructionDisqualified.Add(ASAI_IsScienceConstructionDisqualified);
+GameEvents.ASAI_IsScienceShareDisqualified.Add(ASAI_IsScienceShareDisqualified);
+GameEvents.ASAI_IsScienceCapacityDisqualified.Add(ASAI_IsScienceCapacityDisqualified);
+GameEvents.ASAI_IsMinorRecoveryDisqualified.Add(ASAI_IsMinorRecoveryDisqualified);
+GameEvents.ASAI_IsCampusDemandDisqualified.Add(ASAI_IsCampusDemandDisqualified);
+GameEvents.ASAI_IsAntiCavalryDemandDisqualified.Add(ASAI_IsAntiCavalryDemandDisqualified);
+GameEvents.ASAI_IsCampusDemand.Add(ASAI_IsCampusDemand);
+GameEvents.ASAI_IsAntiCavalryDemand.Add(ASAI_IsAntiCavalryDemand);
 function ASAI_IsScienceConstructionExecution(playerID, threshold)
     return RunStrategyCondition("ASAI_IsScienceConstructionExecution",
         Execution.IsScienceConstruction, playerID, threshold);
@@ -8318,6 +8542,7 @@ Events.DistrictDamageChanged.Add(ThreatResponse.OnDistrictDamageChanged);
 GameEvents.CityConquered.Add(Strategic.OnCityConquered);
 GameEvents.CityConquered.Add(Execution.OnMinorCapture);
 GameEvents.OnCombatOccurred.Add(Execution.OnMinorCombat);
+GameEvents.OnCombatOccurred.Add(Execution.OnDefenseCombat);
 GameEvents.CityBuilt.Add(Strategic.OnCityBuilt);
 GameEvents.OnPillage.Add(Strategic.OnPillage);
 Events.CityProjectCompleted.Add(ScienceExecution.OnCityProjectCompleted);
