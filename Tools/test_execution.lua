@@ -46,8 +46,9 @@ local env = setmetatable({
     Players = {}, PlayerConfigurations = {},
     PlayerManager = { IsAlive = function(id) return id == 0 or id == 1; end },
     GameEvents = events(), Events = events(), Map = {}
-}, { __index = _G });
-env._G = env;
+}, { __index = function(_, key)
+    if key ~= "_G" then return _G[key]; end
+end });
 assert(loadfile("Lua/AdaptiveStrategicAI.lua", "t", env))();
 local E = upvalue(env.ASAI_IsEducationPrerequisite, "Execution");
 local S = upvalue(env.GameEvents.CityConquered.Callbacks[1], "Strategic");
@@ -57,11 +58,14 @@ local S = upvalue(env.GameEvents.CityConquered.Callbacks[1], "Strategic");
 do
     local seen = {};
     equal(#E.NativeGateCallbacks, 17, "isolated initializer preserves all native gate families");
+    equal(#E.NativeGateEvaluators, 17, "all native evaluator references are initialized");
     equal(E.NativeGateSlots, 12, "native gate identity pool remains unchanged");
     equal(E.NativeGateReuseTurns, 22, "native gate reuse remains unchanged");
-    for _, name in ipairs(E.NativeGateCallbacks) do
+    for family, name in ipairs(E.NativeGateCallbacks) do
         check(not seen[name] and type(env[name]) == "function",
             "isolated initializer installs one existing callback: " .. name);
+        check(E.NativeGateEvaluators[family] == env.GameEvents[name].Callbacks[1],
+            "direct evaluator is the real registered function: " .. name);
         seen[name] = true;
     end
 end
@@ -1060,4 +1064,5 @@ assert(loadfile("Tools/test_minor_city_combat.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_production_demands.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_feasibility.lua"))()(check, equal, upvalue);
 assert(loadfile("Tools/test_native_gates.lua"))()(check, equal, upvalue);
+assert(loadfile("Tools/test_native_gate_environment.lua"))()(check, equal, upvalue);
 print(string.format("LUA REGRESSION PASSED: %d checks; real Lua functions, mocked game boundary", checks));

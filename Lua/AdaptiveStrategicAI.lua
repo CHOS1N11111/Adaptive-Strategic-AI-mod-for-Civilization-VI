@@ -8782,7 +8782,7 @@ function Execution.SelectNativeGate(playerID, family, turn)
         cached.Slot = previous;
         return previous;
     end
-    local callback = _G[Execution.NativeGateCallbacks[family]];
+    local callback = Execution.NativeGateEvaluators[family];
     if type(callback) ~= "function" then error("execution callback unavailable"); end
     local ok, value = pcall(callback, playerID, 0);
     local desired = ok and value == true;
@@ -8839,11 +8839,9 @@ function ASAI_IsNativeExecutionBlocked(playerID, threshold)
     end
     return true;
 end
-GameEvents.ASAI_IsNativeExecutionBlocked.Add(ASAI_IsNativeExecutionBlocked);
 function ASAI_IsNativeExecutionAllowed(playerID, threshold)
     return not ASAI_IsNativeExecutionBlocked(playerID, threshold);
 end
-GameEvents.ASAI_IsNativeExecutionAllowed.Add(ASAI_IsNativeExecutionAllowed);
 
 function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
     if not firstTimeThisTurn or not IsMajorAI(playerID)
@@ -9119,6 +9117,25 @@ GameEvents.ASAI_IsTradeDistrictExecution.Add(ASAI_IsTradeDistrictExecution);
 GameEvents.ASAI_IsTradeBuildingExecution.Add(ASAI_IsTradeBuildingExecution);
 GameEvents.ASAI_IsLandRecovery.Add(ASAI_IsLandRecovery);
 GameEvents.ASAI_IsTraderExecution.Add(ASAI_IsTraderExecution);
+
+-- Bind the already-defined condition functions directly: the game's script
+-- environment need not expose _G. Names above remain diagnostic/SQL identities,
+-- not runtime lookup keys. Keep this constructor in its own register frame,
+-- and bind all families before exposing the two native gate entry points.
+(function()
+    Execution.NativeGateEvaluators = {
+        ASAI_IsLandRecovery, ASAI_IsRangedReinforcement,
+        ASAI_IsWritingPrerequisite, ASAI_IsEducationPrerequisite,
+        ASAI_IsLaboratoryPrerequisite, ASAI_IsScienceConstructionExecution,
+        ASAI_IsScienceProductionShareExecution, ASAI_IsScienceCapacityExecution,
+        ASAI_IsMinorFrontRecoveryExecution, ASAI_IsCampusDemand,
+        ASAI_IsAntiCavalryDemand, ASAI_IsUrgentLandDemand,
+        ASAI_IsCampusSlotPressure, ASAI_IsOrbitalLaserDemand,
+        ASAI_IsTerrestrialLaserDemand, ASAI_IsLaserPowerDemand, ASAI_IsLaserPortHandoff
+    };
+end)();
+GameEvents.ASAI_IsNativeExecutionBlocked.Add(ASAI_IsNativeExecutionBlocked);
+GameEvents.ASAI_IsNativeExecutionAllowed.Add(ASAI_IsNativeExecutionAllowed);
 
 Events.PlayerTurnActivated.Add(LogMetrics);
 Events.UnitDamageChanged.Add(OnUnitDamageChanged);

@@ -29,16 +29,19 @@ return function(check, equal, upvalue)
         GameInfo = {},
         PlayerManager = { IsAlive = function(id) return players[id] ~= nil; end },
         Players = players, Events = events(), GameEvents = events()
-    }, { __index = _G });
-    env._G = env;
+    }, { __index = function(_, key)
+        if key ~= "_G" then return _G[key]; end
+    end });
     local E;
     local function reload()
         env.Events, env.GameEvents = events(), events();
         assert(loadfile("Lua/AdaptiveStrategicAI.lua", "t", env))();
         E = upvalue(env.ASAI_IsLandRecovery, "Execution");
-        for family, name in ipairs(E.NativeGateCallbacks) do
+        -- This suite isolates the allocator. The environment suite separately
+        -- exercises all shipping registered wrappers without replacing bindings.
+        for family in ipairs(E.NativeGateCallbacks) do
             local f = family;
-            env[name] = function(player)
+            E.NativeGateEvaluators[family] = function(player)
                 evaluations = evaluations + 1;
                 return wanted[player] and wanted[player][f] == true;
             end;
@@ -164,11 +167,11 @@ return function(check, equal, upvalue)
     local beforeFailure = select(1, 2);
     check(beforeFailure > 0, "fault test begins with an admitted native identity");
     now = 602;
-    env.ASAI_IsRangedReinforcement = function() error("injected collector error"); end;
+    E.NativeGateEvaluators[2] = function() error("injected collector error"); end;
     equal(select(1, 2), 0, "collector failure closes every spare slot");
     equal(select(1, 2, true), 0, "later callbacks cannot resurrect an errored family");
     now = 603;
-    env.ASAI_IsRangedReinforcement = function() return true; end;
+    E.NativeGateEvaluators[2] = function() return true; end;
     local afterFailure = select(1, 2);
     check(afterFailure > 0 and afterFailure ~= beforeFailure,
         "transient failure retires the old slot before native cooldown-safe recovery");

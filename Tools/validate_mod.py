@@ -32,8 +32,8 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.21"
-EXPECTED_MODINFO_VERSION = "43"
+EXPECTED_RELEASE = "0.11.22"
+EXPECTED_MODINFO_VERSION = "44"
 EXPECTED_STRATEGIES = 269  # 37 ordinary + 17*12 pooled + 28 inert saved identities.
 
 
@@ -3270,6 +3270,21 @@ def validate_responsive_execution(
     source = (mod_root / "Lua/AdaptiveStrategicAI.lua").read_text(encoding="utf-8")
     callback_block = source.split("Execution.NativeGateCallbacks = {", 1)[-1].split("};", 1)[0]
     callbacks = re.findall(r'"(ASAI_Is\w+)"', callback_block)
+    binding_marker = "Execution.NativeGateEvaluators = {"
+    binding_start = source.find(binding_marker)
+    binding_block = source.split(binding_marker, 1)[-1].split("};", 1)[0]
+    bindings = re.findall(r"\b(ASAI_Is\w+)\b", binding_block)
+    if bindings != callbacks:
+        errors.append("native gate function references must match all callback names in SQL order")
+    if not re.search(r"\(function\(\)\s+Execution\.NativeGateEvaluators = \{[^}]+\};\s+end\)\(\);", source):
+        errors.append("native gate references require a one-time isolated HavokScript register frame")
+    for name in callbacks:
+        definition = source.find(f"function {name}(")
+        if not 0 <= definition < binding_start:
+            errors.append(f"{name}: evaluator must be defined before binding its function reference")
+    for name in ("ASAI_IsNativeExecutionBlocked", "ASAI_IsNativeExecutionAllowed"):
+        if source.find(f"GameEvents.{name}.Add({name});") <= binding_start:
+            errors.append(f"{name}: native entry point registered before all evaluators are bound")
     definitions = connection.execute(
         "SELECT GateId, StrategyType, Callback FROM ASAI_ExecutionGateDefinitions ORDER BY GateId"
     ).fetchall()
@@ -3278,6 +3293,7 @@ def validate_responsive_execution(
     if callbacks != [row[2] for row in definitions]:
         errors.append("SQL gate IDs and Lua evaluators do not match")
     for fragment in ("Execution.NativeGateSlots = 12;", "Execution.NativeGateReuseTurns = 22;",
+                     "local callback = Execution.NativeGateEvaluators[family];",
                      'if not IsMajorAI(playerID) then return true; end',
                      'prefix .. "REUSE_"', 'prefix .. "TURN"', "native_state=unobserved"):
         if fragment not in source:
@@ -3285,7 +3301,7 @@ def validate_responsive_execution(
     gate_source = source.split("function Execution.SelectNativeGate(", 1)[-1].split(
         "function Execution.WriteDiagnostics(", 1)[0]
     for forbidden in ("ScaleStandardTurns(", "RequestCommand(", "RequestOperation(", "GetCities(",
-                      "CreateUnit(", "AttachModifier", "Map.GetPlot("):
+                      "CreateUnit(", "AttachModifier", "Map.GetPlot(", "_G[", "_G.", "_ENV", "getfenv("):
         if forbidden in gate_source:
             errors.append(f"gate routing must not scan cities, scale cooldown or bypass native actions: {forbidden}")
     for gate_id, parent, callback in definitions:

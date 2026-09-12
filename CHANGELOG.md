@@ -1,6 +1,25 @@
 # Changelog
 
+## 0.11.22 — Execution callback compatibility fix
+
+- Fixed a runtime error that prevented the responsive execution strategies
+  from activating after the gameplay script loaded. Their dispatch now uses
+  direct function references instead of looking up callbacks through `_G`.
+- Bind all 17 callback families after their definitions and before registering
+  the native gate entry points. Initialization remains in a separate,
+  one-time function scope for HavokScript compatibility.
+- Added full-script regression coverage with `_G` absent or unusable, including
+  activation, release, cooldown-safe re-entry, reloads and collector failures.
+- Preserved strategy counts, cooldowns, army requirements, era bonuses and
+  catch-up rules. Existing saves can be continued after restarting the game.
+
+Local regression and compiler checks do not replace native verification of
+strategy activation and actual production orders.
+
 ## 0.11.21 — Compiler compatibility fix
+
+Superseded by 0.11.22: compilation was fixed, but native continuation exposed
+a separate runtime callback lookup failure.
 
 - Fixed a gameplay script loading failure introduced in 0.11.20: the native
   gate callback table exceeded HavokScript's top-level register limit. Its
