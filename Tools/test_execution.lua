@@ -52,6 +52,20 @@ assert(loadfile("Lua/AdaptiveStrategicAI.lua", "t", env))();
 local E = upvalue(env.ASAI_IsEducationPrerequisite, "Execution");
 local S = upvalue(env.GameEvents.CityConquered.Callbacks[1], "Strategic");
 
+-- The HavokScript-safe initializer must actually run, preserving the complete
+-- family mapping and existing behavior. No per-turn initializer is installed.
+do
+    local seen = {};
+    equal(#E.NativeGateCallbacks, 17, "isolated initializer preserves all native gate families");
+    equal(E.NativeGateSlots, 12, "native gate identity pool remains unchanged");
+    equal(E.NativeGateReuseTurns, 22, "native gate reuse remains unchanged");
+    for _, name in ipairs(E.NativeGateCallbacks) do
+        check(not seen[name] and type(env[name]) == "function",
+            "isolated initializer installs one existing callback: " .. name);
+        seen[name] = true;
+    end
+end
+
 -- War outcomes: global enemy decline is diagnostic-only, including the
 -- observed Maori T82 case and a same-count/different-opponent case.
 local state = { StrategicPlanBaselineOpponents = "2:4" };

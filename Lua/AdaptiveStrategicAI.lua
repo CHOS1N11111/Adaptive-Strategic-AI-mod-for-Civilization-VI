@@ -8746,16 +8746,21 @@ end
 -- Must match ASAI_ExecutionGateDefinitions in 28_ResponsiveExecution.sql.
 -- Do not scale this interval with game speed: it protects native strategy
 -- identity cooldown, not gameplay pacing. A stable request keeps its slot.
-Execution.NativeGateCallbacks = {
-    "ASAI_IsLandRecovery", "ASAI_IsRangedReinforcement",
-    "ASAI_IsWritingPrerequisite", "ASAI_IsEducationPrerequisite",
-    "ASAI_IsLaboratoryPrerequisite", "ASAI_IsScienceConstructionExecution",
-    "ASAI_IsScienceProductionShareExecution", "ASAI_IsScienceCapacityExecution",
-    "ASAI_IsMinorFrontRecoveryExecution", "ASAI_IsCampusDemand",
-    "ASAI_IsAntiCavalryDemand", "ASAI_IsUrgentLandDemand",
-    "ASAI_IsCampusSlotPressure", "ASAI_IsOrbitalLaserDemand",
-    "ASAI_IsTerrestrialLaserDemand", "ASAI_IsLaserPowerDemand", "ASAI_IsLaserPortHandoff"
-};
+-- HavokScript needs constructor temporaries in addition to the long-lived
+-- locals in this chunk. Give initialization its own register frame; this
+-- one-time closure does not remain in a callback or run during turn updates.
+(function()
+    Execution.NativeGateCallbacks = {
+        "ASAI_IsLandRecovery", "ASAI_IsRangedReinforcement",
+        "ASAI_IsWritingPrerequisite", "ASAI_IsEducationPrerequisite",
+        "ASAI_IsLaboratoryPrerequisite", "ASAI_IsScienceConstructionExecution",
+        "ASAI_IsScienceProductionShareExecution", "ASAI_IsScienceCapacityExecution",
+        "ASAI_IsMinorFrontRecoveryExecution", "ASAI_IsCampusDemand",
+        "ASAI_IsAntiCavalryDemand", "ASAI_IsUrgentLandDemand",
+        "ASAI_IsCampusSlotPressure", "ASAI_IsOrbitalLaserDemand",
+        "ASAI_IsTerrestrialLaserDemand", "ASAI_IsLaserPowerDemand", "ASAI_IsLaserPortHandoff"
+    };
+end)();
 Execution.NativeGateSlots = 12;
 Execution.NativeGateReuseTurns = 22;
 
