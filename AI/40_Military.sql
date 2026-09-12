@@ -86,6 +86,23 @@ SET MinNumber = 1,
 WHERE TeamName = 'City Attack Force'
   AND AiType = 'UNITTYPE_RANGED';
 
+-- UNITTYPE_RANGED also includes siege/recon/naval units. A bombard can
+-- therefore fill the previous "ranged" contract even with zero archers.
+-- Give these two LAND attack teams an explicit direct-ranged role. Preserve
+-- their existing 1-4 / 1-5 bounds and all other assembly requirements.
+-- Original unit roles remain intact for every other operation/tactical AI.
+INSERT OR IGNORE INTO UnitAiTypes (AiType) VALUES ('UNITTYPE_ASAI_DIRECT_RANGED');
+DELETE FROM UnitAiInfos WHERE AiType = 'UNITTYPE_ASAI_DIRECT_RANGED';
+INSERT INTO UnitAiInfos (UnitType, AiType)
+SELECT UnitType, 'UNITTYPE_ASAI_DIRECT_RANGED' FROM Units
+WHERE Domain = 'DOMAIN_LAND' AND PromotionClass = 'PROMOTION_CLASS_RANGED'
+  AND COALESCE(RangedCombat, 0) > 0
+  AND EXISTS (SELECT 1 FROM UnitAiInfos a WHERE a.UnitType = Units.UnitType
+              AND a.AiType = 'UNITAI_COMBAT');
+UPDATE OpTeamRequirements SET AiType = 'UNITTYPE_ASAI_DIRECT_RANGED'
+WHERE TeamName IN ('Simple City Attack Force', 'City Attack Force')
+  AND AiType = 'UNITTYPE_RANGED';
+
 UPDATE OpTeamRequirements
 SET MinNumber = 0,
     MaxNumber = 3

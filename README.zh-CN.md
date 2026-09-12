@@ -19,7 +19,7 @@
 
 ## 安装
 
-1. 下载并解压本仓库，将 Mod 文件夹放入：
+1. 下载并解压发布 ZIP（或本仓库），将 Mod 文件夹放入：
 
    ```text
    %USERPROFILE%\Documents\My Games\Sid Meier's Civilization VI\Mods
@@ -62,3 +62,5 @@
 通过 [GitHub Issues](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/issues) 反馈问题，请附上版本、游戏设置、启用的 Mod，以及相关 `Lua.log`、`Database.log` 和 `Modding.log`。
 
 [MIT License](LICENSE)
+
+[更新记录](CHANGELOG.md)

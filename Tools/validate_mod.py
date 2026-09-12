@@ -32,9 +32,17 @@ EXPANSION_ONLY_ITEMS = {
     "PSEUDOYIELD_DIPLOMATIC_VICTORY_POINT",
 }
 
-EXPECTED_RELEASE = "0.11.19"
-EXPECTED_MODINFO_VERSION = "41"
-EXPECTED_STRATEGIES = 65  # 54 live identities + 11 inert pre-R2 save identities.
+EXPECTED_RELEASE = "0.11.20"
+EXPECTED_MODINFO_VERSION = "42"
+EXPECTED_STRATEGIES = 269  # 37 ordinary + 17*12 pooled + 28 inert saved identities.
+
+
+def expected_strategy_owners(connection: sqlite3.Connection, strategy: str) -> set[tuple[str]]:
+    """Physical owners of one logical family; full pool wiring is checked separately."""
+    pooled = connection.execute(
+        "SELECT 1 FROM ASAI_ExecutionGateDefinitions WHERE StrategyType=?", (strategy,)
+    ).fetchone()
+    return {(f"{strategy}_S{slot}",) for slot in range(1, 13)} if pooled else {(strategy,)}
 
 
 def default_database() -> Path:
@@ -184,6 +192,15 @@ def validate_lua_functions(connection: sqlite3.Connection, lua_file: Path) -> li
     veto_functions = set(re.findall(
         r"function\s+(ASAI_Is[A-Za-z0-9_]+Disqualified)\s*\([^)]*\)\s*"
         r"return\s+Execution\.RunVeto\(", source))
+    native_veto = source.split("function ASAI_IsNativeExecutionBlocked(", 1)[-1].split(
+        "GameEvents.ASAI_IsNativeExecutionBlocked.Add", 1)[0]
+    if all(fragment in native_veto for fragment in
+           ("pcall(Execution.IsNativeBlocked, playerID, threshold)",
+            "if success then return result ~= false; end", "return true;")):
+        safe_functions.add("ASAI_IsNativeExecutionBlocked")
+        if re.search(r"function ASAI_IsNativeExecutionAllowed\([^)]*\)\s*"
+                     r"return not ASAI_IsNativeExecutionBlocked\(playerID, threshold\);", source):
+            safe_functions.add("ASAI_IsNativeExecutionAllowed")
     functions = connection.execute(
         """
         SELECT DISTINCT StringValue, Disqualifier
@@ -1187,7 +1204,7 @@ def validate_invariants(connection: sqlite3.Connection) -> list[str]:
     expected_city_attack_requirements = {
         "UNITTYPE_SIEGE": (0, 3),
         "UNITTYPE_SIEGE_ALL": (1, 4),
-        "UNITTYPE_RANGED": (1, 5),
+        "UNITTYPE_ASAI_DIRECT_RANGED": (1, 5),
         "UNITTYPE_AIR": (0, 3),
         "UNITTYPE_AIR_SIEGE": (0, 2),
     }
@@ -3019,7 +3036,7 @@ def validate_execution_recovery(connection: sqlite3.Connection, root: Path) -> l
     ):
         owners = list(connection.execute(
             "SELECT StrategyType FROM Strategy_Priorities WHERE ListType=?", (list_type,)))
-        if owners != [(strategy,)]:
+        if set(owners) != expected_strategy_owners(connection, strategy):
             errors.append(f"{list_type} must remain exclusive to its conditional strategy: {owners}")
     if connection.execute("SELECT 1 FROM AiFavoredItems "
                           "WHERE ListType='ASAI_ScienceLaserDistricts' AND Item='DISTRICT_SPACEPORT'").fetchone():
@@ -3085,11 +3102,15 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
             (full,),
         ).fetchall()
         expected = [
-            ("Call Lua Function", f"ASAI_Is{callback}", 0, 0, 0, 0),
+            ("Call Lua Function", "ASAI_IsRetiredStrategy", 0, 0, 0, 0),
             ("Is Not Major", None, 0, 0, 1, 0),
         ]
         if conditions != expected:
             errors.append(f"{full}: unsafe native lifecycle wiring: {conditions}")
+        if connection.execute(
+            "SELECT Callback FROM ASAI_ExecutionGateDefinitions WHERE StrategyType=?", (full,)
+        ).fetchone() != (f"ASAI_Is{callback}",):
+            errors.append(f"{full}: pooled evaluator differs from its previous eligibility")
         if connection.execute("SELECT NumConditionsNeeded FROM Strategies WHERE StrategyType=?",
                               (full,)).fetchone() != (1,):
             errors.append(f"{full}: must require its ordinary runtime condition")
@@ -3102,9 +3123,10 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
             errors.append(f"{old}: retired identity must be inert")
     if connection.execute(
         "SELECT 1 FROM StrategyConditions WHERE StrategyType LIKE 'ASAI_%' "
-        "AND ConditionFunction='Call Lua Function' AND (Disqualifier<>0 OR Forbidden<>0)"
+        "AND ConditionFunction='Call Lua Function' AND "
+        "(Disqualifier<>0 OR (Forbidden<>0 AND StringValue<>'ASAI_IsNativeExecutionBlocked'))"
     ).fetchone():
-        errors.append("dynamic Lua eligibility must not use irreversible native veto flags")
+        errors.append("only the fail-closed pooled callback may use temporary Forbidden; never Disqualifier")
 
     preferences = {
         ("ASAI_LandRecoverySpecialization", "BUILD_MILITARY_UNITS"): ("AiBuildSpecializations", -3),
@@ -3130,8 +3152,8 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
     for list_type, owner in owners.items():
         actual = connection.execute("SELECT StrategyType FROM Strategy_Priorities WHERE ListType=?",
                                     (list_type,)).fetchall()
-        if actual != [(owner + "_R2",)]:
-            errors.append(f"{list_type}: demand must have exactly one gated owner: {actual}")
+        if set(actual) != expected_strategy_owners(connection, owner + "_R2"):
+            errors.append(f"{list_type}: demand must belong to exactly one gated family: {actual}")
         unconditional = connection.execute(
             "SELECT 1 FROM AiLists WHERE ListType=? AND (LeaderType IS NOT NULL OR AgendaType IS NOT NULL)",
             (list_type,)).fetchone()
@@ -3188,10 +3210,12 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
             "SELECT ConditionFunction, StringValue, Disqualifier, Forbidden, Exclusive "
             "FROM StrategyConditions WHERE StrategyType=? ORDER BY ConditionFunction", (strategy,)
         ).fetchall()
-        if rows != [("Call Lua Function", callback, 0, 0, 0), ("Is Not Major", None, 1, 0, 0)]:
+        if rows != [("Call Lua Function", "ASAI_IsRetiredStrategy", 0, 0, 0), ("Is Not Major", None, 1, 0, 0)]:
             errors.append(f"{strategy}: invalid reversible preference gate: {rows}")
-        if not connection.execute("SELECT 1 FROM Strategy_Priorities WHERE StrategyType=?", (strategy,)).fetchone():
-            errors.append(f"{strategy}: no native preference wiring")
+        if connection.execute(
+            "SELECT Callback FROM ASAI_ExecutionGateDefinitions WHERE StrategyType=?", (strategy,)
+        ).fetchone() != (callback,):
+            errors.append(f"{strategy}: missing responsive execution family")
         unconditional = connection.execute(
             "SELECT 1 FROM Strategy_Priorities p JOIN AiLists l USING(ListType) WHERE p.StrategyType=? "
             "AND (l.LeaderType IS NOT NULL OR l.AgendaType IS NOT NULL)", (strategy,)
@@ -3237,6 +3261,103 @@ def validate_production_demands(connection: sqlite3.Connection, mod_root: Path) 
     return errors
 
 
+def validate_responsive_execution(
+    connection: sqlite3.Connection, mod_root: Path,
+    previous_priorities: dict[str, set[str]], previous_unit_roles: set[tuple[str, str]],
+) -> list[str]:
+    """Validate physical gate rows and native role contracts, not just callback names."""
+    errors: list[str] = []
+    source = (mod_root / "Lua/AdaptiveStrategicAI.lua").read_text(encoding="utf-8")
+    callback_block = source.split("Execution.NativeGateCallbacks = {", 1)[-1].split("};", 1)[0]
+    callbacks = re.findall(r'"(ASAI_Is\w+)"', callback_block)
+    definitions = connection.execute(
+        "SELECT GateId, StrategyType, Callback FROM ASAI_ExecutionGateDefinitions ORDER BY GateId"
+    ).fetchall()
+    if len(definitions) != 17 or [row[0] for row in definitions] != list(range(1, 18)):
+        errors.append("responsive gate families must have exactly 17 stable sequential IDs")
+    if callbacks != [row[2] for row in definitions]:
+        errors.append("SQL gate IDs and Lua evaluators do not match")
+    for fragment in ("Execution.NativeGateSlots = 12;", "Execution.NativeGateReuseTurns = 22;",
+                     'if not IsMajorAI(playerID) then return true; end',
+                     'prefix .. "REUSE_"', 'prefix .. "TURN"', "native_state=unobserved"):
+        if fragment not in source:
+            errors.append(f"missing cooldown-safe gate invariant: {fragment}")
+    gate_source = source.split("function Execution.SelectNativeGate(", 1)[-1].split(
+        "function Execution.WriteDiagnostics(", 1)[0]
+    for forbidden in ("ScaleStandardTurns(", "RequestCommand(", "RequestOperation(", "GetCities(",
+                      "CreateUnit(", "AttachModifier", "Map.GetPlot("):
+        if forbidden in gate_source:
+            errors.append(f"gate routing must not scan cities, scale cooldown or bypass native actions: {forbidden}")
+    for gate_id, parent, callback in definitions:
+        wanted = previous_priorities.get(parent, set())
+        if not wanted:
+            errors.append(f"{parent}: original native priorities were missing before migration")
+        if connection.execute("SELECT 1 FROM Strategy_Priorities WHERE StrategyType=?", (parent,)).fetchone():
+            errors.append(f"{parent}: retired owner would stack with its pool")
+        for slot in range(1, 13):
+            strategy = f"{parent}_S{slot}"
+            conditions = connection.execute(
+                "SELECT ConditionFunction, StringValue, ThresholdValue, Forbidden, Disqualifier, Exclusive "
+                "FROM StrategyConditions WHERE StrategyType=? ORDER BY ConditionFunction, Exclusive", (strategy,)
+            ).fetchall()
+            expected = [
+                ("Call Lua Function", "ASAI_IsNativeExecutionAllowed", gate_id * 100 + slot, 0, 0, 0),
+                ("Call Lua Function", "ASAI_IsNativeExecutionBlocked", gate_id * 100 + slot, 1, 0, 1),
+                ("Is Not Major", None, 0, 0, 1, 0),
+            ]
+            if conditions != expected:
+                errors.append(f"{strategy}: wrong temporary veto, polarity or slot ID: {conditions}")
+            if connection.execute(
+                "SELECT NumConditionsNeeded, VictoryType FROM Strategies WHERE StrategyType=?", (strategy,)
+            ).fetchone() != (1, None):
+                errors.append(f"{strategy}: must be independently gated, not an exclusive victory strategy")
+            actual = {r[0] for r in connection.execute(
+                "SELECT ListType FROM Strategy_Priorities WHERE StrategyType=?", (strategy,))}
+            if actual != wanted:
+                errors.append(f"{strategy}: native priority copy differs from the original family")
+            if connection.execute(
+                "SELECT 1 FROM Strategy_Priorities p JOIN AiLists l USING(ListType) WHERE p.StrategyType=? "
+                "AND (l.LeaderType IS NOT NULL OR l.AgendaType IS NOT NULL)", (strategy,)
+            ).fetchone():
+                errors.append(f"{strategy}: gated preferences also apply unconditionally")
+    role = "UNITTYPE_ASAI_DIRECT_RANGED"
+    if connection.execute("SELECT TypeValue, Priority FROM UnitAiTypes WHERE AiType=?", (role,)).fetchone() != (None, 0):
+        errors.append("direct-ranged role must be a normal dynamic UnitAiType, not a replacement for hardcoded UNITAI")
+    expected_units = {r[0] for r in connection.execute(
+        "SELECT u.UnitType FROM Units u WHERE u.Domain='DOMAIN_LAND' "
+        "AND u.PromotionClass='PROMOTION_CLASS_RANGED' AND COALESCE(u.RangedCombat,0)>0 "
+        "AND EXISTS (SELECT 1 FROM UnitAiInfos a WHERE a.UnitType=u.UnitType AND a.AiType='UNITAI_COMBAT')")}
+    actual_units = {r[0] for r in connection.execute("SELECT UnitType FROM UnitAiInfos WHERE AiType=?", (role,))}
+    if not expected_units or expected_units != actual_units:
+        errors.append("direct-ranged contract membership omits eligible standard/unique units or includes another class")
+    retained_roles = set(connection.execute("SELECT UnitType, AiType FROM UnitAiInfos WHERE AiType<>?", (role,)))
+    if retained_roles != previous_unit_roles:
+        errors.append("role fix must preserve every original unit tag for tactics and other operations")
+    for team, upper in (("Simple City Attack Force", 4), ("City Attack Force", 5)):
+        if connection.execute(
+            "SELECT MinNumber, MaxNumber, MinPercentage, MaxPercentage FROM OpTeamRequirements "
+            "WHERE TeamName=? AND AiType=?", (team, role)
+        ).fetchone() != (1, upper, 0, 1):
+            errors.append(f"{team}: direct-ranged slot must retain its existing flexible bounds")
+        if connection.execute(
+            "SELECT 1 FROM OpTeamRequirements WHERE TeamName=? AND AiType='UNITTYPE_RANGED'", (team,)
+        ).fetchone():
+            errors.append(f"{team}: broad ranged slot remains and could duplicate the contract")
+    if connection.execute(
+        "SELECT 1 FROM OpTeamRequirements WHERE AiType=? "
+        "AND TeamName NOT IN ('Simple City Attack Force','City Attack Force')", (role,)
+    ).fetchone():
+        errors.append("direct-ranged role must not change early attacks, naval teams or civilian escorts")
+    # Specific latest-game counterexamples and a unique replacement.
+    for unit in ("UNIT_CROSSBOWMAN", "UNIT_FIELD_CANNON", "UNIT_MACHINE_GUN", "UNIT_VIETNAMESE_VOI_CHIEN"):
+        if connection.execute("SELECT 1 FROM Units WHERE UnitType=?", (unit,)).fetchone() and unit not in actual_units:
+            errors.append(f"native ranged order cannot request {unit}")
+    for unit in ("UNIT_BOMBARD", "UNIT_PIKE_AND_SHOT", "UNIT_RANGER", "UNIT_FRIGATE", "UNIT_JET_BOMBER"):
+        if unit in actual_units:
+            errors.append(f"{unit} incorrectly satisfies the new direct-ranged contract")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Adaptive Strategic AI without modifying the game cache.")
     parser.add_argument("--db", type=Path, default=default_database())
@@ -3273,9 +3394,15 @@ def main() -> int:
             baseline_fk = foreign_key_errors(target)
             default_specializations = list(target.execute(
                 "SELECT * FROM AiFavoredItems WHERE ListType='DefaultCitySpecialization' ORDER BY Item"))
+            previous_unit_roles = set(target.execute(
+                "SELECT UnitType, AiType FROM UnitAiInfos WHERE AiType<>'UNITTYPE_ASAI_DIRECT_RANGED'"))
+            previous_priorities: dict[str, set[str]] = {}
             target.execute("PRAGMA foreign_keys = ON")
             for sql_file in database_files(modinfo):
                 try:
+                    if sql_file.name == "28_ResponsiveExecution.sql":
+                        for strategy, list_type in target.execute("SELECT StrategyType, ListType FROM Strategy_Priorities"):
+                            previous_priorities.setdefault(strategy, set()).add(list_type)
                     target.executescript(sql_file.read_text(encoding="utf-8"))
                 except (OSError, sqlite3.Error) as error:
                     errors.append(f"{sql_file.name}: {error}")
@@ -3289,6 +3416,7 @@ def main() -> int:
                 errors.extend(validate_relative_pacing(target))
                 errors.extend(validate_execution_recovery(target, mod_root))
                 errors.extend(validate_production_demands(target, mod_root))
+                errors.extend(validate_responsive_execution(target, mod_root, previous_priorities, previous_unit_roles))
                 if list(target.execute(
                     "SELECT * FROM AiFavoredItems WHERE ListType='DefaultCitySpecialization' ORDER BY Item"
                 )) != default_specializations:

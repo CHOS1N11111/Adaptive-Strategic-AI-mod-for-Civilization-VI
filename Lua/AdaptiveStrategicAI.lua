@@ -232,7 +232,7 @@ local Diagnostics = {
     UnavailableSensors = {}
 };
 -- Outcome helpers share a namespace rather than consuming chunk-level locals.
-local Execution = { Cache = {}, ConditionChecks = {} };
+local Execution = { Cache = {}, ConditionChecks = {}, NativeGates = {} };
 local RELATIVE_TREND_PROPERTIES = {
     Overall = "ASAI_RELATIVE_TREND_X1000",
     Science = "ASAI_RELATIVE_SCIENCE_TREND_X1000",
@@ -8663,6 +8663,14 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
         end
         Execution.RecordProductionDemand(player, result, "land", result.LandNeeded,
             economic.QueueOk == 1 and (economic.Queue.Land or 0) or nil, result.Land, 0, turn);
+        for _, role in ipairs({ "ranged", "siege", "anticavalry" }) do
+            local requested = role == "ranged" and result.RangedNeeded and not result.AntiCavalryNeeded
+                or role == "siege" and result.SiegeNeeded
+                or role == "anticavalry" and result.AntiCavalryNeeded;
+            Execution.RecordProductionDemand(player, result, role, requested == true,
+                economic.QueueOk == 1 and (assets.Queued[role] or 0) or nil,
+                assets.Counts[role] or 0, 0, turn);
+        end
         for _, role in ipairs({ "campus", "library", "university", "laboratory" }) do
             Execution.RecordProductionDemand(player, result, role,
                 result.ScienceConstruction and result.ScienceConstructionRole == role,
@@ -8734,6 +8742,103 @@ function Execution.TraceCondition(name, playerID, result)
         "ASAI_CONDITION turn=%d player=%d condition=%s result=%d source=registered_callback engine_active=unknown",
         turn, playerID, name, result and 1 or 0));
 end
+
+-- Must match ASAI_ExecutionGateDefinitions in 28_ResponsiveExecution.sql.
+-- Do not scale this interval with game speed: it protects native strategy
+-- identity cooldown, not gameplay pacing. A stable request keeps its slot.
+Execution.NativeGateCallbacks = {
+    "ASAI_IsLandRecovery", "ASAI_IsRangedReinforcement",
+    "ASAI_IsWritingPrerequisite", "ASAI_IsEducationPrerequisite",
+    "ASAI_IsLaboratoryPrerequisite", "ASAI_IsScienceConstructionExecution",
+    "ASAI_IsScienceProductionShareExecution", "ASAI_IsScienceCapacityExecution",
+    "ASAI_IsMinorFrontRecoveryExecution", "ASAI_IsCampusDemand",
+    "ASAI_IsAntiCavalryDemand", "ASAI_IsUrgentLandDemand",
+    "ASAI_IsCampusSlotPressure", "ASAI_IsOrbitalLaserDemand",
+    "ASAI_IsTerrestrialLaserDemand", "ASAI_IsLaserPowerDemand", "ASAI_IsLaserPortHandoff"
+};
+Execution.NativeGateSlots = 12;
+Execution.NativeGateReuseTurns = 22;
+
+function Execution.SelectNativeGate(playerID, family, turn)
+    local key = tostring(playerID) .. ":" .. tostring(family);
+    local cached = Execution.NativeGates[key];
+    if cached ~= nil and cached.Turn == turn then return cached.Slot; end
+    -- Install a fail-closed result BEFORE any API or evaluator can throw.
+    cached = { Turn = turn, Slot = 0 };
+    Execution.NativeGates[key] = cached;
+    local player = Players[playerID];
+    local prefix = "ASAI_GATE_" .. tostring(family) .. "_";
+    local previous = GetStoredNumber(player, prefix .. "SLOT", 0);
+    if previous < 0 or previous > Execution.NativeGateSlots or previous % 1 ~= 0 then
+        error("invalid saved execution slot");
+    end
+    -- Reloading Lua in the same turn must not reevaluate and allocate twice.
+    if GetStoredNumber(player, prefix .. "TURN", -1) == turn then
+        cached.Slot = previous;
+        return previous;
+    end
+    local callback = _G[Execution.NativeGateCallbacks[family]];
+    if type(callback) ~= "function" then error("execution callback unavailable"); end
+    local ok, value = pcall(callback, playerID, 0);
+    local desired = ok and value == true;
+    if not ok and not m_ConditionErrors.ASAI_NativeGateEvaluator then
+        m_ConditionErrors.ASAI_NativeGateEvaluator = true;
+        print("ASAI_ERROR condition=ASAI_NativeGateEvaluator fallback=release error=" .. tostring(value));
+    end
+    local selected = previous;
+    if not desired and previous > 0 then
+        player:SetProperty(prefix .. "REUSE_" .. tostring(previous),
+            turn + Execution.NativeGateReuseTurns);
+        selected = 0;
+    elseif desired and previous == 0 then
+        for slot = 1, Execution.NativeGateSlots do
+            if turn >= GetStoredNumber(player, prefix .. "REUSE_" .. tostring(slot), -1) then
+                selected = slot;
+                break;
+            end
+        end
+    end
+    player:SetProperty(prefix .. "SLOT", selected);
+    player:SetProperty(prefix .. "TURN", turn);
+    cached.Slot = selected;
+    -- One transition receipt per family, never twelve per-slot receipts.
+    -- Selection is NOT a claim that a native strategy/order was observed.
+    if (selected ~= previous or desired and selected == 0)
+        and GetNumberParameter("ASAI_ENABLE_METRICS", 0) == 1 then
+        print(string.format(
+            "ASAI_NATIVE_GATE turn=%d player=%d family=%d condition=%s desired=%d previous_slot=%d selected_slot=%d reuse_turns=%d native_state=unobserved",
+            turn, playerID, family, Execution.NativeGateCallbacks[family],
+            desired and 1 or 0, previous, selected, Execution.NativeGateReuseTurns));
+    end
+    return selected;
+end
+
+function Execution.IsNativeBlocked(playerID, threshold)
+    if not IsMajorAI(playerID) then return true; end
+    local encoded = tonumber(threshold);
+    if encoded == nil or encoded % 1 ~= 0 then return true; end
+    local family, slot = math.floor(encoded / 100), encoded % 100;
+    if Execution.NativeGateCallbacks[family] == nil or slot < 1
+        or slot > Execution.NativeGateSlots then return true; end
+    return Execution.SelectNativeGate(playerID, family, Game.GetCurrentGameTurn()) ~= slot;
+end
+
+function ASAI_IsNativeExecutionBlocked(playerID, threshold)
+    -- Unlike an ordinary positive condition, a veto MUST return true on an
+    -- error. Returning false here would accidentally admit every spare slot.
+    local success, result = pcall(Execution.IsNativeBlocked, playerID, threshold);
+    if success then return result ~= false; end
+    if not m_ConditionErrors.ASAI_NativeExecutionGate then
+        m_ConditionErrors.ASAI_NativeExecutionGate = true;
+        print("ASAI_ERROR condition=ASAI_IsNativeExecutionBlocked fallback=true error=" .. tostring(result));
+    end
+    return true;
+end
+GameEvents.ASAI_IsNativeExecutionBlocked.Add(ASAI_IsNativeExecutionBlocked);
+function ASAI_IsNativeExecutionAllowed(playerID, threshold)
+    return not ASAI_IsNativeExecutionBlocked(playerID, threshold);
+end
+GameEvents.ASAI_IsNativeExecutionAllowed.Add(ASAI_IsNativeExecutionAllowed);
 
 function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
     if not firstTimeThisTurn or not IsMajorAI(playerID)

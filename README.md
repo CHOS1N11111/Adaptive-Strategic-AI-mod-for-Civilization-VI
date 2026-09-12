@@ -19,7 +19,7 @@ The mod adjusts AI priorities and bonuses. It does not spawn free units or grant
 
 ## Install
 
-1. Download and extract this repository into your Civilization VI `Mods` directory:
+1. Download and extract a release ZIP (or this repository) into your Civilization VI `Mods` directory:
 
    ```text
    %USERPROFILE%\Documents\My Games\Sid Meier's Civilization VI\Mods
@@ -62,3 +62,5 @@ The strong tier replaces the mild tier; they do not stack, and support ends afte
 [Report an issue](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/issues) with your mod version, game settings, enabled mods, and relevant `Lua.log`, `Database.log`, and `Modding.log` files.
 
 [MIT License](LICENSE)
+
+[Release notes](CHANGELOG.md)

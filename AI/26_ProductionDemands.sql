@@ -84,3 +84,5 @@ WHERE (ListType IN ('ASAI_ProductionShareSpecialization',
 -- Temporary requests use ordinary conditions. A native Disqualifier was
 -- observed to stop subsequent evaluations after the first veto in 0.11.17.
 -- 27_ExecutionFeasibility migrates those saved strategy identities.
+-- 28_ResponsiveExecution subsequently replaces the slow ordinary gates with
+-- pooled temporary Forbidden vetoes. Forbidden and Disqualifier are distinct.
