@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0 — Initial release
+
+- Initial 1.0 release of Adaptive Strategic AI for Civilization VI: Gathering Storm.
+- Includes era-scaled Deity bonuses, bounded catch-up, and adaptive development,
+  military and victory priorities.
+- Carries forward the responsive strategy and runtime compatibility fixes from
+  0.11.22, with no additional AI behavior or balance changes.
+- Uses the final `v1.0.0` package name. Local testing and packaging utilities
+  are excluded from the public repository and player downloads.
+
 ## 0.11.22 — Execution callback compatibility fix
 
 - Fixed a runtime error that prevented the responsive execution strategies

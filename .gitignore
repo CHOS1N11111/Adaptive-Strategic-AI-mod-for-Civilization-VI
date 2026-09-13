@@ -5,3 +5,6 @@ __pycache__/
 
 # Internal development documentation, research, test reports, and session data.
 docs/
+
+# Local development, testing, and packaging utilities; not used by the game.
+/Tools/
