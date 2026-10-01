@@ -1,5 +1,9 @@
 [English](README.md) | **简体中文**
 
+[![Steam 创意工坊](https://img.shields.io/badge/Steam%20Workshop-订阅-1b2838?logo=steam&logoColor=white)](https://steamcommunity.com/sharedfiles/filedetails/?id=3800723472)
+[![最新版本](https://img.shields.io/github/v/release/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI?label=最新版本)](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/releases/latest)
+[![许可证：MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 # Adaptive Strategic AI
 
 面向 **《文明 VI：风云变幻》** 的 AI 增强 Mod：让**神级**对局不只是熬过开局，而是在发展、战争和胜利冲刺中持续面对竞争。
@@ -17,16 +21,28 @@
   <img src="assets/cover.jpg" alt="Adaptive Strategic AI 封面" width="480">
 </p>
 
+两张来自测试对局的游戏截图保存在 `assets/` 目录中。
+
 ## 安装
 
-1. 下载并解压发布 ZIP（或本仓库），将 Mod 文件夹放入：
+### Steam 创意工坊（推荐）
 
-   ```text
-   %USERPROFILE%\Documents\My Games\Sid Meier's Civilization VI\Mods
-   ```
+1. 在 Steam 中打开《Sid Meier's Civilization VI》的创意工坊页面。
+2. 搜索 **Adaptive Strategic AI**，也可以按作者 **CHOS1N11111** 查找，然后打开标题和封面匹配的条目。
+3. 点击“**订阅**”，等待 Steam 完成下载。
+4. 启动《文明 VI》，打开“**额外内容 → 模组**”，启用 **Adaptive Strategic AI**。选择“**风云变幻**”规则集、“**神级**”难度并新建游戏。
 
-2. 确认文件夹内直接包含 `AdaptiveStrategicAI.modinfo`，在游戏“**额外内容 → 模组**”中启用 **Adaptive Strategic AI**。
-3. 选择“**风云变幻**”规则集、“**神级**”难度并新建游戏。
+也可以直接打开：[Adaptive Strategic AI 创意工坊页面](https://steamcommunity.com/sharedfiles/filedetails/?id=3800723472)。
+
+### 手动安装
+
+下载并解压发布 ZIP（或本仓库），将 Mod 文件夹放入：
+
+```text
+%USERPROFILE%\Documents\My Games\Sid Meier's Civilization VI\Mods
+```
+
+确认文件夹内直接包含 `AdaptiveStrategicAI.modinfo`，在游戏“**额外内容 → 模组**”中启用 **Adaptive Strategic AI**，选择“**风云变幻**”规则集、“**神级**”难度并新建游戏。
 
 ## 运作方式与关键数值
 
@@ -59,8 +75,4 @@
 
 ## 反馈
 
-通过 [GitHub Issues](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/issues) 反馈问题，请附上版本、游戏设置、启用的 Mod，以及相关 `Lua.log`、`Database.log` 和 `Modding.log`。
-
-[MIT License](LICENSE)
-
-[更新记录](CHANGELOG.md)
+如果遇到问题，欢迎在 [Steam 创意工坊页面](https://steamcommunity.com/sharedfiles/filedetails/?id=3800723472)留言，或通过 [GitHub Issues](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/issues) 反馈。提供 Mod 版本、游戏设置、启用的 Mod、复现步骤、截图，以及相关的 `Lua.log`、`Database.log` 或 `Modding.log`，会很有助于排查。

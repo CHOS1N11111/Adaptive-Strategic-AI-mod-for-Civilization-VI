@@ -1,5 +1,9 @@
 **English** | [简体中文](README.zh-CN.md)
 
+[![Steam Workshop](https://img.shields.io/badge/Steam%20Workshop-Subscribe-1b2838?logo=steam&logoColor=white)](https://steamcommunity.com/sharedfiles/filedetails/?id=3800723472)
+[![Latest Release](https://img.shields.io/github/v/release/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI?label=Latest%20release)](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 # Adaptive Strategic AI
 
 A **Civilization VI: Gathering Storm** AI mod designed to keep **Deity** competitive beyond the opening—through development, war, and the race to victory.
@@ -17,16 +21,28 @@ The mod adjusts AI priorities and bonuses. It does not spawn free units or grant
   <img src="assets/cover.jpg" alt="Adaptive Strategic AI cover" width="480">
 </p>
 
+Two gameplay screenshots from test games are included in `assets/`.
+
 ## Install
 
-1. Download and extract a release ZIP (or this repository) into your Civilization VI `Mods` directory:
+### Steam Workshop (recommended)
 
-   ```text
-   %USERPROFILE%\Documents\My Games\Sid Meier's Civilization VI\Mods
-   ```
+1. Open the **Sid Meier's Civilization VI** Workshop page in Steam.
+2. Search for **Adaptive Strategic AI** (or search by author **CHOS1N11111**) and open the item with the matching title and cover.
+3. Click **Subscribe** and wait for Steam to finish downloading the Mod.
+4. Launch Civilization VI, open **Additional Content → Mods**, and enable **Adaptive Strategic AI**. Choose **Gathering Storm**, select **Deity**, and start a new game.
 
-2. Check that `AdaptiveStrategicAI.modinfo` is directly inside the extracted mod folder. Enable **Adaptive Strategic AI** in **Additional Content → Mods**.
-3. Choose **Gathering Storm**, select **Deity**, and start a new game.
+You can also open the direct Workshop page: [Adaptive Strategic AI](https://steamcommunity.com/sharedfiles/filedetails/?id=3800723472).
+
+### Manual installation
+
+Download and extract a release ZIP (or this repository) into your Civilization VI `Mods` directory:
+
+```text
+%USERPROFILE%\Documents\My Games\Sid Meier's Civilization VI\Mods
+```
+
+Check that `AdaptiveStrategicAI.modinfo` is directly inside the extracted mod folder. Enable **Adaptive Strategic AI** in **Additional Content → Mods**, choose **Gathering Storm**, select **Deity**, and start a new game.
 
 ## How It Works
 
@@ -59,8 +75,4 @@ The strong tier replaces the mild tier; they do not stack, and support ends afte
 
 ## Feedback
 
-[Report an issue](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/issues) with your mod version, game settings, enabled mods, and relevant `Lua.log`, `Database.log`, and `Modding.log` files.
-
-[MIT License](LICENSE)
-
-[Release notes](CHANGELOG.md)
+If you run into a problem, please leave a comment on the [Steam Workshop page](https://steamcommunity.com/sharedfiles/filedetails/?id=3800723472) or [open a GitHub issue](https://github.com/CHOS1N11111/Adaptive-Strategic-AI-mod-for-Civilization-VI/issues). Your mod version, game settings, enabled mods, reproduction steps, screenshots, and relevant `Lua.log`, `Database.log`, or `Modding.log` files can be very helpful for diagnosis.
