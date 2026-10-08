@@ -280,8 +280,20 @@ local function WriteExecutionProbes(player, sampleTurn, observedTurn)
     local rawDefenseTurn = player:GetProperty("ASAI_DEFENSE_BUILD_TURN");
     local defenseCity, defenseTurn = tonumber(rawDefenseCity) or -1, tonumber(rawDefenseTurn) or -1;
     local defenseProbes = 0;
+    local recovery = {};
+    for _, prefix in ipairs({ "ASAI_FINANCE_BUILD", "ASAI_CULTURE_BUILD" }) do
+        local name = player:GetProperty(prefix .. "_TYPE");
+        local info = TypedRow("Districts", name, "DistrictType") or TypedRow("Buildings", name, "BuildingType");
+        local rawCity = player:GetProperty(prefix .. "_CITY");
+        local rawTurn = player:GetProperty(prefix .. "_TURN");
+        if info ~= nil then
+            table.insert(recovery, { Prefix = prefix, Name = name, Info = info,
+                City = tonumber(rawCity) or -1, Turn = tonumber(rawTurn) or -1 });
+        end
+    end
     -- Existing telemetry still works with missing DLC/type tables.
-    if trader == nil and port == nil and scienceBuild == nil and defenseUnit == nil then return; end
+    if trader == nil and port == nil and scienceBuild == nil and defenseUnit == nil
+        and #recovery == 0 then return; end
     local trade;
     pcall(function() trade = player:GetTrade(); end);
     local capacity = ReadNumber(trade, "GetOutgoingRouteCapacity");
@@ -316,6 +328,21 @@ local function WriteExecutionProbes(player, sampleTurn, observedTurn)
             local queue = city:GetBuildQueue();
             local currentOk, current = pcall(CurrentItem, city);
             if not currentOk then current = "unknown"; end
+            -- At most the two nominated cities; these probes never write a
+            -- property, issue a command, or claim the candidate was ordered.
+            for _, request in ipairs(recovery) do
+                if city:GetID() == request.City and request.Turn == sampleTurn then
+                    ExecutionProbe("economic_build", id, city:GetID(), observedTurn, function()
+                        local kind = request.Info.DistrictType ~= nil and "District" or "Building";
+                        local probe = ProbeProduction(queue, request.Info, kind);
+                        print(string.format(
+                            "ASAI_UI_ECONOMIC_BUILD turn=%d observed_turn=%d player=%d city=%d family=%s type=%s can_produce=%d visible=%d reasons=%s cost=%.1f progress=%.1f current=%s nomination_turn=%d assignment=native source=ui",
+                            sampleTurn, observedTurn, id, city:GetID(), request.Prefix, Token(request.Name),
+                            probe.Can, probe.Visible, probe.Reason, probe.Cost, probe.Progress,
+                            current, request.Turn));
+                    end);
+                end
+            end
             if defenseUnit ~= nil and (city:GetID() == defenseCity or defenseProbes < 3) then
                 defenseProbes = defenseProbes + 1;
                 ExecutionProbe("defense_build", id, city:GetID(), observedTurn, function()

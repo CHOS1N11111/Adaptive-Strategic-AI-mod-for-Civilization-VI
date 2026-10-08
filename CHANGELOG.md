@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.1 — Economic and construction recovery
+
+- Financial recovery requires sustained positive cash flow and a reserve before
+  exiting, and can re-enter promptly after a renewed deficit.
+- Added conditional economic-building and district requests, with limited
+  production budgets and temporary retries for stalled candidate cities.
+  Upkeep restraint protects active wars, recent losses and minimum defense.
+- Education and Chemistry research priorities can run alongside construction
+  of already-unlocked science facilities.
+- Persistent cultural shortfalls can request monuments, theaters and cultural
+  buildings, with separate civic prerequisites and production verification.
+- Added read-only diagnostics for financial and cultural construction candidates.
+  Global difficulty bonuses and direct catch-up yield caps are unchanged.
+
 ## 1.0.0 — Initial release
 
 - Initial 1.0 release of Adaptive Strategic AI for Civilization VI: Gathering Storm.

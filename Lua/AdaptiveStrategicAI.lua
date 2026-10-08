@@ -1467,9 +1467,7 @@ local function IsGoldRecovery(playerID, threshold)
     if not IsMajorAI(playerID) then
         return false;
     end
-    local snapshot = GetSnapshot(playerID);
-    local reservePerCity = GetNumberParameter("ASAI_GOLD_RESERVE_PER_CITY", 15);
-    return snapshot.NetGold < 0 and snapshot.GoldBalance < snapshot.Cities * reservePerCity;
+    return Execution.IsFinanceRecovery(playerID);
 end
 function ASAI_IsGoldRecovery(playerID, threshold)
     return RunStrategyCondition(
@@ -7436,7 +7434,11 @@ function Execution.EmptyStatus(turn)
         ScienceConstructionQueued = 0, ScienceConstructionAge = 0,
         ScienceConstructionGain = 0, ScienceCandidateCity = -1,
         MilitaryShare = false, MinorActive = 0, MinorActionable = 0,
-        MinorCooling = 0, MinorStopLoss = false, MinorSensorOk = 1, Demands = {}
+        MinorCooling = 0, MinorStopLoss = false, MinorSensorOk = 1, Demands = {},
+        FinanceActive = false, FinanceRestraint = false, FinanceStage = "none",
+        FinanceRole = "none", FinanceRequest = false, FinanceBudget = 0,
+        CultureStage = "none", CultureRole = "none", CultureRequest = false,
+        CultureBudget = 0, CulturePrerequisite = false
     };
 end
 
@@ -7464,6 +7466,17 @@ function Execution.GetDefinitions()
         elseif IsBuildingRole(info.BuildingType, "BUILDING_MARKET")
             or IsBuildingRole(info.BuildingType, "BUILDING_LIGHTHOUSE") then
             role = "trade_building";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_BANK") then
+            role = "bank";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_STOCK_EXCHANGE") then
+            role = "stock_exchange";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_MONUMENT") then
+            role = "monument";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_AMPHITHEATER") then
+            role = "amphitheater";
+        elseif IsBuildingRole(info.BuildingType, "BUILDING_MUSEUM_ART")
+            or IsBuildingRole(info.BuildingType, "BUILDING_MUSEUM_ARTIFACT") then
+            role = "museum";
         end
         add(info, "building", role);
     end
@@ -7476,6 +7489,8 @@ function Execution.GetDefinitions()
             role = "trade_district";
         elseif IsDistrictRole(info.DistrictType, "DISTRICT_SPACEPORT") then
             role = "spaceport";
+        elseif IsDistrictRole(info.DistrictType, "DISTRICT_THEATER") then
+            role = "theater";
         end
         add(info, "district", role);
     end
@@ -7547,7 +7562,8 @@ function Execution.CollectAssets(player)
         local row = { City = city, TradeBuildings = 0, Districts = {}, Placed = {}, Unfinished = {},
             Production = city:GetYield(GameInfo.Yields["YIELD_PRODUCTION"].Index) };
         local buildings = city:GetBuildings();
-        for _, role in ipairs({ "library", "university", "laboratory", "trade_building" }) do
+        for _, role in ipairs({ "library", "university", "laboratory", "trade_building",
+            "bank", "stock_exchange", "monument", "amphitheater", "museum" }) do
             for _, entry in ipairs(definitions.ByRole[role] or {}) do
                 if buildings:HasBuilding(entry.Info.Index) then
                     result.Counts[role] = result.Counts[role] + 1;
@@ -7771,7 +7787,7 @@ function Execution.CanBuild(assets, role)
     end
     local unknown = false;
     local rows = assets.Cities;
-    if role == "campus" then
+    if role == "campus" or role == "trade_district" or role == "theater" then
         local resumed, fresh = {}, {};
         for _, row in ipairs(rows) do
             local unfinished = false;
@@ -7805,6 +7821,9 @@ function Execution.CanBuild(assets, role)
         local cooling = role == "campus" and assets.Player.GetProperty ~= nil
             and Game.GetCurrentGameTurn() < GetStoredNumber(assets.Player,
                 "ASAI_CAMPUS_RETRY_UNTIL_" .. tostring(row.City:GetID()), -1);
+        cooling = cooling or (economic and assets.Player.GetProperty ~= nil
+            and Game.GetCurrentGameTurn() < GetStoredNumber(assets.Player,
+                "ASAI_RECOVERY_RETRY_" .. role .. "_" .. tostring(row.City:GetID()), -1));
         if not cooling and (not economic or not spaceCore)
             and (role ~= "trade_building" or row.TradeBuildings == 0) then
             for _, entry in ipairs(Execution.GetDefinitions().ByRole[role] or {}) do
@@ -7894,8 +7913,9 @@ function Execution.ScienceFacilityQueue(assets)
 end
 
 function Execution.UpdateScienceConstruction(player, snapshot, strength, assets, result, turn, state)
-    local role = result.ScienceGoal;
-    local physical = result.ScienceStage == "infrastructure" or result.ScienceStage == "inflight";
+    local role = result.ScienceBuildGoal or result.ScienceGoal;
+    local stage = result.ScienceBuildStage or result.ScienceStage;
+    local physical = stage == "infrastructure" or stage == "inflight";
     result.ScienceConstructionRole = physical and role or "none";
     result.ScienceConstructionGap = physical
         and Execution.ScienceFacilityGap(assets.Counts, role, snapshot.Cities) or 0;
@@ -7910,7 +7930,7 @@ function Execution.UpdateScienceConstruction(player, snapshot, strength, assets,
         and math.max(0, observedPrevious - previousCount) or 0;
     result.ScienceConstructionGain = gain;
     result.ScienceCompletedRole = gain > 0 and previousRole or "none";
-    result.ScienceConstruction = physical and result.ScienceStage == "infrastructure"
+    result.ScienceConstruction = physical and stage == "infrastructure"
         and result.ScienceConstructionGap > result.ScienceConstructionQueued
         and result.EconomyAllowed and result.ScienceCandidateCity >= 0;
     result.ScienceConstructionAge = Execution.UpdateTimer(player,
@@ -7933,6 +7953,25 @@ function Execution.UpdateScienceConstruction(player, snapshot, strength, assets,
     player:SetProperty("ASAI_SCIENCE_BUILD_TYPE",
         physical and ((assets.CandidateTypes or {})[role] or "") or "");
     player:SetProperty("ASAI_SCIENCE_BUILD_TURN", turn);
+end
+
+-- Research can remain on Education/Chemistry while an already unlocked
+-- facility is built. Do not invent a university candidate before its tech.
+function Execution.SelectScienceConstruction(hasTech, counts, cities)
+    if not hasTech("TECH_WRITING") then return "none", "none"; end
+    if (counts.campus or 0) == 0 then return "infrastructure", "campus"; end
+    local buildings = math.max(1, math.ceil((counts.campus or 0) * 0.65));
+    if (counts.library or 0) < buildings then return "infrastructure", "library"; end
+    if hasTech("TECH_EDUCATION") and (counts.university or 0) < buildings then
+        return "infrastructure", "university";
+    end
+    if (counts.campus or 0) < math.max(1, math.ceil(cities * 0.60)) then
+        return "infrastructure", "campus";
+    end
+    if hasTech("TECH_CHEMISTRY") and (counts.laboratory or 0) < buildings then
+        return "infrastructure", "laboratory";
+    end
+    return "none", "none";
 end
 
 function Execution.SelectScienceGoal(hasTech, counts, era, cities)
@@ -7990,6 +8029,155 @@ function Execution.ScienceFallback(assets, cities, era)
         return "laboratory_tech", "laboratory";
     end
     return "blocked", "campus";
+end
+
+-- Timers use saved turns, not callback counts, so repeated conditions/reloads
+-- cannot accelerate entry or release. Unknown treasury data never means zero.
+function Execution.FinanceState(player, snapshot, turn)
+    local previousTurn = GetStoredNumber(player, "ASAI_FINANCE_SAMPLE_TURN", -1);
+    if previousTurn >= 0 and (turn < previousTurn or turn > previousTurn + 1) then
+        player:SetProperty("ASAI_FINANCE_HEALTHY_SINCE", -1);
+        player:SetProperty("ASAI_FINANCE_DEFICIT_SINCE", -1);
+    end
+    player:SetProperty("ASAI_FINANCE_SAMPLE_TURN", turn);
+    local gold, income, cities = snapshot.GoldBalance, snapshot.NetGold, snapshot.Cities;
+    if type(gold) ~= "number" or type(income) ~= "number"
+        or type(cities) ~= "number" or cities < 1 then
+        player:SetProperty("ASAI_FINANCE_HEALTHY_SINCE", -1);
+        player:SetProperty("ASAI_FINANCE_DEFICIT_SINCE", -1);
+        return { Active = false, Known = false, Crisis = false, Reserve = 0 };
+    end
+    local reserve = cities * GetNumberParameter("ASAI_GOLD_RESERVE_PER_CITY", 15);
+    local deficit = income < 0 and gold < reserve;
+    local age = Execution.UpdateTimer(player, "ASAI_FINANCE_DEFICIT_SINCE", deficit, turn, false);
+    local active = GetStoredNumber(player, "ASAI_FINANCE_ACTIVE", 0) == 1;
+    local crisis = deficit and gold <= math.max(5, cities * 5);
+    if deficit and (crisis or age >= ScaleStandardTurns(
+        GetNumberParameter("ASAI_FINANCE_ENTER_STANDARD", 4))) then active = true; end
+    local healthy = income >= math.max(1, cities * 0.5) and gold >= reserve;
+    local healthyAge = Execution.UpdateTimer(player, "ASAI_FINANCE_HEALTHY_SINCE",
+        active and healthy, turn, false);
+    if active and healthy and healthyAge >= ScaleStandardTurns(
+        GetNumberParameter("ASAI_FINANCE_EXIT_STANDARD", 6)) then active = false; end
+    player:SetProperty("ASAI_FINANCE_ACTIVE", active and 1 or 0);
+    return { Active = active, Known = true, Crisis = crisis,
+        Gold = gold, NetGold = income, Reserve = reserve, DeficitAge = age, HealthyAge = healthyAge };
+end
+
+function Execution.RefreshRecoveryRetry(player, assets, queueOk, prefix, turn)
+    if queueOk ~= 1 then
+        player:SetProperty(prefix .. "_SINCE", -1);
+        return;
+    end
+    local role = player:GetProperty(prefix .. "_ROLE");
+    local city = GetStoredNumber(player, prefix .. "_CITY", -1);
+    local since = GetStoredNumber(player, prefix .. "_SINCE", -1);
+    local count = GetStoredNumber(player, prefix .. "_COUNT", -1);
+    local window = ScaleStandardTurns(GetNumberParameter("ASAI_PRODUCTION_DEMAND_REVIEW_STANDARD", 8));
+    if role ~= nil and role ~= "none" and city >= 0 and since >= 0
+        and turn - since >= window * 2 and (assets.Queued[role] or 0) == 0
+        and (assets.Counts[role] or 0) <= count then
+        player:SetProperty("ASAI_RECOVERY_RETRY_" .. role .. "_" .. tostring(city), turn + window * 2);
+        player:SetProperty(prefix .. "_SINCE", -1);
+    end
+end
+
+function Execution.ChooseRecoveryConstruction(assets, goals, queueOk, budget)
+    if queueOk ~= 1 then return "unknown_queue", "none"; end
+    local queued = 0;
+    for _, goal in ipairs(goals) do queued = queued + (assets.Queued[goal.Role] or 0); end
+    if queued >= budget then return "inflight", "none"; end
+    local gap, unknown = false, false;
+    for _, goal in ipairs(goals) do
+        if goal.Target > (assets.Counts[goal.Role] or 0) + (assets.Queued[goal.Role] or 0) then
+            gap = true;
+            local allowed, reason = Execution.CanBuild(assets, goal.Role);
+            if allowed then return "construction", goal.Role; end
+            unknown = unknown or reason == "unknown";
+        end
+    end
+    return unknown and "unknown_candidate" or (gap and "blocked" or "covered"), "none";
+end
+
+function Execution.PublishRecoveryConstruction(player, assets, prefix, stage, role, turn)
+    local active = stage == "construction";
+    local city = active and ((assets.CandidateCities or {})[role] or -1) or -1;
+    local previousRole = player:GetProperty(prefix .. "_ROLE");
+    local previousCity = GetStoredNumber(player, prefix .. "_CITY", -1);
+    local count = assets.Counts[role] or 0;
+    local gain = previousRole == role and count > GetStoredNumber(player, prefix .. "_COUNT", count);
+    local age = Execution.UpdateTimer(player, prefix .. "_SINCE", active, turn,
+        previousRole ~= role or previousCity ~= city or gain);
+    player:SetProperty(prefix .. "_ROLE", role);
+    player:SetProperty(prefix .. "_CITY", city);
+    player:SetProperty(prefix .. "_COUNT", count);
+    player:SetProperty(prefix .. "_TYPE", active and ((assets.CandidateTypes or {})[role] or "") or "");
+    player:SetProperty(prefix .. "_TURN", turn);
+    return age;
+end
+
+function Execution.UpdateEconomicConstruction(player, state, snapshot, strength, economic, assets, result, turn)
+    local finance = Execution.FinanceState(player, snapshot, turn);
+    result.Finance = finance;
+    result.FinanceActive = finance.Active;
+    result.FinanceBudget = result.Emergency and 1 or math.max(1, math.min(2, math.ceil(snapshot.Cities / 4)));
+    local financeGoals = {
+        { Role = "trade_building", Target = snapshot.Cities },
+        { Role = "bank", Target = assets.Counts.trade_building or 0 },
+        { Role = "stock_exchange", Target = assets.Counts.bank or 0 },
+        { Role = "trade_district", Target = snapshot.Cities }
+    };
+    Execution.RefreshRecoveryRetry(player, assets, economic.QueueOk, "ASAI_FINANCE_BUILD", turn);
+    if finance.Active and result.EconomyAllowed then
+        result.FinanceStage, result.FinanceRole = Execution.ChooseRecoveryConstruction(
+            assets, financeGoals, economic.QueueOk, result.FinanceBudget);
+    end
+    result.FinanceRequest = result.FinanceStage == "construction";
+    -- No cash-driven unit suppression on active fronts, recent losses or a
+    -- hollow army. This does not cancel native orders or emergency recruitment.
+    result.FinanceRestraint = finance.Active and finance.Known and finance.NetGold < 0
+        and snapshot.ActiveMajorWars == 0 and result.MinorSensorOk == 1
+        and result.MinorActive == 0 and not result.Emergency and not result.RecentAttrition
+        and Execution.LandUnits(strength) >= math.max(2, math.ceil(snapshot.Cities * 0.75));
+    result.FinanceRequestAge = Execution.PublishRecoveryConstruction(player, assets,
+        "ASAI_FINANCE_BUILD", result.FinanceStage, result.FinanceRole, turn);
+
+    local ratios = state.RawRatios or {};
+    local requested = (state.Recovery or {}).Culture == true
+        or state.Focus == RELATIVE_FOCUS_CULTURE or state.StrategicSupport == RELATIVE_FOCUS_CULTURE;
+    local known = type(ratios.Culture) == "number" and type(ratios.Civics) == "number";
+    local gap = known and (ratios.Culture < 0.90 or ratios.Civics < 0.98);
+    local age = Execution.UpdateTimer(player, "ASAI_CULTURE_BUILD_GAP_SINCE",
+        requested and gap, turn, false);
+    result.CultureBudget = result.Emergency and 1 or math.max(1, math.min(2, math.ceil(snapshot.Cities / 4)));
+    local cultureGoals = {
+        { Role = "monument", Target = math.max(1, math.ceil(snapshot.Cities * 0.75)) },
+        { Role = "amphitheater", Target = assets.Counts.theater or 0 },
+        { Role = "theater", Target = math.max(1, math.ceil(snapshot.Cities * 0.35)) },
+        { Role = "museum", Target = assets.Counts.amphitheater or 0 }
+    };
+    Execution.RefreshRecoveryRetry(player, assets, economic.QueueOk, "ASAI_CULTURE_BUILD", turn);
+    if requested and gap and result.EconomyAllowed and not finance.Crisis
+        and age >= ScaleStandardTurns(GetNumberParameter("ASAI_CULTURE_BUILD_DELAY_STANDARD", 4)) then
+        result.CultureStage, result.CultureRole = Execution.ChooseRecoveryConstruction(
+            assets, cultureGoals, economic.QueueOk, result.CultureBudget);
+        result.CulturePrerequisite = not ScienceExecution.HasCivic(player:GetCulture(), "CIVIC_DRAMA_POETRY");
+    end
+    result.CultureRequest = result.CultureStage == "construction";
+    result.CultureRequestAge = Execution.PublishRecoveryConstruction(player, assets,
+        "ASAI_CULTURE_BUILD", result.CultureStage, result.CultureRole, turn);
+    for _, goal in ipairs(financeGoals) do
+        Execution.RecordProductionDemand(player, result, goal.Role,
+            result.FinanceRequest and result.FinanceRole == goal.Role,
+            economic.QueueOk == 1 and (assets.Queued[goal.Role] or 0) or nil,
+            assets.Counts[goal.Role] or 0, (assets.Incomplete or {})[goal.Role] or 0, turn);
+    end
+    for _, goal in ipairs(cultureGoals) do
+        Execution.RecordProductionDemand(player, result, goal.Role,
+            result.CultureRequest and result.CultureRole == goal.Role,
+            economic.QueueOk == 1 and (assets.Queued[goal.Role] or 0) or nil,
+            assets.Counts[goal.Role] or 0, (assets.Incomplete or {})[goal.Role] or 0, turn);
+    end
 end
 
 function Execution.LandUnits(strength)
@@ -8578,39 +8766,47 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
             and (Execution.HasScienceDeficit(state, scienceSince >= 0) or result.ScienceHealth);
         result.ScienceAge = Execution.UpdateTimer(player,
             "ASAI_EXEC_SCIENCE_SINCE", scienceDeficit, turn, false);
+        local buildStage, buildGoal = Execution.SelectScienceConstruction(
+            function(name) return Execution.HasTech(player, name); end,
+            assets.Counts, snapshot.Cities);
+        local research = proposedStage == "writing" or proposedStage == "education"
+            or proposedStage == "laboratory_tech";
         result.ScienceQueueTarget = math.max(1, math.min(
             GetNumberParameter("ASAI_SCIENCE_CONSTRUCTION_MAX_CITIES", 3),
             math.ceil(snapshot.Cities * 0.25),
-            Execution.ScienceFacilityGap(assets.Counts, proposedGoal, snapshot.Cities)));
+            Execution.ScienceFacilityGap(assets.Counts, buildGoal, snapshot.Cities)));
         if result.Emergency then result.ScienceQueueTarget = 1; end
         if scienceDeficit and result.ScienceAge >= ScaleStandardTurns(
                 GetNumberParameter("ASAI_SCIENCE_BOTTLENECK_DELAY_STANDARD", 8))
             and result.EconomyAllowed then
             result.ScienceStage, result.ScienceGoal = proposedStage, proposedGoal;
-            if result.ScienceStage == "infrastructure" then
+            if buildStage == "infrastructure" then
                 if economic.QueueOk ~= 1 then
-                    result.ScienceStage = "unknown";
+                    buildStage = "unknown";
                 elseif Execution.ScienceFacilityQueue(assets) >= result.ScienceQueueTarget then
-                    result.ScienceStage = "inflight";
+                    buildStage = "inflight";
                 else
-                    local allowed, reason = Execution.CanBuild(assets, result.ScienceGoal);
-                    if not allowed and result.ScienceGoal == "campus" and reason ~= "unknown" then
-                        result.ScienceStage, result.ScienceGoal = Execution.ScienceFallback(
+                    local allowed, reason = Execution.CanBuild(assets, buildGoal);
+                    if not allowed and buildGoal == "campus" and reason ~= "unknown" then
+                        buildStage, buildGoal = Execution.ScienceFallback(
                             assets, snapshot.Cities, snapshot.Era);
                         result.ScienceQueueTarget = math.min(result.ScienceQueueTarget,
                             math.max(1, Execution.ScienceFacilityGap(assets.Counts,
-                                result.ScienceGoal, snapshot.Cities)));
-                    elseif not allowed then result.ScienceStage = reason or "unknown"; end
+                                buildGoal, snapshot.Cities)));
+                    elseif not allowed then buildStage = reason or "unknown"; end
                 end
             end
+            result.ScienceBuildStage, result.ScienceBuildGoal = buildStage, buildGoal;
+            if not research then result.ScienceStage, result.ScienceGoal = buildStage, buildGoal; end
         end
-        result.CampusSlotPressure = proposedGoal == "campus" and scienceDeficit
+        result.CampusSlotPressure = buildGoal == "campus" and scienceDeficit
             and result.ScienceAge >= ScaleStandardTurns(GetNumberParameter(
                 "ASAI_SCIENCE_BOTTLENECK_DELAY_STANDARD", 8))
             and result.EconomyAllowed and not result.Emergency and not result.RecentAttrition
             and (snapshot.ActiveMajorWars or 0) <= 0 and economic.QueueOk == 1
             and (assets.Queued.campus or 0) == 0;
         Execution.UpdateScienceConstruction(player, snapshot, strength, assets, result, turn, state);
+        Execution.UpdateEconomicConstruction(player, state, snapshot, strength, economic, assets, result, turn);
         local previousCapacity = GetStoredNumber(player,
             "ASAI_EXEC_TRADE_CAPACITY", snapshot.RouteCapacity);
         local capacityGap = math.max(0, GetTradeCapacityTarget(snapshot) - snapshot.RouteCapacity);
@@ -8688,8 +8884,16 @@ function Execution.Update(playerID, state, snapshot, strength, turn)
         player:SetProperty("ASAI_SCIENCE_BUILD_TYPE", "");
         player:SetProperty("ASAI_SCIENCE_BUILD_CITY", -1);
         player:SetProperty("ASAI_SCIENCE_BUILD_TURN", turn);
+        for _, prefix in ipairs({ "ASAI_FINANCE_BUILD", "ASAI_CULTURE_BUILD" }) do
+            player:SetProperty(prefix .. "_TYPE", "");
+            player:SetProperty(prefix .. "_CITY", -1);
+            player:SetProperty(prefix .. "_TURN", turn);
+            player:SetProperty(prefix .. "_SINCE", -1);
+        end
         -- A missing asset sample is not proof that production stayed idle.
-        for _, role in ipairs({ "land", "campus", "library", "university", "laboratory" }) do
+        for _, role in ipairs({ "land", "campus", "library", "university", "laboratory",
+            "trade_building", "trade_district", "bank", "stock_exchange",
+            "monument", "theater", "amphitheater", "museum" }) do
             player:SetProperty("ASAI_DEMAND_" .. string.upper(role) .. "_NO_ORDER_SINCE", -1);
         end
         if result.TraderStage == "candidate" then result.TraderStage = "unknown"; end
@@ -8732,7 +8936,8 @@ function Execution.TraceCondition(name, playerID, result)
     if not string.find(name, "Execution") and not string.find(name, "Prerequisite")
         and not string.find(name, "Reinforcement") and not string.find(name, "Disqualified")
         and not string.find(name, "Demand") and not string.find(name, "LandRecovery")
-        and not string.find(name, "Handoff") and not string.find(name, "SlotPressure") then return; end
+        and not string.find(name, "Handoff") and not string.find(name, "SlotPressure")
+        and not string.find(name, "GoldRecovery") and not string.find(name, "Finance") then return; end
     local turn = Game.GetCurrentGameTurn();
     local key = name .. ":" .. tostring(playerID);
     local last = Execution.ConditionChecks[key];
@@ -8758,7 +8963,10 @@ end
         "ASAI_IsMinorFrontRecoveryExecution", "ASAI_IsCampusDemand",
         "ASAI_IsAntiCavalryDemand", "ASAI_IsUrgentLandDemand",
         "ASAI_IsCampusSlotPressure", "ASAI_IsOrbitalLaserDemand",
-        "ASAI_IsTerrestrialLaserDemand", "ASAI_IsLaserPowerDemand", "ASAI_IsLaserPortHandoff"
+        "ASAI_IsTerrestrialLaserDemand", "ASAI_IsLaserPowerDemand", "ASAI_IsLaserPortHandoff",
+        "ASAI_IsGoldRecovery", "ASAI_IsFinanceBuildingDemand", "ASAI_IsFinanceDistrictDemand",
+        "ASAI_IsFinanceRestraint", "ASAI_IsCultureMonumentDemand", "ASAI_IsCultureTheaterDemand",
+        "ASAI_IsCultureBuildingDemand", "ASAI_IsCultureCivicPrerequisite"
     };
 end)();
 Execution.NativeGateSlots = 12;
@@ -8878,6 +9086,22 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
         result.ScienceConstructionAge, result.ScienceConstructionGain, result.ScienceCompletedRole or "none",
         result.ScienceCandidateCity, result.MilitaryShare and 1 or 0));
     print(string.format(
+        "ASAI_ECONOMIC_BUILD turn=%d player=%d finance_active=%d finance_stage=%s finance_role=%s finance_request=%d finance_budget=%d finance_age=%d finance_restraint=%d culture_stage=%s culture_role=%s culture_request=%d culture_budget=%d culture_age=%d culture_civic=%d science_research=%s science_build_stage=%s native_order=unverified",
+        result.Turn, playerID, result.FinanceActive and 1 or 0, result.FinanceStage,
+        result.FinanceRole, result.FinanceRequest and 1 or 0, result.FinanceBudget,
+        result.FinanceRequestAge or 0, result.FinanceRestraint and 1 or 0,
+        result.CultureStage, result.CultureRole, result.CultureRequest and 1 or 0,
+        result.CultureBudget, result.CultureRequestAge or 0, result.CulturePrerequisite and 1 or 0,
+        result.ScienceStage, result.ScienceBuildStage or "none"));
+    if result.Finance ~= nil then
+        local finance = result.Finance;
+        print(string.format(
+            "ASAI_FINANCE turn=%d player=%d known=%d active=%d crisis=%d gold=%.1f netgold=%.1f reserve=%.1f deficit_age=%d healthy_age=%d",
+            result.Turn, playerID, finance.Known and 1 or 0, finance.Active and 1 or 0,
+            finance.Crisis and 1 or 0, finance.Gold or -1, finance.NetGold or -1,
+            finance.Reserve, finance.DeficitAge or 0, finance.HealthyAge or 0));
+    end
+    print(string.format(
         "ASAI_DEFENSE_DEMAND turn=%d player=%d acute=%d land_request=%d land_budget=%d anticavalry_request=%d anticavalry_target=%d cavalry_until=%d native_assignment=unverified",
         result.Turn, playerID, result.AcuteDefense and 1 or 0, result.LandNeeded and 1 or 0,
         result.LandQueueTarget, result.AntiCavalryNeeded and 1 or 0, result.AntiCavalryTarget,
@@ -8901,7 +9125,8 @@ function Execution.WriteDiagnostics(playerID, firstTimeThisTurn)
             front.Coverage, front.ResultReady));
     end
     for _, role in ipairs({ "campus", "library", "university", "laboratory",
-        "trade_building", "trade_district", "trader", "ranged", "siege", "land", "anticavalry" }) do
+        "trade_building", "trade_district", "trader", "ranged", "siege", "land", "anticavalry",
+        "bank", "stock_exchange", "monument", "theater", "amphitheater", "museum" }) do
         local reason = result.ProbeReasons ~= nil and result.ProbeReasons[role] or nil;
         if reason ~= nil then
             print(string.format(
@@ -9118,6 +9343,65 @@ GameEvents.ASAI_IsTradeBuildingExecution.Add(ASAI_IsTradeBuildingExecution);
 GameEvents.ASAI_IsLandRecovery.Add(ASAI_IsLandRecovery);
 GameEvents.ASAI_IsTraderExecution.Add(ASAI_IsTraderExecution);
 
+function Execution.IsFinanceBuilding(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.FinanceRequest and status.FinanceRole ~= "trade_district";
+end
+function Execution.IsFinanceRecovery(playerID)
+    return Execution.FinanceState(Players[playerID], GetSnapshot(playerID),
+        Game.GetCurrentGameTurn()).Active;
+end
+function Execution.IsFinanceDistrict(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.FinanceRequest and status.FinanceRole == "trade_district";
+end
+function Execution.IsFinanceRestraint(playerID)
+    return Execution.GetStatus(playerID).FinanceRestraint;
+end
+function Execution.IsCultureMonument(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.CultureRequest and status.CultureRole == "monument";
+end
+function Execution.IsCultureTheater(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.CultureRequest and status.CultureRole == "theater";
+end
+function Execution.IsCultureBuilding(playerID)
+    local status = Execution.GetStatus(playerID);
+    return status.CultureRequest and (status.CultureRole == "amphitheater" or status.CultureRole == "museum");
+end
+function Execution.IsCultureCivic(playerID)
+    return Execution.GetStatus(playerID).CulturePrerequisite;
+end
+function ASAI_IsFinanceBuildingDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsFinanceBuildingDemand", Execution.IsFinanceBuilding, playerID, threshold);
+end
+function ASAI_IsFinanceDistrictDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsFinanceDistrictDemand", Execution.IsFinanceDistrict, playerID, threshold);
+end
+function ASAI_IsFinanceRestraint(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsFinanceRestraint", Execution.IsFinanceRestraint, playerID, threshold);
+end
+function ASAI_IsCultureMonumentDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsCultureMonumentDemand", Execution.IsCultureMonument, playerID, threshold);
+end
+function ASAI_IsCultureTheaterDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsCultureTheaterDemand", Execution.IsCultureTheater, playerID, threshold);
+end
+function ASAI_IsCultureBuildingDemand(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsCultureBuildingDemand", Execution.IsCultureBuilding, playerID, threshold);
+end
+function ASAI_IsCultureCivicPrerequisite(playerID, threshold)
+    return RunStrategyCondition("ASAI_IsCultureCivicPrerequisite", Execution.IsCultureCivic, playerID, threshold);
+end
+GameEvents.ASAI_IsFinanceBuildingDemand.Add(ASAI_IsFinanceBuildingDemand);
+GameEvents.ASAI_IsFinanceDistrictDemand.Add(ASAI_IsFinanceDistrictDemand);
+GameEvents.ASAI_IsFinanceRestraint.Add(ASAI_IsFinanceRestraint);
+GameEvents.ASAI_IsCultureMonumentDemand.Add(ASAI_IsCultureMonumentDemand);
+GameEvents.ASAI_IsCultureTheaterDemand.Add(ASAI_IsCultureTheaterDemand);
+GameEvents.ASAI_IsCultureBuildingDemand.Add(ASAI_IsCultureBuildingDemand);
+GameEvents.ASAI_IsCultureCivicPrerequisite.Add(ASAI_IsCultureCivicPrerequisite);
+
 -- Bind the already-defined condition functions directly: the game's script
 -- environment need not expose _G. Names above remain diagnostic/SQL identities,
 -- not runtime lookup keys. Keep this constructor in its own register frame,
@@ -9131,7 +9415,10 @@ GameEvents.ASAI_IsTraderExecution.Add(ASAI_IsTraderExecution);
         ASAI_IsMinorFrontRecoveryExecution, ASAI_IsCampusDemand,
         ASAI_IsAntiCavalryDemand, ASAI_IsUrgentLandDemand,
         ASAI_IsCampusSlotPressure, ASAI_IsOrbitalLaserDemand,
-        ASAI_IsTerrestrialLaserDemand, ASAI_IsLaserPowerDemand, ASAI_IsLaserPortHandoff
+        ASAI_IsTerrestrialLaserDemand, ASAI_IsLaserPowerDemand, ASAI_IsLaserPortHandoff,
+        ASAI_IsGoldRecovery, ASAI_IsFinanceBuildingDemand, ASAI_IsFinanceDistrictDemand,
+        ASAI_IsFinanceRestraint, ASAI_IsCultureMonumentDemand, ASAI_IsCultureTheaterDemand,
+        ASAI_IsCultureBuildingDemand, ASAI_IsCultureCivicPrerequisite
     };
 end)();
 GameEvents.ASAI_IsNativeExecutionBlocked.Add(ASAI_IsNativeExecutionBlocked);

@@ -27,7 +27,15 @@ INSERT INTO ASAI_ExecutionGateDefinitions VALUES
     (14, 'ASAI_STRATEGY_LASER_ORBITAL', 'ASAI_IsOrbitalLaserDemand'),
     (15, 'ASAI_STRATEGY_LASER_TERRESTRIAL', 'ASAI_IsTerrestrialLaserDemand'),
     (16, 'ASAI_STRATEGY_LASER_POWER', 'ASAI_IsLaserPowerDemand'),
-    (17, 'ASAI_STRATEGY_LASER_PORT_HANDOFF', 'ASAI_IsLaserPortHandoff');
+    (17, 'ASAI_STRATEGY_LASER_PORT_HANDOFF', 'ASAI_IsLaserPortHandoff'),
+    (18, 'ASAI_STRATEGY_GOLD_RECOVERY', 'ASAI_IsGoldRecovery'),
+    (19, 'ASAI_STRATEGY_FINANCE_BUILDING', 'ASAI_IsFinanceBuildingDemand'),
+    (20, 'ASAI_STRATEGY_FINANCE_DISTRICT', 'ASAI_IsFinanceDistrictDemand'),
+    (21, 'ASAI_STRATEGY_FINANCE_RESTRAINT', 'ASAI_IsFinanceRestraint'),
+    (22, 'ASAI_STRATEGY_CULTURE_MONUMENT', 'ASAI_IsCultureMonumentDemand'),
+    (23, 'ASAI_STRATEGY_CULTURE_THEATER', 'ASAI_IsCultureTheaterDemand'),
+    (24, 'ASAI_STRATEGY_CULTURE_BUILDING', 'ASAI_IsCultureBuildingDemand'),
+    (25, 'ASAI_STRATEGY_CULTURE_CIVIC', 'ASAI_IsCultureCivicPrerequisite');
 CREATE TEMP TABLE ASAI_ExecutionSlots (Slot INTEGER PRIMARY KEY);
 INSERT INTO ASAI_ExecutionSlots VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12);
 
